@@ -604,6 +604,23 @@ def _build_parser() -> argparse.ArgumentParser:
         cl = cluster_sub.add_parser(layer_name, help=f"Cluster {layer_name}")
         cl.add_argument("--source", default="cowrie", help="Source name (default: cowrie)")
         cl.add_argument("--dry-run", action="store_true", help="Fetch + cluster but skip all ES writes")
+        # ROADMAP P1: stable across-run novelty scoring.
+        ref_group = cl.add_mutually_exclusive_group()
+        ref_group.add_argument(
+            "--refresh-reference", action="store_true",
+            help=(
+                "Snapshot this run's centroids as the new reference_centroid set "
+                "(bumps reference_generation). Score this run against the new ref."
+            ),
+        )
+        ref_group.add_argument(
+            "--no-reference", action="store_true",
+            help=(
+                "Escape hatch: score per-doc novelty against this run's centroids "
+                "only (legacy intra-run behavior). Reference docs are neither "
+                "read nor written."
+            ),
+        )
 
     # rollup <layer>
     p_rollup = sub.add_parser("rollup", help="Aggregate one layer up from raw events")
@@ -978,7 +995,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[ERROR] Source {args.source!r} has no {args.layer!r} layer", flush=True)
             return 1
         try:
-            stats = mod.run_cluster(cfg, secrets, dry_run=args.dry_run)
+            stats = mod.run_cluster(
+                cfg, secrets,
+                dry_run=args.dry_run,
+                refresh_reference=args.refresh_reference,
+                use_reference=not args.no_reference,
+            )
         except (ImportError, RuntimeError) as exc:
             print(f"[ERROR] {exc}", flush=True)
             return 1

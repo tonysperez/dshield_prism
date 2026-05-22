@@ -156,6 +156,10 @@ class CommandClusterConfig(BaseModel):
     page_size: int = 1000
     batch_size: int = 200
     scalar_weight: float = 0.05
+    # Reference centroids older than this trigger a stats warning but still
+    # score (operator decides when to `cluster commands --refresh-reference`).
+    # ROADMAP P1.
+    reference_max_age_days: int = 45
 
 
 class SessionConfig(BaseModel):
@@ -177,6 +181,8 @@ class SessionConfig(BaseModel):
     # disables merging (1 cluster = 1 playbook, legacy behaviour). 0.96 is
     # the empirically-tuned default — see scripts/diagnose_centroid_similarity.py.
     playbook_merge_threshold: float = 0.96
+    # ROADMAP P1: see CommandClusterConfig.reference_max_age_days.
+    reference_max_age_days: int = 45
 
 
 class IPConfig(BaseModel):
@@ -204,6 +210,11 @@ class IPConfig(BaseModel):
     attribution_cred_hash_dim: int = 16
     page_size: int = 1000
     batch_size: int = 200
+    # ROADMAP P1: see CommandClusterConfig.reference_max_age_days. IP layer
+    # persists pure-embedding references only (scalar block is variable-width)
+    # so per-doc novelty scored against the reference reflects embedding
+    # geometry only — scalar-driven cluster membership is not factored in.
+    reference_max_age_days: int = 45
 
 
 class IntelProviderConfig(BaseModel):

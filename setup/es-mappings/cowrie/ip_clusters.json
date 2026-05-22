@@ -1,5 +1,5 @@
 {
-  "_comment": "IP cluster centroids. One doc per cluster per run plus one run_summary per run. IP clusters are unnamed actor profiles; the playbook/campaign concepts live at the session-cluster and multi-session layers respectively.",
+  "_comment": "IP cluster centroids. One doc per cluster per run plus one run_summary per run. IP clusters are unnamed actor profiles; the playbook/campaign concepts live at the session-cluster and multi-session layers respectively. `doc_type=reference_centroid` docs persist a stable baseline (pure embedding only — IP-layer scalar block is variable-width, so augmented-space reference is not stored; see ROADMAP P1 caveat in src/enrich/clustering.py).",
   "settings": {
     "number_of_shards": 1,
     "number_of_replicas": 0,
@@ -41,6 +41,15 @@
           "count": { "type": "long" }
         }
       },
+
+      "reference_generation": { "type": "long" },
+      "source_run_id": {
+        "type": "text",
+        "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } }
+      },
+      "embedding_dims":   { "type": "long" },
+      "scalar_weight":    { "type": "float" },
+      "reference_minted_at": { "type": "date" },
 
       "total_docs":      { "type": "long" },
       "n_clusters":      { "type": "long" },

@@ -1989,6 +1989,8 @@ def run_cluster(
     cfg: AppConfig,
     secrets: Secrets,
     dry_run: bool = False,
+    refresh_reference: bool = False,
+    use_reference: bool = True,
 ) -> dict:
     """Cluster command embeddings + write novelty scores back. Delegates to clustering core."""
     from ...clustering import run_layer_clustering
@@ -2019,4 +2021,7 @@ def run_cluster(
         centroid_sample_field="sample_commands",
         dry_run=dry_run,
         layer_label="cowrie.commands",
+        refresh_reference=refresh_reference,
+        use_reference=use_reference,
+        reference_max_age_days=ccfg.reference_max_age_days,
     )

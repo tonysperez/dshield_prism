@@ -1,5 +1,5 @@
 {
-  "_comment": "Command cluster centroids. One doc per cluster per run, plus one run-summary doc per run. Parallel to es-mappings/cowrie/commands.json.",
+  "_comment": "Command cluster centroids. One doc per cluster per run, plus one run-summary doc per run. Parallel to es-mappings/cowrie/commands.json. `doc_type=reference_centroid` docs persist a stable baseline centroid set (pure + augmented) used to score per-doc novelty consistently across runs (ROADMAP P1).",
   "settings": {
     "number_of_shards": 1,
     "number_of_replicas": 0,
@@ -18,10 +18,25 @@
         "dims": 768,
         "index": false
       },
+      "centroid_augmented": {
+        "type": "dense_vector",
+        "dims": 772,
+        "index": false
+      },
       "sample_commands": {
         "type": "text",
         "fields": { "keyword": { "type": "keyword", "ignore_above": 8192 } }
       },
+
+      "reference_generation": { "type": "long" },
+      "source_run_id": {
+        "type": "text",
+        "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } }
+      },
+      "embedding_dims":   { "type": "long" },
+      "augmented_dims":   { "type": "long" },
+      "scalar_weight":    { "type": "float" },
+      "reference_minted_at": { "type": "date" },
 
       "total_docs":    { "type": "long" },
       "n_clusters":    { "type": "long" },

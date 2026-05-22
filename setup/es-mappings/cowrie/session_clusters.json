@@ -20,7 +20,22 @@
         "dims": 768,
         "index": false
       },
+      "centroid_augmented": {
+        "type": "dense_vector",
+        "dims": 772,
+        "index": false
+      },
       "sample_session_ids": { "type": "keyword" },
+
+      "reference_generation": { "type": "long" },
+      "source_run_id": {
+        "type": "text",
+        "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } }
+      },
+      "embedding_dims":   { "type": "long" },
+      "augmented_dims":   { "type": "long" },
+      "scalar_weight":    { "type": "float" },
+      "reference_minted_at": { "type": "date" },
 
       "total_docs":      { "type": "long" },
       "n_clusters":      { "type": "long" },
