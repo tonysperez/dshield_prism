@@ -1,0 +1,42 @@
+{
+  "_comment": "Source-IP lifecycle. One doc per source.ip. Smaller than playbook/campaign lifecycle — no confirm_anchors[] or drift_suppressions[]; IP shifts self-anchor against the IP's own snapshot history. Strict-dynamic. Findings v2 step 1.",
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "30s",
+    "index.mapping.total_fields.limit": 200
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "source_ip":           { "type": "ip" },
+      "first_seen_ever":     { "type": "date" },
+      "last_seen":           { "type": "date" },
+      "first_run_id":        { "type": "keyword" },
+      "last_run_id":         { "type": "keyword" },
+      "runs_observed":       { "type": "integer" },
+      "silent_runs_current": { "type": "integer" },
+
+      "snapshots": {
+        "type": "nested",
+        "properties": {
+          "run_id":                  { "type": "keyword" },
+          "@timestamp":              { "type": "date" },
+          "session_count":           { "type": "integer" },
+          "dominant_playbook_id":    { "type": "keyword" },
+          "playbook_distribution":   { "type": "flattened" },
+          "intel_verdict": {
+            "type": "text",
+            "fields": { "keyword": { "type": "keyword", "ignore_above": 32 } }
+          },
+          "intel_consensus_score":   { "type": "float" },
+          "asn":                     { "type": "long" },
+          "geo_country": {
+            "type": "text",
+            "fields": { "keyword": { "type": "keyword", "ignore_above": 16 } }
+          }
+        }
+      }
+    }
+  }
+}

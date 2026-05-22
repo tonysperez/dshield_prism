@@ -1,0 +1,74 @@
+{
+  "_comment": "Campaign lifecycle. One doc per campaign_id (cmp-bhv-<hash> or cmp-inf-<hash>). Same shape as playbook lifecycle; keyed differently and carries campaign_kind. Strict-dynamic. Findings v2 step 1.",
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "30s",
+    "index.mapping.total_fields.limit": 200
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "campaign_id":         { "type": "keyword" },
+      "campaign_name": {
+        "type": "text",
+        "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } }
+      },
+      "campaign_kind": {
+        "type": "text",
+        "fields": { "keyword": { "type": "keyword", "ignore_above": 32 } }
+      },
+      "first_seen_ever":     { "type": "date" },
+      "last_seen":           { "type": "date" },
+      "first_run_id":        { "type": "keyword" },
+      "last_run_id":         { "type": "keyword" },
+      "runs_observed":       { "type": "integer" },
+      "silent_runs_current": { "type": "integer" },
+
+      "snapshots": {
+        "type": "nested",
+        "properties": {
+          "run_id":           { "type": "keyword" },
+          "@timestamp":       { "type": "date" },
+          "session_count":    { "type": "integer" },
+          "ip_count":         { "type": "integer" },
+          "mean_novelty":     { "type": "float" },
+          "dominant_intent":  { "type": "keyword" },
+          "asn_top":          { "type": "keyword" },
+          "asn_distribution": { "type": "flattened" }
+        }
+      },
+
+      "confirm_anchors": {
+        "type": "nested",
+        "properties": {
+          "ts":                    { "type": "date" },
+          "source": {
+            "type": "text",
+            "fields": { "keyword": { "type": "keyword", "ignore_above": 32 } }
+          },
+          "confirmed_run_id":      { "type": "keyword" },
+          "confirming_finding_id": { "type": "keyword" },
+          "session_count":         { "type": "integer" },
+          "ip_count":              { "type": "integer" },
+          "command_signature":     { "type": "keyword" },
+          "command_set":           { "type": "keyword" },
+          "command_bigram_signature": { "type": "keyword" },
+          "artifact_signature":    { "type": "keyword" },
+          "artifact_set":          { "type": "keyword" },
+          "asn_distribution":      { "type": "flattened" },
+          "dominant_intent":       { "type": "keyword" }
+        }
+      },
+
+      "drift_suppressions": {
+        "type": "nested",
+        "properties": {
+          "delta_signature": { "type": "keyword" },
+          "kind":            { "type": "keyword" },
+          "ts":              { "type": "date" }
+        }
+      }
+    }
+  }
+}

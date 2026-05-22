@@ -112,6 +112,30 @@
                           "keyword": { "type": "keyword", "ignore_above": 256 }
                         }
                       },
+                      "command_signature": {
+                        "type": "text",
+                        "fields": {
+                          "keyword": { "type": "keyword", "ignore_above": 64 }
+                        }
+                      },
+                      "command_bigram_signature": {
+                        "type": "text",
+                        "fields": {
+                          "keyword": { "type": "keyword", "ignore_above": 64 }
+                        }
+                      },
+                      "command_bigram_set": {
+                        "type": "text",
+                        "fields": {
+                          "keyword": { "type": "keyword", "ignore_above": 64 }
+                        }
+                      },
+                      "artifact_set": {
+                        "type": "text",
+                        "fields": {
+                          "keyword": { "type": "keyword", "ignore_above": 512 }
+                        }
+                      },
                       "embedding": {
                         "type": "dense_vector",
                         "dims": 768,

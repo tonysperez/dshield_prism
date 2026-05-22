@@ -418,6 +418,11 @@ def _mean_pool(
 
 
 _MAX_CREDENTIALS_PER_SESSION = 200
+# Findings v2 step 1: bounded sequence + artifact set per session so the
+# rollup doc stays small. 64 bigrams covers ~65 commands of ordered context;
+# 200 artifacts covers even the most prolific dropper chains.
+_MAX_BIGRAMS_PER_SESSION = 64
+_MAX_ARTIFACTS_PER_SESSION = 200
 
 
 def _record_credential(credentials_set: set[str], ev: dict) -> None:
@@ -577,6 +582,50 @@ def _build_session_doc(
     hash_counts = Counter(command_hashes)
     entropy = _command_entropy(dict(hash_counts))
 
+    # Findings v2 step 1: stable signatures + sequence + artifact set for the
+    # drift detectors (step 4) to diff against confirm anchors (step 2).
+    # `command_signature` collapses the unique-command set to one keyword;
+    # `command_bigram_set` carries the first _MAX_BIGRAMS ordered pairs so
+    # `playbook_sequence_drift` can fire on re-orderings within the same
+    # vocabulary; `artifact_set` carries every IOC seen across the session's
+    # commands so artifact-drift kinds have a session-level input.
+    sorted_unique = sorted(unique_hashes)
+    command_signature = (
+        hashlib.sha256("|".join(sorted_unique).encode("utf-8")).hexdigest()[:32]
+        if sorted_unique else None
+    )
+    bigrams: list[str] = []
+    for i in range(len(command_hashes) - 1):
+        if len(bigrams) >= _MAX_BIGRAMS_PER_SESSION:
+            break
+        bigrams.append(f"{command_hashes[i]}|{command_hashes[i + 1]}")
+    command_bigram_signature = (
+        hashlib.sha256("|".join(sorted(bigrams)).encode("utf-8")).hexdigest()[:32]
+        if bigrams else None
+    )
+    artifact_values: set[str] = set()
+    for h in unique_hashes:
+        ed = enrichment_by_hash.get(h)
+        if not ed:
+            continue
+        for ind in ((ed.get("threat") or {}).get("indicator") or []):
+            kind = ind.get("type")
+            if kind in ("ipv4-addr", "ipv6-addr") and ind.get("ip"):
+                artifact_values.add(f"ip:{ind['ip']}")
+            elif kind == "domain-name" and ind.get("domain"):
+                artifact_values.add(f"domain:{ind['domain']}")
+            elif kind == "url":
+                u = (ind.get("url") or {}).get("full")
+                if u:
+                    artifact_values.add(f"url:{u}")
+            elif kind == "file":
+                f_obj = ind.get("file") or {}
+                sha = (f_obj.get("hash") or {}).get("sha256")
+                if sha:
+                    artifact_values.add(f"hash:{sha}")
+                elif f_obj.get("name"):
+                    artifact_values.add(f"file:{f_obj['name']}")
+
     session_block: dict = {
         "command_count": len(command_hashes),
         "unique_commands": len(unique_hashes),
@@ -587,6 +636,13 @@ def _build_session_doc(
         "command_entropy": round(entropy, 4),
         "embed_version": cfg.session.embed_version,
     }
+    if command_signature:
+        session_block["command_signature"] = command_signature
+    if bigrams:
+        session_block["command_bigram_set"] = bigrams
+        session_block["command_bigram_signature"] = command_bigram_signature
+    if artifact_values:
+        session_block["artifact_set"] = sorted(artifact_values)[:_MAX_ARTIFACTS_PER_SESSION]
     if dominant_intent:
         session_block["dominant_intent"] = dominant_intent
     if intent_distribution:

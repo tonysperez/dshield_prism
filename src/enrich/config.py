@@ -429,8 +429,24 @@ class IntelConfig(BaseModel):
 
 
 class FindingsIndexes(BaseModel):
-    """Persisted findings index. M5."""
+    """Persisted findings index. M5. Lifecycle indices added in Findings v2 step 1 —
+    one per artifact kind (playbook / campaign / source_ip)."""
     default: str = "prism.finding"
+    playbook_lifecycle:  str = "lifecycle-dshield.cowrie.playbook-default"
+    campaign_lifecycle:  str = "lifecycle-dshield.cowrie.campaign-default"
+    source_ip_lifecycle: str = "lifecycle-dshield.cowrie.source_ip-default"
+
+
+class LifecycleConfig(BaseModel):
+    """Findings v2 — lifecycle snapshot rotation + provisional-anchor cadence."""
+    # Rolling per-run snapshot cap on the lifecycle docs. 30 ≈ 7.5 days at
+    # the 6h backward-cadence — long enough to compute rolling baselines for
+    # drift kinds without unbounded doc growth.
+    snapshot_cap: int = 30
+    # Number of consecutive stable snapshots before `track lifecycles`
+    # writes a provisional anchor (used for drift baselining when no
+    # analyst has confirmed yet). 8 runs ≈ 2 days at 6h.
+    provisional_stable_runs: int = 8
 
 
 class FindingsConfig(BaseModel):
@@ -458,6 +474,8 @@ class FindingsConfig(BaseModel):
     # run. The console paginates; a 5000-finding backlog is rarely
     # useful and bloats the index.
     max_findings_per_kind: int = 500
+    # Lifecycle subsystem (Findings v2).
+    lifecycle: LifecycleConfig = Field(default_factory=LifecycleConfig)
     # Look-back window (days) for "recent activity" — IPs/URLs whose
     # `last_seen` is older than this are ineligible for new findings.
     # Existing finding docs keep their status; the miner just stops

@@ -67,6 +67,12 @@ ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/
 # set. Stable campaign IDs (content-hashed playbook set, ROADMAP #2).
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml mine campaigns --kind all
 
+# --- Step 8b: append this-run snapshots to the lifecycle indices
+# (playbook / campaign / source_ip) and bump silent_runs_current on
+# artifacts not seen this run. Findings v2 step 1 — feeds drift detectors
+# (Findings v2 step 4) once anchors are populated.
+ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml track lifecycles
+
 # --- Step 9: refresh external threat-intel for IPs in the rollup.
 # No-op when `intel.enabled: false`. ROADMAP "Research-mode strategic
 # gaps" section A. Runs last so it sees the latest novelty scores

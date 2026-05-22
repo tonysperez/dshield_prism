@@ -106,6 +106,14 @@ _LAYER_MAPPINGS = {
     "findings": {
         "default": "setup/es-mappings/findings/default.json",
     },
+    # Lifecycle indices — Findings v2 step 1. `track lifecycles` writes
+    # one doc per (playbook_id | campaign_id | source.ip) with rolling
+    # snapshots; drift detectors (step 4) read confirm_anchors[].
+    "lifecycle": {
+        "playbook":  "setup/es-mappings/lifecycle/playbook.json",
+        "campaign":  "setup/es-mappings/lifecycle/campaign.json",
+        "source_ip": "setup/es-mappings/lifecycle/source_ip.json",
+    },
 }
 
 
@@ -280,6 +288,10 @@ def _run_pipeline(cfg, secrets, args) -> int:
         from .findings.miner import run_mine as _rm
         return _rm(cfg, secrets, dry_run=dry)
 
+    def _run_track_lifecycles():
+        from .findings.lifecycle import run_track_lifecycles
+        return run_track_lifecycles(cfg, secrets, dry_run=dry)
+
     def _reset_rollup_watermarks():
         """Clear the session + IP rollup watermarks so the next rollup
         re-pools from every session/IP. Mirrors `reset --session-watermark
@@ -335,6 +347,12 @@ def _run_pipeline(cfg, secrets, args) -> int:
 
         # ---- multi-session campaign mining (frequent-itemset + shared-artifact)
         ("mine campaigns",             lambda: campaigns_mod.run_mine(cfg, secrets, kind="all", dry_run=dry),             True),
+
+        # ---- lifecycle snapshot pass (Findings v2 step 1) — must run after
+        # `name playbooks` (playbook ids exist) and `mine campaigns`
+        # (campaign ids exist); feeds the drift detectors that ship in
+        # Findings v2 step 4 once anchors are populated.
+        ("track lifecycles",           _run_track_lifecycles,                                                              True),
 
         # ---- external threat-intel refresh — must run AFTER `rollup ips`
         # (uses IP rollup for discovery) and AFTER `enrich` (uses
@@ -408,6 +426,13 @@ def _resolve_index_for_layer(cfg, source: str, layer: str) -> str:
         }[layer]
     if source == "findings":
         return {"default": cfg.findings.indexes.default}[layer]
+    if source == "lifecycle":
+        f = cfg.findings.indexes
+        return {
+            "playbook":  f.playbook_lifecycle,
+            "campaign":  f.campaign_lifecycle,
+            "source_ip": f.source_ip_lifecycle,
+        }[layer]
     raise ValueError(f"Unknown source: {source}")
 
 
@@ -683,6 +708,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p_mf = mine_sub.add_parser("findings", help="Mine likely_discovery + axis_disagreement findings (M5)")
     p_mf.add_argument("--dry-run", action="store_true",
                       help="Score + rank without writing finding docs")
+
+    # track lifecycles — Findings v2 step 1. Walks session_clusters /
+    # campaigns / ips_rollup; upserts one doc per playbook_id /
+    # campaign_id / source.ip into the lifecycle indices, appending a
+    # this-run snapshot and bumping `silent_runs_current` on artifacts
+    # not seen this run. Wired into the backward chain between
+    # `mine campaigns` and `intel refresh`.
+    p_track = sub.add_parser("track", help="Findings v2 lifecycle tracking")
+    track_sub = p_track.add_subparsers(dest="subject", required=True)
+    p_tl = track_sub.add_parser("lifecycles", help="Upsert playbook / campaign / source-ip lifecycle docs")
+    p_tl.add_argument("--dry-run", action="store_true",
+                      help="Enumerate artifacts without writing lifecycle docs")
 
     # intel — external threat-intel subsystem. `refresh` runs one pass:
     # discovers artifacts, priority-queues them, dispatches to every
@@ -1072,6 +1109,15 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(json.dumps(stats, indent=2, default=str))
         return 0
+
+    if args.verb == "track":
+        if args.subject == "lifecycles":
+            from .findings.lifecycle import run_track_lifecycles
+            stats = run_track_lifecycles(cfg, secrets, dry_run=args.dry_run)
+            print(json.dumps(stats, indent=2, default=str))
+            return 0
+        print(f"[ERROR] Unknown `track` subject: {args.subject!r}", flush=True)
+        return 1
 
     if args.verb == "intel":
         from .intel.refresh import run_backfill, run_refresh
