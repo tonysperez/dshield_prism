@@ -18,6 +18,10 @@
         "type": "text",
         "fields": { "keyword": { "type": "keyword", "ignore_above": 32 } }
       },
+      "inherited_from": {
+        "type": "text",
+        "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } }
+      },
       "first_seen_ever":     { "type": "date" },
       "last_seen":           { "type": "date" },
       "first_run_id":        { "type": "keyword" },

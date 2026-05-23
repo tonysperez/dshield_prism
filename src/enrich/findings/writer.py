@@ -28,14 +28,28 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def finding_id(kind: str, artifact_kind: str, artifact_value: str) -> str:
-    """Deterministic id: `find-<kind3>-<sha16(akind:avalue)>`.
+def finding_id(
+    kind: str,
+    artifact_kind: str,
+    artifact_value: str,
+    delta_signature: Optional[str] = None,
+) -> str:
+    """Deterministic id: `find-<kind3>-<sha16(akind:avalue[:delta])>`.
 
     Two re-mines that produce the same finding pin to the same doc id,
     so the GET-then-upsert flow naturally preserves the analyst's
     triage state across runs.
+
+    Drift findings pass `delta_signature` so that a *new* delta on the
+    same playbook produces a *new* doc id — different drifts on the
+    same artifact stay distinct in the inbox. Once a drift is rejected,
+    its `delta_signature` lands in the artifact's `drift_suppressions[]`
+    and the miner skips re-emitting that exact delta on future runs.
     """
-    h = hashlib.sha256(f"{artifact_kind}:{artifact_value}".encode("utf-8")).hexdigest()[:16]
+    payload = f"{artifact_kind}:{artifact_value}"
+    if delta_signature:
+        payload = f"{payload}:{delta_signature}"
+    h = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
     return f"find-{kind[:3]}-{h}"
 
 
@@ -61,7 +75,10 @@ def upsert_finding(
     """
     kind = finding["kind"]
     artifact = finding["artifact"]
-    fid = finding_id(kind, artifact["kind"], artifact["value"])
+    fid = finding_id(
+        kind, artifact["kind"], artifact["value"],
+        delta_signature=finding.get("delta_signature"),
+    )
 
     try:
         existing = es.get(index=index, id=fid)
@@ -119,7 +136,10 @@ def bulk_upsert_findings(
     for f in findings:
         kind = f["kind"]
         a = f["artifact"]
-        fid = finding_id(kind, a["kind"], a["value"])
+        fid = finding_id(
+            kind, a["kind"], a["value"],
+            delta_signature=f.get("delta_signature"),
+        )
         ids.append(fid)
         keyed.append((fid, f))
 
@@ -150,6 +170,12 @@ def bulk_upsert_findings(
             "evidence":        f.get("evidence") or {},
             "linked_artifacts": f.get("linked_artifacts") or [],
         }
+        if f.get("delta_signature"):
+            doc["delta_signature"] = f["delta_signature"]
+        if f.get("narrative_source"):
+            doc["narrative_source"] = f["narrative_source"]
+        if f.get("narrative_confidence") is not None:
+            doc["narrative_confidence"] = f["narrative_confidence"]
         actions.append({"_op_type": "index", "_index": index, "_id": fid, "_source": doc})
 
     success = 0
@@ -170,11 +196,23 @@ def mutate_status(
     *,
     new_status: str,
     note: str = "",
+    cfg: Any = None,
 ) -> dict[str, Any]:
     """Transition a finding's status. Appends a history entry; rejects
     unknown statuses. Returns the updated doc body.
 
     Called from the console's POST endpoint, not the miner.
+
+    When `cfg` is supplied, Findings v2 step 2 lifecycle side effects fire
+    based on (kind classification, transition):
+
+      | Action     | Coverage         | Drift                              |
+      |------------|------------------|------------------------------------|
+      | → confirmed| append anchor    | append new anchor (rebaseline)     |
+      | → rejected | clear anchors    | record drift_suppression           |
+
+    Discovery findings have no lifecycle side effect. `ack` / `new`
+    transitions are no-ops on lifecycle state.
     """
     if new_status not in _VALID_STATUSES:
         raise ValueError(f"invalid status: {new_status!r} (valid: {sorted(_VALID_STATUSES)})")
@@ -196,7 +234,101 @@ def mutate_status(
     src["status"] = new_status
     src["status_history"] = history
     es.index(index=index, id=finding_id_, document=src, refresh="wait_for")
+
+    if cfg is not None:
+        try:
+            _apply_lifecycle_side_effects(es, cfg, finding=src)
+        except Exception as exc:
+            log.warning(
+                "lifecycle side effect for finding %s (status=%s) failed: %s",
+                finding_id_, new_status, exc,
+            )
     return src
+
+
+def _apply_lifecycle_side_effects(es: Elasticsearch, cfg: Any, *, finding: dict[str, Any]) -> None:
+    """Dispatch lifecycle writes triggered by a status change. Routes by
+    `(kind_classification, status)` per the Findings v2 design table.
+
+    Coverage findings (`playbook` / `campaign`):
+      - confirmed → analyst anchor appended
+      - rejected  → all anchors (analyst + provisional) removed
+
+    Drift findings:
+      - confirmed → new analyst anchor (rebaseline)
+      - rejected  → drift_suppressions[] entry keyed by delta_signature
+
+    Discovery findings (and unknown kinds): no-op.
+    """
+    from .lifecycle import (
+        build_anchor_payload,
+        kind_classification,
+        record_drift_suppression,
+        remove_anchors_by_source,
+        write_confirm_anchor,
+    )
+    kind = finding.get("kind")
+    artifact = finding.get("artifact") or {}
+    artifact_kind = artifact.get("kind")
+    artifact_id = artifact.get("value")
+    status = finding.get("status")
+    fid = finding.get("finding_id")
+
+    if not kind or not artifact_kind or not artifact_id:
+        return
+    if artifact_kind not in ("playbook", "campaign"):
+        return  # IP / URL / etc. — no lifecycle doc
+
+    classification = kind_classification(kind)
+    f_idx = cfg.findings.indexes
+    lc_index = (
+        f_idx.playbook_lifecycle if artifact_kind == "playbook"
+        else f_idx.campaign_lifecycle
+    )
+
+    if classification == "coverage":
+        if status == "confirmed":
+            anchor = build_anchor_payload(
+                es, cfg,
+                artifact_kind=artifact_kind, artifact_id=artifact_id,
+                source="analyst", confirming_finding_id=fid,
+            )
+            write_confirm_anchor(es, lc_index, artifact_id=artifact_id, anchor=anchor)
+        elif status == "rejected":
+            # Clear analyst AND provisional anchors. "Reject" means
+            # "stop tracking drift on this artifact entirely." A future
+            # confirm reinstates a fresh anchor (rebaseline).
+            remove_anchors_by_source(es, lc_index, artifact_id=artifact_id, source="analyst")
+            remove_anchors_by_source(es, lc_index, artifact_id=artifact_id, source="provisional")
+        return
+
+    if classification == "drift":
+        if status == "confirmed":
+            # Rebaseline: append a fresh analyst anchor that captures
+            # the *current* signatures (after the drift the analyst just
+            # acknowledged as real).
+            anchor = build_anchor_payload(
+                es, cfg,
+                artifact_kind=artifact_kind, artifact_id=artifact_id,
+                source="analyst", confirming_finding_id=fid,
+            )
+            write_confirm_anchor(es, lc_index, artifact_id=artifact_id, anchor=anchor)
+        elif status == "rejected":
+            delta_sig = finding.get("delta_signature") or (finding.get("evidence") or {}).get("delta_signature")
+            if delta_sig:
+                record_drift_suppression(
+                    es, lc_index,
+                    artifact_id=artifact_id,
+                    delta_signature=delta_sig,
+                    kind=kind,
+                )
+            else:
+                log.warning(
+                    "drift finding %s rejected but no delta_signature on doc; suppression not recorded",
+                    fid,
+                )
+        return
+    # discovery / unknown — no lifecycle side effect.
 
 
 def valid_statuses() -> frozenset[str]:

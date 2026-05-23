@@ -447,6 +447,68 @@ class LifecycleConfig(BaseModel):
     # writes a provisional anchor (used for drift baselining when no
     # analyst has confirmed yet). 8 runs ≈ 2 days at 6h.
     provisional_stable_runs: int = 8
+    # Co-identification window for name-based anchor inheritance. When
+    # `track lifecycles` writes a new playbook/campaign lifecycle doc, it
+    # looks for an existing doc with the same `playbook_name` /
+    # `campaign_name` whose `last_seen` is within this many cluster runs
+    # (assumed 6h cadence). If found, the new doc inherits its
+    # `confirm_anchors[]` and `drift_suppressions[]` plus records the
+    # old id in `inherited_from[]`. Defends against content-addressed-id
+    # churn when a playbook gains/loses a single member session. Default
+    # 2 runs (12h) — catches the next-run-after-id-flip case without
+    # cross-linking genuinely-distinct playbooks that happened to share
+    # a name. ROADMAP P2.1.
+    coidentification_max_age_runs: int = 2
+
+
+class DiscoveryConfig(BaseModel):
+    """Findings v2 step 3 — stream B (discovery) thresholds."""
+    # `intel_verdict_flip`: how recent must the corpus session be to fire?
+    intel_flip_recent_session_days: int = 7
+    # `ip_behavior_shift`: JS-distance gate between current playbook
+    # distribution and the IP's prior history.
+    ip_shift_js_distance_min: float = 0.3
+    # `ip_behavior_shift` + `unattributed_active_ip`: latest snapshot's
+    # session_count floor — bots that hit once per week don't fire.
+    ip_shift_min_sessions: int = 5
+    unattributed_min_sessions: int = 5
+
+
+class NarrativeConfig(BaseModel):
+    """Findings v2 step 5 — drift narrative generator."""
+    # Master kill-switch. If false, no LLM calls; drift findings keep
+    # their structured narrative_template.
+    enabled: bool = True
+    # Skip the LLM call when the remaining daily cloud budget drops below
+    # this floor — protects the `escalate` step from being starved by a
+    # storm of unique deltas. USD.
+    budget_floor_usd: float = 0.05
+    # Per-call max tokens; one-sentence narratives don't need more.
+    max_tokens: int = 160
+
+
+class DriftConfig(BaseModel):
+    """Findings v2 step 4 — stream A (drift) thresholds."""
+    # `playbook_command_drift`: Jaccard floor over command_set. The
+    # default in the design doc is 0.5; we ship signature-mode parity as
+    # the gate today (full Jaccard requires materialising command sets on
+    # the rollup) — see drift.py docstring.
+    command_jaccard_threshold: float = 0.5
+    # `playbook_sequence_drift`: Jaccard floor over command_bigram_set.
+    # Fires only when command_drift did NOT fire — the smarter signal.
+    bigram_jaccard_threshold: float = 0.4
+    # `playbook_artifact_drift`: Jaccard distance floor over artifact_set.
+    artifact_set_drift_min: float = 0.5
+    # `playbook_geo_drift`: cosine distance floor over ASN distribution.
+    asn_cosine_drift_min: float = 0.4
+    # `playbook_size_drift`: both gates must clear (relative growth + abs delta).
+    size_growth_pct_min: float = 0.75
+    size_growth_min_delta_ips: int = 3
+    # `playbook_resurgence`: consecutive silent runs before a return fires.
+    resurgence_silent_runs: int = 8
+    # `campaign_growth`: same relative + absolute gates as size_drift.
+    campaign_growth_pct_min: float = 0.75
+    campaign_growth_min_delta_ips: int = 3
 
 
 class FindingsConfig(BaseModel):
@@ -476,6 +538,12 @@ class FindingsConfig(BaseModel):
     max_findings_per_kind: int = 500
     # Lifecycle subsystem (Findings v2).
     lifecycle: LifecycleConfig = Field(default_factory=LifecycleConfig)
+    # Discovery (stream B) thresholds (Findings v2 step 3).
+    discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
+    # Drift (stream A) thresholds (Findings v2 step 4).
+    drift: DriftConfig = Field(default_factory=DriftConfig)
+    # Drift narrative generator (Findings v2 step 5).
+    narrative: NarrativeConfig = Field(default_factory=NarrativeConfig)
     # Look-back window (days) for "recent activity" — IPs/URLs whose
     # `last_seen` is older than this are ineligible for new findings.
     # Existing finding docs keep their status; the miner just stops

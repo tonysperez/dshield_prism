@@ -33,11 +33,14 @@
 #          → re-enrich-stale + reembed + reset rollup watermarks
 #            + re-rollup + cluster commands/sessions/ips
 #            + escalate + name playbooks + name ip-clusters
-#            + mine campaigns + intel refresh
+#            + mine campaigns + track lifecycles + intel refresh
+#            + mine findings
 #            (every 6h; full-corpus backward pass)
-#        dshield_prism-mine-findings.timer
-#          → mine findings  (hourly; one card per playbook + campaign)
-#        All three serialise on /var/lib/dshield_prism/.lock via flock.
+#        Both timers serialise on /var/lib/dshield_prism/.lock via flock.
+#        `mine findings` is inlined into the backward chain so it always
+#        runs after `name playbooks` — the legacy
+#        dshield_prism-mine-findings.{service,timer} are removed by this
+#        script if present from a prior install.
 #
 # Skipped on purpose (first run can take hours on a backlog):
 #   - Initial enrichment + clustering pass. Trigger manually after setup:
@@ -164,8 +167,6 @@ REQUIRED_FILES=(
     "${SRC_DIR}/systemd/dshield_prism-forward.timer"
     "${SRC_DIR}/systemd/dshield_prism-backward.service"
     "${SRC_DIR}/systemd/dshield_prism-backward.timer"
-    "${SRC_DIR}/systemd/dshield_prism-mine-findings.service"
-    "${SRC_DIR}/systemd/dshield_prism-mine-findings.timer"
 )
 for required in "${REQUIRED_FILES[@]}"; do
     [[ -f "${required}" ]] || die "Missing source file: ${required}"
@@ -301,6 +302,10 @@ if (( RUN_INIT_INDEX )); then
     ( cd "${INSTALL_DIR}" && run_cli init-indexes --update-mapping --source intel )
     log "Initializing findings index (prism.finding)"
     ( cd "${INSTALL_DIR}" && run_cli init-indexes --update-mapping --source findings )
+    # Findings v2 — lifecycle subsystem. Three strict-dynamic indices that
+    # the `track lifecycles` verb upserts into every backward pass.
+    log "Initializing lifecycle indexes (playbook / campaign / source_ip)"
+    ( cd "${INSTALL_DIR}" && run_cli init-indexes --update-mapping --source lifecycle )
 else
     warn "Skipping init-indexes (--skip-init-index)"
 fi
@@ -328,13 +333,18 @@ fi
 if (( INSTALL_SYSTEMD )); then
     log "Syncing systemd units"
 
-    # Best-effort cleanup of the prior ingest+analytics units. Idempotent —
-    # silently ignores absence on a fresh box.
-    for legacy in dshield_prism-ingest dshield_prism-analytics; do
+    # Best-effort cleanup of removed units. Idempotent — silently ignores
+    # absence on a fresh box. `dshield_prism-mine-findings` was the
+    # standalone hourly miner; mining is now inlined into the backward
+    # chain so the unit + timer are deleted from disk and forgotten by
+    # systemd.
+    for legacy in dshield_prism-ingest dshield_prism-analytics dshield_prism-mine-findings; do
         if [[ -f "${SYSTEMD_DIR}/${legacy}.timer" ]] \
-        || [[ -f "${SYSTEMD_DIR}/${legacy}.service" ]]; then
-            log "  ${legacy}.*: removing legacy units (replaced by forward/backward)"
-            systemctl disable --now "${legacy}.timer" 2>/dev/null || true
+        || [[ -f "${SYSTEMD_DIR}/${legacy}.service" ]] \
+        || systemctl list-unit-files 2>/dev/null | grep -q "^${legacy}\."; then
+            log "  ${legacy}.*: removing legacy units"
+            systemctl disable --now "${legacy}.timer"   2>/dev/null || true
+            systemctl disable --now "${legacy}.service" 2>/dev/null || true
             rm -f "${SYSTEMD_DIR}/${legacy}.timer" "${SYSTEMD_DIR}/${legacy}.service"
         fi
     done
@@ -344,9 +354,7 @@ if (( INSTALL_SYSTEMD )); then
         dshield_prism-forward.service \
         dshield_prism-forward.timer \
         dshield_prism-backward.service \
-        dshield_prism-backward.timer \
-        dshield_prism-mine-findings.service \
-        dshield_prism-mine-findings.timer
+        dshield_prism-backward.timer
     do
         src="${INSTALL_DIR}/systemd/${unit}"
         dst="${SYSTEMD_DIR}/${unit}"
@@ -370,18 +378,15 @@ if (( INSTALL_SYSTEMD )); then
 
     systemctl enable --now dshield_prism-forward.timer
     systemctl enable --now dshield_prism-backward.timer
-    systemctl enable --now dshield_prism-mine-findings.timer
     if (( UNITS_CHANGED )); then
         systemctl restart dshield_prism-forward.timer
         systemctl restart dshield_prism-backward.timer
-        systemctl restart dshield_prism-mine-findings.timer
     fi
 
     log "Timer status:"
     systemctl --no-pager list-timers \
         dshield_prism-forward.timer \
-        dshield_prism-backward.timer \
-        dshield_prism-mine-findings.timer || true
+        dshield_prism-backward.timer || true
 else
     warn "Skipping systemd install (--no-systemd)"
 fi
@@ -412,25 +417,22 @@ Scheduled services installed:
     → name playbooks            (local LLM names each session cluster)
     → name ip-clusters          (annotate IP centroids with dominant playbook)
     → mine campaigns            (FP-growth + shared-artifact miners)
+    → track lifecycles          (playbook/campaign/source_ip snapshots)
     → intel refresh             (external threat-intel providers)
-
-  dshield_prism-mine-findings.timer     (hourly at :05)
     → mine findings             (one card per playbook + per campaign;
                                  powers the console /findings page)
 
-  All three serialise on /var/lib/dshield_prism/.lock via flock.
+  Both timers serialise on /var/lib/dshield_prism/.lock via flock.
 
 The first forward pass will fire within 30 min. To kick off a run now:
 
   sudo systemctl start dshield_prism-forward.service
   sudo systemctl start dshield_prism-backward.service
-  sudo systemctl start dshield_prism-mine-findings.service
 
 Tail live logs:
 
   journalctl -fu dshield_prism-forward.service
   journalctl -fu dshield_prism-backward.service
-  journalctl -fu dshield_prism-mine-findings.service
 
 Useful CLI commands (run as the service user):
 

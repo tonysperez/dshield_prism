@@ -243,7 +243,8 @@ def build_app(config_path: str | None = None) -> FastAPI:
     @app.get("/api/findings")
     def findings_list_api(
         status: str = Query("new", description="Comma-separated list of statuses, or 'all'"),
-        kind: Optional[str] = Query(None, description="likely_discovery | axis_disagreement"),
+        kind: Optional[str] = Query(None, description="Single finding kind to filter on"),
+        stream: Optional[str] = Query(None, description="drift | discovery | coverage"),
         size: int = Query(50, ge=1, le=500),
         frm: int = Query(0, ge=0),
         sort: str = Query("score", description="score | last_seen | first_seen"),
@@ -256,7 +257,8 @@ def build_app(config_path: str | None = None) -> FastAPI:
         try:
             data = findings_mod.list_findings(
                 es, cfg,
-                status=status_list, kind=kind, size=size, frm=frm, sort=sort,
+                status=status_list, kind=kind, stream=stream,
+                size=size, frm=frm, sort=sort,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc))
@@ -266,11 +268,43 @@ def build_app(config_path: str | None = None) -> FastAPI:
         data["kind_counts"] = findings_mod.kind_counts(
             es, cfg, status=status_list if status_list else None,
         )
+        # Findings v2 step 3 — three-section page header relies on this.
+        data["stream_counts"] = findings_mod.stream_counts(
+            es, cfg, status=status_list if status_list else None,
+        )
         return JSONResponse(data)
 
     @app.get("/api/finding/{finding_id}")
     def finding_detail_api(finding_id: str) -> JSONResponse:
         data = findings_mod.get_finding(es, cfg, finding_id)
+        if data is None:
+            raise HTTPException(404, f"finding not found: {finding_id}")
+        return JSONResponse(data)
+
+    @app.get("/api/finding/{finding_id}/detail")
+    def finding_detail_drawer_api(finding_id: str) -> JSONResponse:
+        """Findings v2 step 6 — payload for the slide-in drawer.
+
+        Adds server-side joins to the base finding: lifecycle doc
+        snapshot history + anchors, top-3 novel commands, top-5 member
+        IPs with intel pills, convergent campaigns.
+
+        Falls back to the base finding (with a `detail_error` field) if
+        the join step raises — covers the partial-deploy case where the
+        venv's FindingsIndexes is stale relative to the route code.
+        """
+        try:
+            data = findings_mod.get_finding_detail(es, cfg, finding_id)
+        except Exception as exc:
+            log.exception("finding_detail_drawer_api failed for %s", finding_id)
+            try:
+                base = findings_mod.get_finding(es, cfg, finding_id)
+            except Exception:
+                base = None
+            if base is None:
+                raise HTTPException(500, f"detail load failed: {exc}")
+            base["detail_error"] = str(exc)
+            return JSONResponse(base)
         if data is None:
             raise HTTPException(404, f"finding not found: {finding_id}")
         return JSONResponse(data)
@@ -286,6 +320,7 @@ def build_app(config_path: str | None = None) -> FastAPI:
             updated = mutate_status(
                 es, cfg.findings.indexes.default, finding_id,
                 new_status=body.status, note=body.note,
+                cfg=cfg,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc))

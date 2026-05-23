@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
 from elasticsearch import Elasticsearch
@@ -43,6 +43,57 @@ def _read_doc(es: Elasticsearch, index: str, doc_id: str) -> dict:
         return existing.get("_source") or {}
     except Exception:
         return {}
+
+
+def _find_predecessor(
+    es: Elasticsearch,
+    index: str,
+    *,
+    name: Optional[str],
+    name_field: str,
+    current_id: str,
+    id_field: str,
+    max_age_runs: int,
+) -> Optional[dict]:
+    """ROADMAP P2.1 — name-based co-identification.
+
+    Find a lifecycle doc with the same `name` (e.g. `playbook_name`)
+    whose `last_seen` is within `max_age_runs * 6h` of now AND whose
+    id differs from `current_id`. The most-recent match is returned —
+    its `confirm_anchors[]` and `drift_suppressions[]` are inherited
+    by the caller before writing the new doc.
+
+    Returns the predecessor's `_source` or None. Defensive against
+    missing index / empty name / query failures (returns None).
+    """
+    if not name or max_age_runs <= 0:
+        return None
+    if not es.indices.exists(index=index):
+        return None
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(hours=max_age_runs * 6)
+    ).isoformat()
+    try:
+        resp = es.search(
+            index=index, size=1,
+            query={"bool": {
+                "must": [
+                    {"term":  {f"{name_field}.keyword": name}},
+                    {"range": {"last_seen": {"gte": cutoff}}},
+                ],
+                "must_not": [{"term": {id_field: current_id}}],
+            }},
+            sort=[{"last_seen": {"order": "desc"}}],
+            _source=[id_field, "confirm_anchors", "drift_suppressions",
+                     "inherited_from", "last_seen"],
+        )
+        hits = resp.get("hits", {}).get("hits") or []
+        if not hits:
+            return None
+        return hits[0].get("_source") or None
+    except Exception as exc:
+        log.warning("[lifecycle] predecessor lookup on %s failed: %s", index, exc)
+        return None
 
 
 def _apply_snapshot(
@@ -98,9 +149,55 @@ def update_playbook_lifecycle(
     run_id: str,
     snapshot: dict,
     snapshot_cap: int = 30,
+    coidentification_max_age_runs: int = 2,
 ) -> str:
-    """Upsert a single playbook lifecycle doc. Returns the doc id."""
+    """Upsert a single playbook lifecycle doc. Returns the doc id.
+
+    ROADMAP P2.1: when this is the first write for `playbook_id`, look
+    for a same-name predecessor lifecycle doc whose `last_seen` is
+    within `coidentification_max_age_runs * 6h`. If found, inherit its
+    `confirm_anchors[]` and `drift_suppressions[]` and append the old
+    id to `inherited_from[]`. Defends against content-addressed-id
+    churn (membership-change → new id) erasing analyst confirms.
+    """
     doc = _read_doc(es, index, playbook_id)
+    is_new = not doc
+    inherited_from: list[str] = []
+    if is_new and playbook_name:
+        pred = _find_predecessor(
+            es, index,
+            name=playbook_name, name_field="playbook_name",
+            current_id=playbook_id, id_field="playbook_id",
+            max_age_runs=coidentification_max_age_runs,
+        )
+        if pred:
+            # Inherit analyst-managed state. Lifecycle bookkeeping
+            # (first_seen_ever, runs_observed, snapshots) stays fresh
+            # so the doc honestly reflects "this id is new"; the
+            # inherited_from chain is the audit trail. The doc is
+            # fully-initialised here so `_apply_snapshot` skips its
+            # init block but still finds the bookkeeping fields it
+            # increments.
+            ts = snapshot.get("@timestamp") or _now_iso()
+            doc = {
+                "playbook_id":        playbook_id,
+                "first_seen_ever":    ts,
+                "first_run_id":       run_id,
+                "runs_observed":      0,
+                "silent_runs_current": 0,
+                "snapshots":          [],
+                "confirm_anchors":    list(pred.get("confirm_anchors") or []),
+                "drift_suppressions": list(pred.get("drift_suppressions") or []),
+            }
+            prior_chain = list(pred.get("inherited_from") or [])
+            old_id = pred.get("playbook_id")
+            inherited_from = prior_chain + ([old_id] if old_id else [])
+            log.info(
+                "[lifecycle] playbook %s inherits %d anchor(s) + %d suppression(s) from %s (same name: %r)",
+                playbook_id,
+                len(doc["confirm_anchors"]), len(doc["drift_suppressions"]),
+                old_id, playbook_name,
+            )
     extra: dict = {}
     if playbook_name:
         extra["playbook_name"] = playbook_name
@@ -117,6 +214,8 @@ def update_playbook_lifecycle(
     # regenerated by `name playbooks`.
     if playbook_name:
         doc["playbook_name"] = playbook_name
+    if inherited_from:
+        doc["inherited_from"] = inherited_from
     es.index(index=index, id=playbook_id, document=doc, refresh=False)
     return playbook_id
 
@@ -131,9 +230,45 @@ def update_campaign_lifecycle(
     run_id: str,
     snapshot: dict,
     snapshot_cap: int = 30,
+    coidentification_max_age_runs: int = 2,
 ) -> str:
-    """Upsert a single campaign lifecycle doc. Returns the doc id."""
+    """Upsert a single campaign lifecycle doc. Returns the doc id.
+
+    ROADMAP P2.1: same name-based inheritance as `update_playbook_lifecycle`
+    — campaign ids are also content-hashed (over sorted playbook id set)
+    and shift when membership changes.
+    """
     doc = _read_doc(es, index, campaign_id)
+    is_new = not doc
+    inherited_from: list[str] = []
+    if is_new and campaign_name:
+        pred = _find_predecessor(
+            es, index,
+            name=campaign_name, name_field="campaign_name",
+            current_id=campaign_id, id_field="campaign_id",
+            max_age_runs=coidentification_max_age_runs,
+        )
+        if pred:
+            ts = snapshot.get("@timestamp") or _now_iso()
+            doc = {
+                "campaign_id":        campaign_id,
+                "first_seen_ever":    ts,
+                "first_run_id":       run_id,
+                "runs_observed":      0,
+                "silent_runs_current": 0,
+                "snapshots":          [],
+                "confirm_anchors":    list(pred.get("confirm_anchors") or []),
+                "drift_suppressions": list(pred.get("drift_suppressions") or []),
+            }
+            prior_chain = list(pred.get("inherited_from") or [])
+            old_id = pred.get("campaign_id")
+            inherited_from = prior_chain + ([old_id] if old_id else [])
+            log.info(
+                "[lifecycle] campaign %s inherits %d anchor(s) + %d suppression(s) from %s (same name: %r)",
+                campaign_id,
+                len(doc["confirm_anchors"]), len(doc["drift_suppressions"]),
+                old_id, campaign_name,
+            )
     extra: dict = {}
     if campaign_name:
         extra["campaign_name"] = campaign_name
@@ -152,6 +287,8 @@ def update_campaign_lifecycle(
         doc["campaign_name"] = campaign_name
     if campaign_kind:
         doc["campaign_kind"] = campaign_kind
+    if inherited_from:
+        doc["inherited_from"] = inherited_from
     es.index(index=index, id=campaign_id, document=doc, refresh=False)
     return campaign_id
 
@@ -185,6 +322,239 @@ def update_source_ip_lifecycle(
     doc.pop("drift_suppressions", None)
     es.index(index=index, id=source_ip, document=doc, refresh=False)
     return source_ip
+
+
+COVERAGE_KINDS: frozenset[str] = frozenset({"playbook", "campaign"})
+DRIFT_KINDS: frozenset[str] = frozenset({
+    "playbook_command_drift", "playbook_artifact_drift", "playbook_geo_drift",
+    "playbook_size_drift", "playbook_resurgence", "playbook_sequence_drift",
+    "campaign_growth",
+})
+
+
+def _append_to_list_field(
+    es: Elasticsearch, index: str, artifact_id: str, field: str, entry: dict,
+) -> bool:
+    """Read-modify-write append of `entry` to a nested-list field on a
+    lifecycle doc. Returns True on success.
+
+    Used for `confirm_anchors[]` and `drift_suppressions[]` — both
+    append-only by design (history-as-audit-trail).
+    """
+    try:
+        existing = es.get(index=index, id=artifact_id)
+        doc = existing.get("_source") or {}
+    except Exception as exc:
+        log.warning("[lifecycle] cannot read %s/%s for append: %s", index, artifact_id, exc)
+        return False
+    arr = list(doc.get(field) or [])
+    arr.append(entry)
+    doc[field] = arr
+    es.index(index=index, id=artifact_id, document=doc, refresh=False)
+    return True
+
+
+def write_confirm_anchor(
+    es: Elasticsearch, index: str, *, artifact_id: str, anchor: dict,
+) -> bool:
+    """Append an anchor (analyst or provisional) to `confirm_anchors[]` on
+    the lifecycle doc. `anchor["source"]` must be `"analyst"` or
+    `"provisional"`.
+
+    Drift detectors (step 4) read the latest anchor regardless of source.
+    Older anchors stay as audit trail.
+    """
+    if anchor.get("source") not in ("analyst", "provisional"):
+        raise ValueError(f"anchor source must be 'analyst' or 'provisional', got {anchor.get('source')!r}")
+    return _append_to_list_field(es, index, artifact_id, "confirm_anchors", anchor)
+
+
+def write_provisional_anchor(
+    es: Elasticsearch, index: str, *, artifact_id: str, anchor: dict,
+) -> bool:
+    """Same as `write_confirm_anchor` with `source` forced to 'provisional'."""
+    anchor = {**anchor, "source": "provisional"}
+    return _append_to_list_field(es, index, artifact_id, "confirm_anchors", anchor)
+
+
+def record_drift_suppression(
+    es: Elasticsearch, index: str, *, artifact_id: str, delta_signature: str, kind: str,
+) -> bool:
+    """Record a rejected drift's `delta_signature` so the miner skips it on
+    future runs. Append-only — the analyst can un-reject via a fresh
+    confirm anchor, which rebaselines and effectively voids prior
+    suppressions.
+    """
+    entry = {
+        "delta_signature": delta_signature,
+        "kind": kind,
+        "ts": _now_iso(),
+    }
+    return _append_to_list_field(es, index, artifact_id, "drift_suppressions", entry)
+
+
+def remove_anchors_by_source(
+    es: Elasticsearch, index: str, *, artifact_id: str, source: str,
+) -> int:
+    """Drop every anchor with the given `source` from a lifecycle doc.
+    Used when the analyst rejects a coverage finding — strip provisional
+    AND analyst anchors so drift no longer fires on the artifact.
+
+    Returns the number of anchors removed.
+    """
+    try:
+        existing = es.get(index=index, id=artifact_id)
+        doc = existing.get("_source") or {}
+    except Exception as exc:
+        log.warning("[lifecycle] cannot read %s/%s for anchor removal: %s", index, artifact_id, exc)
+        return 0
+    arr = list(doc.get("confirm_anchors") or [])
+    kept = [a for a in arr if a.get("source") != source]
+    removed = len(arr) - len(kept)
+    if removed:
+        doc["confirm_anchors"] = kept
+        es.index(index=index, id=artifact_id, document=doc, refresh=False)
+    return removed
+
+
+def build_anchor_payload(
+    es: Elasticsearch,
+    cfg,
+    *,
+    artifact_kind: str,
+    artifact_id: str,
+    source: str,
+    confirming_finding_id: Optional[str] = None,
+) -> dict:
+    """Materialise an anchor doc from the current state of `artifact_id`.
+
+    Pulls the latest snapshot from the lifecycle doc for asn/intent/size
+    info, then queries the session rollup to compute mode-aggregated
+    command + bigram signatures + capped command_set / artifact_set
+    unions across the artifact's member sessions. The latest cluster
+    `run_id` is read from session_clusters so the anchor is keyed to
+    the run the analyst was looking at when they confirmed.
+
+    `source` is `"analyst"` (called from mutate_status) or
+    `"provisional"` (called from `track lifecycles` after N stable runs).
+    """
+    f_idx = cfg.findings.indexes
+    cowrie_idx = cfg.elasticsearch.indexes.cowrie
+
+    # Lifecycle doc → asn/intent/size from latest snapshot.
+    if artifact_kind == "playbook":
+        lc_index = f_idx.playbook_lifecycle
+        sess_filter_field = "dshield.cowrie.enrichment.session.playbook_id"
+    elif artifact_kind == "campaign":
+        lc_index = f_idx.campaign_lifecycle
+        sess_filter_field = "dshield.cowrie.enrichment.session.playbook_id"
+    else:
+        raise ValueError(f"anchor build not supported for artifact_kind={artifact_kind!r}")
+
+    snap_asn: dict = {}
+    snap_intent: Optional[str] = None
+    snap_session_count = 0
+    snap_ip_count = 0
+    try:
+        lc_doc = (es.get(index=lc_index, id=artifact_id) or {}).get("_source") or {}
+    except Exception:
+        lc_doc = {}
+    snaps = lc_doc.get("snapshots") or []
+    if snaps:
+        latest = snaps[-1]
+        snap_asn = latest.get("asn_distribution") or {}
+        snap_intent = latest.get("dominant_intent")
+        snap_session_count = int(latest.get("session_count") or 0)
+        snap_ip_count = int(latest.get("ip_count") or 0)
+
+    # Latest cluster run_id from session_clusters.
+    confirmed_run_id: Optional[str] = None
+    try:
+        resp = es.search(
+            index=cowrie_idx.session_clusters,
+            size=1,
+            query={"term": {"doc_type": "cluster"}},
+            sort=[{"@timestamp": "desc"}],
+            _source=["run_id"],
+        )
+        h = resp["hits"]["hits"]
+        if h:
+            confirmed_run_id = h[0]["_source"].get("run_id")
+    except Exception:
+        pass
+
+    # Session aggregations — for campaign, sess_filter_field is wrong (we'd
+    # want member_session_ids from the campaign doc). Step 2 ships playbook
+    # anchors with full signatures; campaign anchors get the snapshot-level
+    # fields only and the signature lookups are skipped. Step 4 widens
+    # campaign anchors once a campaign-session join exists.
+    command_signature_mode: Optional[str] = None
+    bigram_signature_mode: Optional[str] = None
+    command_set: list[str] = []
+    artifact_set: list[str] = []
+
+    if artifact_kind == "playbook":
+        try:
+            agg_resp = es.search(
+                index=cowrie_idx.sessions_rollup,
+                size=0,
+                query={"term": {sess_filter_field: artifact_id}},
+                aggs={
+                    "cmd_sig":    {"terms": {"field": "dshield.cowrie.enrichment.session.command_signature.keyword", "size": 1}},
+                    "bigram_sig": {"terms": {"field": "dshield.cowrie.enrichment.session.command_bigram_signature.keyword", "size": 1}},
+                    "artifacts":  {"terms": {"field": "dshield.cowrie.enrichment.session.artifact_set.keyword", "size": 200}},
+                },
+            )
+            aggs = agg_resp.get("aggregations") or {}
+            cs_buckets = ((aggs.get("cmd_sig") or {}).get("buckets")) or []
+            if cs_buckets:
+                command_signature_mode = cs_buckets[0]["key"]
+            bs_buckets = ((aggs.get("bigram_sig") or {}).get("buckets")) or []
+            if bs_buckets:
+                bigram_signature_mode = bs_buckets[0]["key"]
+            a_buckets = ((aggs.get("artifacts") or {}).get("buckets")) or []
+            artifact_set = [b["key"] for b in a_buckets]
+        except Exception as exc:
+            log.warning("[lifecycle] anchor session-agg for %s failed: %s", artifact_id, exc)
+
+    import hashlib
+    artifact_signature = (
+        hashlib.sha256("|".join(sorted(artifact_set)).encode("utf-8")).hexdigest()[:32]
+        if artifact_set else None
+    )
+
+    anchor: dict = {
+        "ts": _now_iso(),
+        "source": source,
+        "confirmed_run_id": confirmed_run_id,
+        "confirming_finding_id": confirming_finding_id,
+        "session_count": snap_session_count,
+        "ip_count": snap_ip_count,
+        "asn_distribution": snap_asn,
+        "dominant_intent": snap_intent,
+    }
+    if command_signature_mode:
+        anchor["command_signature"] = command_signature_mode
+    if bigram_signature_mode:
+        anchor["command_bigram_signature"] = bigram_signature_mode
+    if artifact_set:
+        anchor["artifact_set"] = artifact_set
+    if artifact_signature:
+        anchor["artifact_signature"] = artifact_signature
+    if command_set:
+        anchor["command_set"] = command_set
+    return anchor
+
+
+def kind_classification(kind: str) -> str:
+    """`'coverage' | 'drift' | 'discovery'`. Used by `mutate_status` to
+    route lifecycle side effects on status transitions.
+    """
+    if kind in COVERAGE_KINDS:
+        return "coverage"
+    if kind in DRIFT_KINDS:
+        return "drift"
+    return "discovery"
 
 
 def increment_silent_runs(
@@ -424,6 +794,68 @@ def _iter_current_ips(es: Elasticsearch, ips_idx: str) -> Iterable[dict]:
         search_after = hits[-1]["sort"]
 
 
+def _sweep_provisional_anchors(
+    es: Elasticsearch,
+    cfg,
+    *,
+    lifecycle_index: str,
+    artifact_kind: str,
+    key_field: str,
+    stable_min: int,
+    run_id: str,
+) -> int:
+    """Find all lifecycle docs eligible for a provisional anchor and write one.
+
+    Eligibility: `runs_observed >= stable_min` AND `silent_runs_current == 0`
+    AND no entry in `confirm_anchors[]` yet. Returns the number of anchors
+    written. ROADMAP / findings-v2 step 2.
+    """
+    if not es.indices.exists(index=lifecycle_index):
+        return 0
+    # `confirm_anchors` is a nested field; the "empty" check needs `script` or
+    # a "nested" must_not exists. Cheap path: pull candidates that satisfy the
+    # numeric gates, then filter in Python on the nested array length. The
+    # candidate set is small (~hundreds at most) so no scaling concern.
+    body = {
+        "size": 1000,
+        "query": {
+            "bool": {
+                "must": [
+                    {"range": {"runs_observed":       {"gte": stable_min}}},
+                    {"term":  {"silent_runs_current": 0}},
+                ]
+            }
+        },
+        "_source": [key_field, "confirm_anchors"],
+    }
+    try:
+        resp = es.search(index=lifecycle_index, **body)
+    except Exception as exc:
+        log.warning("[lifecycle] provisional-anchor sweep on %s failed: %s", lifecycle_index, exc)
+        return 0
+
+    written = 0
+    for h in resp["hits"]["hits"]:
+        src = h["_source"]
+        if src.get("confirm_anchors"):
+            continue
+        artifact_id = src.get(key_field) or h["_id"]
+        try:
+            payload = build_anchor_payload(
+                es, cfg,
+                artifact_kind=artifact_kind,
+                artifact_id=artifact_id,
+                source="provisional",
+                confirming_finding_id=None,
+            )
+        except Exception as exc:
+            log.warning("[lifecycle] provisional anchor build for %s failed: %s", artifact_id, exc)
+            continue
+        if write_provisional_anchor(es, lifecycle_index, artifact_id=artifact_id, anchor=payload):
+            written += 1
+    return written
+
+
 def run_track_lifecycles(cfg, secrets, *, dry_run: bool = False) -> dict:
     """End-to-end lifecycle pass: append this-run snapshots for every active
     playbook, campaign, and source IP; bump `silent_runs_current` on the rest.
@@ -436,6 +868,9 @@ def run_track_lifecycles(cfg, secrets, *, dry_run: bool = False) -> dict:
     es = make_client(cfg.elasticsearch, secrets)
 
     cap = int(cfg.findings.lifecycle.snapshot_cap)
+    coid_runs = int(
+        getattr(cfg.findings.lifecycle, "coidentification_max_age_runs", 2)
+    )
     f_idx = cfg.findings.indexes
     cowrie_idx = cfg.elasticsearch.indexes.cowrie
 
@@ -475,6 +910,7 @@ def run_track_lifecycles(cfg, secrets, *, dry_run: bool = False) -> dict:
                 run_id=run_id,
                 snapshot=snapshot,
                 snapshot_cap=cap,
+                coidentification_max_age_runs=coid_runs,
             )
             stats["playbook"]["updated"] += 1
         except Exception as exc:
@@ -504,6 +940,7 @@ def run_track_lifecycles(cfg, secrets, *, dry_run: bool = False) -> dict:
                 run_id=run_id,
                 snapshot=snapshot,
                 snapshot_cap=cap,
+                coidentification_max_age_runs=coid_runs,
             )
             stats["campaign"]["updated"] += 1
         except Exception as exc:
@@ -536,6 +973,36 @@ def run_track_lifecycles(cfg, secrets, *, dry_run: bool = False) -> dict:
             stats["source_ip"]["updated"] += 1
         except Exception as exc:
             stats["errors"].append({"layer": "source_ip", "id": ip["source_ip"], "error": str(exc)})
+
+    # --- Provisional anchors: write one on any playbook/campaign that has
+    # been stable for N runs and has no anchor yet. "Stable" today is a
+    # coarse proxy: runs_observed >= N AND silent_runs_current == 0 AND
+    # confirm_anchors[] is empty. Step 2 implementation; can be tightened
+    # later to require command_signature consistency across the last N
+    # snapshots (would need the field promoted to snapshot level first).
+    if not dry_run:
+        stable_min = int(cfg.findings.lifecycle.provisional_stable_runs)
+        # Refresh the lifecycle indexes once so the just-written snapshots are
+        # visible to the sweep query below.
+        try:
+            es.indices.refresh(index=",".join([
+                f_idx.playbook_lifecycle, f_idx.campaign_lifecycle,
+            ]))
+        except Exception:
+            pass
+        for lc_index, artifact_kind, key_field in (
+            (f_idx.playbook_lifecycle, "playbook", "playbook_id"),
+            (f_idx.campaign_lifecycle, "campaign", "campaign_id"),
+        ):
+            written = _sweep_provisional_anchors(
+                es, cfg,
+                lifecycle_index=lc_index,
+                artifact_kind=artifact_kind,
+                key_field=key_field,
+                stable_min=stable_min,
+                run_id=run_id,
+            )
+            stats[artifact_kind]["provisional_anchors_written"] = written
 
     # --- Silent-run bump on the artifacts we did NOT touch this run --------
     if not dry_run:

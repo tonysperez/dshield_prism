@@ -37,6 +37,67 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _tombstone_orphan_findings(
+    es: Elasticsearch,
+    findings_idx: str,
+    all_findings: list[dict[str, Any]],
+    *,
+    artifact_kinds: tuple[str, ...],
+) -> int:
+    """Delete every finding in `findings_idx` whose `(artifact.kind,
+    artifact.value)` doesn't appear in `all_findings`, scoped to the
+    given `artifact_kinds`.
+
+    Content-addressed playbook + campaign ids shift across clustering
+    passes, leaving stale finding docs whose underlying artifact no
+    longer exists. The mining list IS the source of truth for "what
+    currently exists" — anything in the index whose artifact isn't
+    represented is, by definition, orphaned.
+
+    Safety: when the live set for a given artifact_kind is empty we
+    skip — avoids wiping every finding of that kind during a degraded
+    run where the source miner produced 0 results.
+    """
+    from collections import defaultdict
+    live_by_kind: dict[str, set[str]] = defaultdict(set)
+    for f in all_findings:
+        a = f.get("artifact") or {}
+        k, v = a.get("kind"), a.get("value")
+        if k and v:
+            live_by_kind[k].add(v)
+
+    total = 0
+    for kind in artifact_kinds:
+        live = live_by_kind.get(kind) or set()
+        if not live:
+            log.info(
+                "findings tombstone: skipping artifact_kind=%s (live set empty)", kind,
+            )
+            continue
+        try:
+            resp = es.delete_by_query(
+                index=findings_idx,
+                body={"query": {"bool": {
+                    "must":     [{"term":  {"artifact.kind": kind}}],
+                    "must_not": [{"terms": {"artifact.value": list(live)}}],
+                }}},
+                conflicts="proceed",
+                refresh=True,
+            )
+            deleted = int(resp.get("deleted") or 0)
+            total += deleted
+            if deleted:
+                log.info(
+                    "findings tombstone: %d orphan finding(s) deleted for artifact_kind=%s",
+                    deleted, kind,
+                )
+        except Exception as exc:
+            log.warning(
+                "findings tombstone for artifact_kind=%s failed: %s", kind, exc,
+            )
+    return total
+
+
 # ---------------------------------------------------------------------------
 # Playbook findings
 # ---------------------------------------------------------------------------
@@ -330,24 +391,98 @@ def run_mine(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) -> dict[st
     playbooks = _mine_playbooks(es, cfg, run_id)
     campaigns = _mine_campaigns(es, cfg, run_id)
 
+    # Findings v2 step 3 — discovery (stream B) miners. Read from the
+    # lifecycle indices populated by `track lifecycles`. No-op when those
+    # indices don't exist yet (fresh deploy where step 1 hasn't run).
+    from .discovery import run_discovery
+    discovery_by_kind = run_discovery(es, cfg, run_id)
+    discovery_findings: list = []
+    discovery_stats: dict[str, int] = {}
+    for kind, items in discovery_by_kind.items():
+        discovery_findings.extend(items)
+        discovery_stats[kind] = len(items)
+
+    # Findings v2 step 4 — drift (stream A) miners. Walk anchored
+    # playbooks + campaigns; diff current state against latest anchor.
+    from .drift import run_drift
+    drift_by_kind = run_drift(es, cfg, run_id)
+    drift_findings: list = []
+    drift_stats: dict[str, int] = {}
+    for kind, items in drift_by_kind.items():
+        drift_findings.extend(items)
+        drift_stats[kind] = len(items)
+
+    # Findings v2 step 5 — drift narratives. Attach LLM-generated
+    # one-sentence summaries to drift findings (or reuse cached ones
+    # already on the doc). Skipped for kinds whose structured narrative
+    # is already self-explanatory. Best-effort: failures fall back to
+    # the structured `narrative` set by the drift miner.
+    narrative_stats: dict[str, int] = {
+        "cached": 0, "generated": 0, "budget_skipped": 0, "skipped_kind": 0, "failed": 0,
+    }
+    if not dry_run and drift_findings:
+        try:
+            from .narrative import attach_drift_narratives
+            from ..cache import StateDB
+            db = StateDB(cfg.worker.state_db)
+            try:
+                narrative_stats = attach_drift_narratives(
+                    es, cfg, secrets, db, findings_idx, drift_findings,
+                )
+            finally:
+                db.close()
+        except Exception as exc:
+            log.warning("findings: attach_drift_narratives failed: %s", exc)
+
     written_pb = 0
     written_cmp = 0
+    written_disc = 0
+    written_drift = 0
     if not dry_run:
         written_pb = bulk_upsert_findings(es, findings_idx, playbooks)
         written_cmp = bulk_upsert_findings(es, findings_idx, campaigns)
+        written_disc = bulk_upsert_findings(es, findings_idx, discovery_findings)
+        written_drift = bulk_upsert_findings(es, findings_idx, drift_findings)
         try:
             es.indices.refresh(index=findings_idx)
         except Exception:
             pass
 
+    # Garbage-collect orphan findings. Content-addressed playbook_id /
+    # campaign_id values shift legitimately when playbook membership
+    # re-forms across a clustering pass, leaving stale finding docs whose
+    # artifact no longer exists anywhere. Without this sweep the Findings
+    # page diverges from Insights (which reads the source index directly).
+    # Policy: wipe every finding whose (artifact.kind, artifact.value)
+    # doesn't appear in this run's emitted set, regardless of analyst
+    # status. Only runs on artifact kinds we have a comprehensive
+    # source-of-truth check for (playbook + campaign); IP-keyed discovery
+    # findings keep their docs since "this IP shifted last week" stays
+    # arguably useful even when the IP isn't active right now.
+    tombstoned = 0
+    if not dry_run:
+        all_findings = playbooks + campaigns + discovery_findings + drift_findings
+        tombstoned = _tombstone_orphan_findings(
+            es, findings_idx, all_findings,
+            artifact_kinds=("playbook", "campaign"),
+        )
+
     elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
     stats = {
         "run_id": run_id,
         "dry_run": dry_run,
+        "tombstoned":        tombstoned,
         "playbooks_mined":   len(playbooks),
         "playbooks_written": written_pb,
         "campaigns_mined":   len(campaigns),
         "campaigns_written": written_cmp,
+        "discovery_mined":   len(discovery_findings),
+        "discovery_written": written_disc,
+        "discovery_by_kind": discovery_stats,
+        "drift_mined":       len(drift_findings),
+        "drift_written":     written_drift,
+        "drift_by_kind":     drift_stats,
+        "narrative_stats":   narrative_stats,
         "elapsed_seconds":   round(elapsed, 2),
     }
     log.info("mine findings: %s", stats)

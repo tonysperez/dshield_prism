@@ -5,14 +5,15 @@
   <title>DShield Findings</title>
   <link rel="stylesheet" href="/static/css/app.css" />
   <style>
-    /* Findings-specific layout — not shared with the graph page */
+    /* Findings v2 — three-section accordion + slide-in drawer.
+       Single-page layout, no shared CSS with the graph page. */
 
     #findings-main {
-      max-width: 1280px;
+      max-width: 1400px;
       margin: 0 auto;
       padding: 16px 20px 60px;
-      display: flex;
-      flex-direction: column;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
       gap: 18px;
     }
 
@@ -28,152 +29,204 @@
       gap: 10px;
     }
     .fnd-hint {
-      font-size: 11px;
-      font-weight: 400;
-      text-transform: none;
-      letter-spacing: 0;
-      color: #4a5470;
+      font-size: 11px; font-weight: 400; text-transform: none;
+      letter-spacing: 0; color: #4a5470;
     }
 
-    /* Status / kind filter chips */
+    /* Filter chips */
     .fnd-filters {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-bottom: 8px;
+      display: flex; align-items: center; gap: 8px;
+      flex-wrap: wrap; margin-bottom: 8px;
     }
     .fnd-chip {
-      font-size: 11px;
-      font-weight: 600;
-      color: #b9c2db;
-      background: #0e1e35;
-      border: 1px solid #25324c;
-      border-radius: 999px;
-      padding: 3px 11px;
-      cursor: pointer;
-      user-select: none;
-      white-space: nowrap;
+      font-size: 11px; font-weight: 600; color: #b9c2db;
+      background: #0e1e35; border: 1px solid #25324c;
+      border-radius: 999px; padding: 3px 11px;
+      cursor: pointer; user-select: none; white-space: nowrap;
     }
     .fnd-chip:hover { background: #1a2d4e; }
     .fnd-chip.active {
-      color: #4cc1ff;
-      border-color: #4cc1ff80;
-      background: #0a1929;
+      color: #4cc1ff; border-color: #4cc1ff80; background: #0a1929;
     }
-    .fnd-chip .count {
-      opacity: 0.6;
-      margin-left: 5px;
-      font-weight: 400;
-    }
+    .fnd-chip .count { opacity: 0.6; margin-left: 5px; font-weight: 400; }
     .fnd-filter-label {
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.6px;
-      color: #6b7494;
-      margin-right: 4px;
+      font-size: 10px; text-transform: uppercase;
+      letter-spacing: 0.6px; color: #6b7494; margin-right: 4px;
+    }
+    .fnd-sort { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+    .fnd-sort select {
+      background: #0a121f; color: #b9c2db;
+      border: 1px solid #25324c; border-radius: 4px;
+      font-size: 11px; padding: 2px 6px;
     }
 
-    /* Sort control */
-    .fnd-sort {
-      margin-left: auto;
-      display: flex;
-      align-items: center;
-      gap: 6px;
+    /* Accordion sections */
+    .fnd-accordion-head {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 12px; cursor: pointer;
+      background: #0e1e35; border: 1px solid #1d2840;
+      border-radius: 5px 5px 0 0;
     }
-    .fnd-sort select {
-      background: #0a121f;
-      color: #b9c2db;
-      border: 1px solid #25324c;
-      border-radius: 4px;
-      font-size: 11px;
-      padding: 2px 6px;
+    .fnd-accordion-head .triangle {
+      transition: transform 0.18s; color: #6b7494;
     }
+    .fnd-accordion.collapsed .triangle { transform: rotate(-90deg); }
+    .fnd-accordion-head .label {
+      font-size: 13px; font-weight: 600; color: #c8d0e2;
+    }
+    .fnd-accordion-head .count {
+      font-size: 11px; color: #6b7494; font-weight: 400;
+    }
+    .fnd-accordion-head .stream-hint {
+      margin-left: auto; font-size: 11px; color: #6b7494;
+    }
+    .fnd-accordion-body {
+      border: 1px solid #1d2840; border-top: 0;
+      border-radius: 0 0 5px 5px; padding: 0;
+    }
+    .fnd-accordion.collapsed .fnd-accordion-body { display: none; }
+    .fnd-stream-drift     .fnd-accordion-head { border-color: #c084fc40; }
+    .fnd-stream-discovery .fnd-accordion-head { border-color: #4cc1ff40; }
+    .fnd-stream-coverage  .fnd-accordion-head { border-color: #25324c; }
 
     /* Findings table */
-    #findings-table-wrap {
-      overflow-x: auto;
-    }
     table.fnd-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
+      width: 100%; border-collapse: collapse; font-size: 12px;
     }
     table.fnd-table th, table.fnd-table td {
-      text-align: left;
-      padding: 6px 10px;
-      border-bottom: 1px solid #1d2840;
-      vertical-align: top;
+      text-align: left; padding: 6px 10px;
+      border-bottom: 1px solid #1d2840; vertical-align: top;
     }
     table.fnd-table th {
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.6px;
-      color: #6b7494;
-      font-weight: 600;
-      background: #0a121f;
-      position: sticky;
-      top: 0;
+      font-size: 10px; text-transform: uppercase;
+      letter-spacing: 0.6px; color: #6b7494; font-weight: 600;
+      background: #0a121f; position: sticky; top: 0;
     }
     table.fnd-table td.score { font-variant-numeric: tabular-nums; }
-    table.fnd-table td.artifact a {
-      color: #4cc1ff;
-      text-decoration: none;
-    }
+    table.fnd-table td.artifact a { color: #4cc1ff; text-decoration: none; }
     table.fnd-table td.artifact a:hover { text-decoration: underline; }
-    table.fnd-table tr:hover td { background: #0e1e35; }
-    table.fnd-table td.size {
-      font-variant-numeric: tabular-nums;
-      white-space: nowrap;
-    }
+    table.fnd-table tr.fnd-row { cursor: pointer; }
+    table.fnd-table tr.fnd-row:hover td { background: #0e1e35; }
+    table.fnd-table td.size { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
     .fnd-kind-badge {
-      font-size: 10px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.6px;
-      padding: 1px 6px;
-      border-radius: 3px;
-      border: 1px solid #25324c;
+      font-size: 10px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.6px; padding: 1px 6px;
+      border-radius: 3px; border: 1px solid #25324c;
+      display: inline-block;
     }
     .fnd-kind-playbook { background: #0a1929; color: #4cc1ff; border-color: #4cc1ff60; }
     .fnd-kind-campaign { background: #1a0e29; color: #c084fc; border-color: #c084fc60; }
+    .fnd-kind-drift    { background: #29140a; color: #ffa14c; border-color: #ffa14c60; }
+    .fnd-kind-disc     { background: #0a2914; color: #4cffa1; border-color: #4cffa160; }
 
-    /* Status select */
     .fnd-status-select {
-      background: #0a121f;
-      color: #b9c2db;
-      border: 1px solid #25324c;
-      border-radius: 4px;
-      font-size: 11px;
-      padding: 2px 6px;
+      background: #0a121f; color: #b9c2db;
+      border: 1px solid #25324c; border-radius: 4px;
+      font-size: 11px; padding: 2px 6px;
     }
     .fnd-status-select:focus { outline: 1px solid #4cc1ff; outline-offset: 0; }
-
-    /* Narrative cell — wrap-friendly */
     table.fnd-table td.narrative {
-      max-width: 480px;
-      color: #c8d0e2;
-      white-space: normal;
+      max-width: 480px; color: #c8d0e2; white-space: normal;
     }
-
+    .narrative-llm-chip {
+      display: inline-block; margin-left: 4px;
+      font-size: 9px; padding: 0 4px;
+      border: 1px solid #4cc1ff60; border-radius: 3px;
+      color: #4cc1ff60; text-transform: uppercase;
+    }
+    .provisional-chip {
+      display: inline-block; margin-left: 4px;
+      font-size: 9px; padding: 0 4px;
+      border: 1px solid #ffa14c60; border-radius: 3px;
+      color: #ffa14c; text-transform: uppercase;
+    }
     .fnd-empty {
-      padding: 20px;
-      text-align: center;
-      color: #4a5470;
-      font-size: 12px;
+      padding: 20px; text-align: center;
+      color: #4a5470; font-size: 12px;
     }
 
-    /* Topbar nav reuse */
-    .topbar .nav-link {
+    /* Slide-in drawer */
+    #drawer-backdrop {
+      position: fixed; inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      display: none; z-index: 100;
+    }
+    #drawer {
+      position: fixed; top: 0; right: 0; bottom: 0;
+      width: min(600px, 90vw);
+      background: #06101c; border-left: 1px solid #25324c;
+      box-shadow: -8px 0 24px rgba(0, 0, 0, 0.4);
+      transform: translateX(100%);
+      transition: transform 0.2s ease-out;
+      z-index: 101; overflow-y: auto;
+    }
+    #drawer.open { transform: translateX(0); }
+    .drawer-head {
+      padding: 12px 16px;
+      border-bottom: 1px solid #1d2840;
+      position: sticky; top: 0; background: #06101c; z-index: 1;
+    }
+    .drawer-close {
+      float: right; cursor: pointer;
+      background: transparent; color: #6b7494;
+      border: 1px solid #25324c; border-radius: 4px;
+      padding: 2px 8px; font-size: 11px;
+    }
+    .drawer-close:hover { color: #c8d0e2; }
+    .drawer-section {
+      padding: 12px 16px; border-bottom: 1px solid #1d2840;
+    }
+    .drawer-section h4 {
+      font-size: 10px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.7px;
+      color: #6b7494; margin: 0 0 8px;
+    }
+    .drawer-section p,
+    .drawer-section li { font-size: 12px; color: #c8d0e2; }
+    .drawer-section li { margin: 3px 0; }
+    .drawer-meta { font-size: 11px; color: #4a5470; margin-top: 2px; }
+
+    .sparkline { display: block; margin: 4px 0; }
+
+    .intel-pill {
+      display: inline-block; padding: 0 5px;
+      font-size: 9px; border-radius: 2px;
+      border: 1px solid; margin-left: 5px;
+      text-transform: uppercase;
+    }
+    .intel-pill.clean     { color: #4cffa1; border-color: #4cffa160; }
+    .intel-pill.malicious { color: #ff6464; border-color: #ff646460; }
+    .intel-pill.mixed     { color: #ffa14c; border-color: #ffa14c60; }
+    .intel-pill.no_data   { color: #6b7494; border-color: #6b7494; }
+
+    /* Facet rail */
+    @media (min-width: 1024px) {
+      #findings-main { grid-template-columns: 220px minmax(0, 1fr); }
+    }
+    #facet-rail {
       font-size: 11px;
-      color: #4cc1ff;
-      font-weight: 600;
-      background: #0e1e35;
-      border: 1px solid #4cc1ff28;
-      border-radius: 4px;
-      padding: 3px 10px;
-      text-decoration: none;
-      white-space: nowrap;
+      color: #b9c2db;
+    }
+    #facet-rail .facet-group { margin-bottom: 14px; }
+    #facet-rail h5 {
+      font-size: 10px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.7px;
+      color: #6b7494; margin: 0 0 6px;
+    }
+    #facet-rail .facet-row {
+      display: flex; justify-content: space-between;
+      padding: 2px 4px; cursor: pointer; border-radius: 3px;
+    }
+    #facet-rail .facet-row:hover { background: #0e1e35; }
+    #facet-rail .facet-row.active { color: #4cc1ff; background: #0a1929; }
+    #facet-rail .facet-row .count { color: #4a5470; }
+
+    .topbar .nav-link {
+      font-size: 11px; color: #4cc1ff; font-weight: 600;
+      background: #0e1e35; border: 1px solid #4cc1ff28;
+      border-radius: 4px; padding: 3px 10px;
+      text-decoration: none; white-space: nowrap;
     }
     .topbar .nav-link:hover { background: #1a2d4e; }
   </style>
@@ -191,34 +244,70 @@
 
   <main id="findings-main">
 
+    <aside id="facet-rail">
+      <p class="fnd-section-title" style="margin-bottom:8px;">Facets</p>
+      <div class="facet-group">
+        <h5>Status</h5>
+        <div id="status-chips" style="display:flex; flex-direction:column; gap:2px;"></div>
+      </div>
+      <div class="facet-group">
+        <h5>Sort</h5>
+        <select id="sort-select" class="fnd-status-select">
+          <option value="score">score</option>
+          <option value="last_seen">last seen</option>
+          <option value="first_seen">first seen</option>
+        </select>
+      </div>
+    </aside>
+
     <section>
-      <p class="fnd-section-title">Findings — playbooks &amp; campaigns
-        <span class="fnd-hint">one card per playbook and per campaign. Triage with the status dropdown; verdicts persist across re-mines.</span>
+      <p class="fnd-section-title">Findings — drift, discovery, coverage
+        <span class="fnd-hint">click any row to open the detail drawer; confirming a coverage row enables drift watch on the artifact</span>
       </p>
 
-      <div class="fnd-filters">
-        <span class="fnd-filter-label">Status:</span>
-        <span id="status-chips" style="display:contents;"></span>
-      </div>
-      <div class="fnd-filters">
-        <span class="fnd-filter-label">Kind:</span>
-        <span id="kind-chips" style="display:contents;"></span>
-        <span class="fnd-sort">
-          <span class="fnd-filter-label">Sort:</span>
-          <select id="sort-select">
-            <option value="score">score</option>
-            <option value="last_seen">last seen</option>
-            <option value="first_seen">first seen</option>
-          </select>
-        </span>
+      <!-- Three accordion sections. Drift + discovery open by default; coverage collapsed. -->
+      <div id="section-drift" class="fnd-accordion fnd-stream-drift">
+        <div class="fnd-accordion-head" data-stream="drift">
+          <span class="triangle">▼</span>
+          <span class="label">Drift in tracked behavior</span>
+          <span class="count" id="count-drift">0</span>
+          <span class="stream-hint">playbooks &amp; campaigns that changed since their anchor</span>
+        </div>
+        <div class="fnd-accordion-body"><div class="fnd-stream-rows"><em class="fnd-empty">loading…</em></div></div>
       </div>
 
-      <div id="findings-table-wrap">
-        <em class="fnd-empty">loading…</em>
+      <div id="section-discovery" class="fnd-accordion fnd-stream-discovery">
+        <div class="fnd-accordion-head" data-stream="discovery">
+          <span class="triangle">▼</span>
+          <span class="label">New / unknown</span>
+          <span class="count" id="count-discovery">0</span>
+          <span class="stream-hint">first appearances, IPs without a home, intel verdict flips</span>
+        </div>
+        <div class="fnd-accordion-body"><div class="fnd-stream-rows"><em class="fnd-empty">loading…</em></div></div>
+      </div>
+
+      <div id="section-coverage" class="fnd-accordion fnd-stream-coverage collapsed">
+        <div class="fnd-accordion-head" data-stream="coverage">
+          <span class="triangle">▼</span>
+          <span class="label">Coverage / curation</span>
+          <span class="count" id="count-coverage">0</span>
+          <span class="stream-hint">confirm a row here to start tracking drift on it</span>
+        </div>
+        <div class="fnd-accordion-body"><div class="fnd-stream-rows"><em class="fnd-empty">loading…</em></div></div>
       </div>
     </section>
 
   </main>
+
+  <div id="drawer-backdrop"></div>
+  <aside id="drawer" aria-hidden="true">
+    <div class="drawer-head">
+      <button class="drawer-close" type="button" aria-label="Close">close</button>
+      <div id="drawer-title" style="font-size:13px;font-weight:600;color:#c8d0e2;"></div>
+      <div id="drawer-subtitle" class="drawer-meta"></div>
+    </div>
+    <div id="drawer-body"></div>
+  </aside>
 
   <script src="/static/js/findings.js"></script>
 </body>

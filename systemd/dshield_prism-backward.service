@@ -81,6 +81,16 @@ ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/
 # the chain; intel can always catch up on the next backward pass.
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml intel refresh
 
+# --- Step 10: mine findings. Inlined into the backward chain (formerly
+# hourly via dshield_prism-mine-findings.timer) so it always runs AFTER
+# `name playbooks` and `track lifecycles` — without this ordering, the
+# miner can fire in a window where playbook_id has not yet been stamped
+# onto session_clusters, which produced run-scoped fallback findings
+# that orphaned on the next pass and accumulated forever.
+# The mine-findings timer is now disabled by `setup.sh`; this is the
+# canonical schedule.
+ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml mine findings
+
 StandardOutput=journal
 StandardError=journal
 
