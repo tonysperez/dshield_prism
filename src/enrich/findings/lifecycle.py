@@ -502,7 +502,8 @@ def build_anchor_payload(
                 aggs={
                     "cmd_sig":    {"terms": {"field": "dshield.cowrie.enrichment.session.command_signature.keyword", "size": 1}},
                     "bigram_sig": {"terms": {"field": "dshield.cowrie.enrichment.session.command_bigram_signature.keyword", "size": 1}},
-                    "artifacts":  {"terms": {"field": "dshield.cowrie.enrichment.session.artifact_set.keyword", "size": 200}},
+                    "cmd_set":    {"terms": {"field": "dshield.cowrie.enrichment.session.command_set.keyword",        "size": 500}},
+                    "artifacts":  {"terms": {"field": "dshield.cowrie.enrichment.session.artifact_set.keyword",       "size": 200}},
                 },
             )
             aggs = agg_resp.get("aggregations") or {}
@@ -512,6 +513,8 @@ def build_anchor_payload(
             bs_buckets = ((aggs.get("bigram_sig") or {}).get("buckets")) or []
             if bs_buckets:
                 bigram_signature_mode = bs_buckets[0]["key"]
+            cset_buckets = ((aggs.get("cmd_set") or {}).get("buckets")) or []
+            command_set = [b["key"] for b in cset_buckets]
             a_buckets = ((aggs.get("artifacts") or {}).get("buckets")) or []
             artifact_set = [b["key"] for b in a_buckets]
         except Exception as exc:

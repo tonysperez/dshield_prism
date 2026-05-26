@@ -423,6 +423,11 @@ _MAX_CREDENTIALS_PER_SESSION = 200
 # 200 artifacts covers even the most prolific dropper chains.
 _MAX_BIGRAMS_PER_SESSION = 64
 _MAX_ARTIFACTS_PER_SESSION = 200
+# P1a follow-up: literal unique-command hash list per session, so the
+# playbook-level union (terms agg across member sessions) can be Jaccard'd
+# against an anchor's command_set for drift detection. 128 covers the
+# 99.9th percentile session — most have <20 unique commands.
+_MAX_COMMAND_SET_PER_SESSION = 128
 
 
 def _record_credential(credentials_set: set[str], ev: dict) -> None:
@@ -638,6 +643,10 @@ def _build_session_doc(
     }
     if command_signature:
         session_block["command_signature"] = command_signature
+        # P1a follow-up: store the literal unique-command hash list (capped)
+        # so `playbook_command_drift` can compute full Jaccard at the
+        # playbook level (union across member sessions).
+        session_block["command_set"] = sorted_unique[:_MAX_COMMAND_SET_PER_SESSION]
     if bigrams:
         session_block["command_bigram_set"] = bigrams
         session_block["command_bigram_signature"] = command_bigram_signature

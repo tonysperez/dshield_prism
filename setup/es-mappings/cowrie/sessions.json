@@ -118,6 +118,12 @@
                           "keyword": { "type": "keyword", "ignore_above": 64 }
                         }
                       },
+                      "command_set": {
+                        "type": "text",
+                        "fields": {
+                          "keyword": { "type": "keyword", "ignore_above": 32 }
+                        }
+                      },
                       "command_bigram_signature": {
                         "type": "text",
                         "fields": {

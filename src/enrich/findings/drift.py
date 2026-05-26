@@ -12,7 +12,7 @@ Kinds shipped here:
 
   | Kind | Trigger |
   |---|---|
-  | `playbook_command_drift`     | command_signature mode differs from anchor's |
+  | `playbook_command_drift`     | Jaccard(command_set_now, command_set_anchor) < threshold (falls back to signature-equality on pre-P1a anchors) |
   | `playbook_sequence_drift`    | Jaccard(bigram_set_now, bigram_set_anchor) < threshold AND command_drift did NOT fire |
   | `playbook_artifact_drift`    | Jaccard(artifact_set_now, artifact_set_anchor) < 1 - threshold (i.e. set distance >= threshold) |
   | `playbook_geo_drift`         | Cosine distance over normalised ASN distribution >= threshold |
@@ -20,16 +20,12 @@ Kinds shipped here:
   | `playbook_resurgence`        | silent_runs_current >= resurgence_silent_runs then artifact returned this run |
   | `campaign_growth`            | ip_count grew >= pct_min AND >= min_delta_ips on a confirmed/provisional-anchored campaign |
 
-Note on `playbook_command_drift`: the design specifies a Jaccard
-threshold over `command_set`. Materialising the full unique-command set
-at the playbook level requires a per-session join we don't have today
-(sessions carry `command_signature` only, not the literal set), so the
-signature-equality gate ships as the v1 implementation. The threshold
-knob (`drift.command_jaccard_threshold`) is preserved for the followup
-that wires the full set up — interim semantics: anchor signature ==
-current signature → no drift; signatures differ → drift. The bigram
-miner does the full Jaccard since `command_bigram_set` is materialised
-on the rollup.
+`playbook_command_drift` uses the full Jaccard threshold per the design.
+P1a-and-later anchors carry `command_set` (top-K unique-command hash
+union across the playbook's member sessions, materialised by
+`build_anchor_payload`). Legacy anchors written before the field landed
+fall back to signature-equality so existing analyst confirmations keep
+working until they're refreshed.
 """
 from __future__ import annotations
 
@@ -118,6 +114,7 @@ def _aggregate_playbook_state(
     sess_filter = "dshield.cowrie.enrichment.session.playbook_id"
     bigram_field = "dshield.cowrie.enrichment.session.command_bigram_set.keyword"
     artifact_field = "dshield.cowrie.enrichment.session.artifact_set.keyword"
+    cmd_set_field = "dshield.cowrie.enrichment.session.command_set.keyword"
     try:
         resp = es.search(
             index=sessions_idx,
@@ -129,6 +126,7 @@ def _aggregate_playbook_state(
                 "cmd_sig":        {"terms": {"field": "dshield.cowrie.enrichment.session.command_signature.keyword", "size": 1}},
                 "bigram_sig":     {"terms": {"field": "dshield.cowrie.enrichment.session.command_bigram_signature.keyword", "size": 1}},
                 "bigram_set":     {"terms": {"field": bigram_field, "size": 200}},
+                "cmd_set":        {"terms": {"field": cmd_set_field, "size": 500}},
                 "artifact_set":   {"terms": {"field": artifact_field, "size": 200}},
                 "asn":            {"terms": {"field": "source.as.number", "size": 50}},
                 "dominant_intent":{"terms": {"field": "dshield.cowrie.enrichment.session.dominant_intent", "size": 1}},
@@ -147,6 +145,7 @@ def _aggregate_playbook_state(
         "command_signature":        _mode(aggs.get("cmd_sig")),
         "command_bigram_signature": _mode(aggs.get("bigram_sig")),
         "command_bigram_set":       _bucket_keys(aggs.get("bigram_set")),
+        "command_set":              _bucket_keys(aggs.get("cmd_set")),
         "artifact_set":             _bucket_keys(aggs.get("artifact_set")),
         "asn_distribution":         {str(b["key"]): int(b["doc_count"]) for b in asn_buckets},
         "dominant_intent":          _mode(aggs.get("dominant_intent")),
@@ -159,22 +158,60 @@ def _aggregate_playbook_state(
 # ---------------------------------------------------------------------------
 
 def _f_command_drift(cfg, run_id, lc, anchor, curr) -> Optional[dict]:
-    """signature mode differs from anchor → drift."""
+    """Jaccard(command_set_now, command_set_anchor) < threshold → drift.
+
+    P1a follow-up: replaces the signature-equality gate now that
+    `command_set` is materialised on the session rollup. Falls back to
+    signature comparison only when neither side has command_set (legacy
+    anchors written before P1a, or sessions that haven't been
+    re-rolled yet) — preserves backward-compat without erasing the
+    threshold knob.
+    """
+    a_set = anchor.get("command_set") or []
+    c_set = curr.get("command_set") or []
+    if a_set or c_set:
+        sim = _jaccard(a_set, c_set)
+        if sim >= cfg.findings.drift.command_jaccard_threshold:
+            return None
+        added = sorted(set(c_set) - set(a_set))[:50]
+        removed = sorted(set(a_set) - set(c_set))[:50]
+        # Stable delta_signature over the changed set, independent of
+        # ordering. Use signatures as tie-breakers so re-mining identical
+        # state on identical anchors collapses to the same finding id.
+        sig_payload = (
+            anchor.get("command_signature") or _delta_sig("a", *sorted(a_set)),
+            curr.get("command_signature")   or _delta_sig("c", *sorted(c_set)),
+        )
+        return {
+            "kind": "playbook_command_drift",
+            "delta_signature": _delta_sig("cmd", *sig_payload),
+            "evidence": {
+                "command_jaccard":       round(sim, 4),
+                "signature_anchor":      anchor.get("command_signature"),
+                "signature_current":     curr.get("command_signature"),
+                "added":                 added,
+                "removed":               removed,
+                "anchor_set_size":       len(set(a_set)),
+                "current_set_size":      len(set(c_set)),
+                "session_count_current": curr.get("session_count"),
+            },
+            "narrative_template": f"command Jaccard {sim:.2f} vs anchor",
+        }
+    # Legacy fallback: signature-equality (pre-P1a anchors).
     a_sig = anchor.get("command_signature")
     c_sig = curr.get("command_signature")
-    if not a_sig or not c_sig:
-        return None
-    if a_sig == c_sig:
+    if not a_sig or not c_sig or a_sig == c_sig:
         return None
     return {
         "kind": "playbook_command_drift",
         "delta_signature": _delta_sig("cmd", a_sig, c_sig),
         "evidence": {
-            "signature_anchor": a_sig,
-            "signature_current": c_sig,
+            "signature_anchor":      a_sig,
+            "signature_current":     c_sig,
             "session_count_current": curr.get("session_count"),
+            "fallback":              "signature-only (no command_set on anchor or current)",
         },
-        "narrative_template": "command set changed",
+        "narrative_template": "command set changed (signature mismatch — no command_set available)",
     }
 
 
