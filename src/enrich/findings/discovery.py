@@ -5,11 +5,14 @@ Each miner produces findings of one `kind`. The headline pair is
 `ip_behavior_shift` ("actor changed behavior") — both self-anchored
 against per-IP lifecycle history, no analyst confirm required.
 
-This module ships 3 of the 7 designed discovery kinds:
+This module ships 6 of the 7 designed discovery kinds:
 
   - `new_playbook`           — playbook lifecycle `runs_observed == 1`
   - `intel_verdict_flip`     — IP intel verdict transition + recent corpus session
   - `ip_behavior_shift`      — modal playbook flip OR JS distance >= threshold
+  - `outlier_burst`          — HDBSCAN-outlier sessions sharing artifacts in 24h
+  - `novel_edge_session`     — top-K novelty within each cluster
+  - `campaign_convergence`   — cmp-bhv × cmp-inf member-IP overlap >= threshold
 
 `unattributed_active_ip` was specified in the design but retired before
 ship: a single corpus produced ~2k findings of this kind in one pass
@@ -19,11 +22,6 @@ per-IP triage isn't a workflow analysts use. The aggregate signal
 not in the findings inbox. The kind is removed; corresponding finding
 docs in the index are tombstoned by the operator (see migration in the
 phase-8 doc).
-
-The remaining three (`outlier_burst`, `novel_edge_session`,
-`campaign_convergence`) are deferred to a step 3 follow-up — they need
-heavier cross-index joins and would be hard to land + verify alongside
-the four payoff kinds.
 
 All miners read the lifecycle indices produced by `track lifecycles`
 (step 1) and consume snapshots written by the backward chain. Each
@@ -332,13 +330,261 @@ def mine_ip_behavior_shift(es: Elasticsearch, cfg: Any, run_id: str) -> list[dic
 
 
 # ---------------------------------------------------------------------------
+# outlier_burst (P1b follow-up)
+# ---------------------------------------------------------------------------
+
+def mine_outlier_burst(es: Elasticsearch, cfg: Any, run_id: str) -> list[dict[str, Any]]:
+    """HDBSCAN-outlier sessions sharing an artifact within the last
+    `discovery.outlier_burst_window_hours`.
+
+    Fires when >= `discovery.outlier_burst_min_sessions` outlier sessions
+    share an artifact_set value. The shared artifact is the finding's
+    artifact — different shared artifacts produce distinct findings even
+    when the underlying sessions overlap. Surfaces coordinated outliers
+    that clustering hasn't yet bound into a named playbook.
+    """
+    cowrie = cfg.elasticsearch.indexes.cowrie
+    sess_idx = cowrie.sessions_rollup
+    if not es.indices.exists(index=sess_idx):
+        return []
+    win_h = int(getattr(getattr(cfg.findings, "discovery", None),
+                        "outlier_burst_window_hours", 24))
+    min_sess = int(getattr(getattr(cfg.findings, "discovery", None),
+                           "outlier_burst_min_sessions", 5))
+    cutoff = (_now() - timedelta(hours=win_h)).isoformat()
+    try:
+        resp = es.search(
+            index=sess_idx, size=0,
+            query={"bool": {"must": [
+                {"term":  {"dshield.cowrie.enrichment.session.cluster.is_outlier": True}},
+                {"range": {"@timestamp": {"gte": cutoff}}},
+            ]}},
+            aggs={"by_artifact": {
+                "terms": {
+                    "field": "dshield.cowrie.enrichment.session.artifact_set.keyword",
+                    "size":  200,
+                    "min_doc_count": min_sess,
+                },
+                "aggs": {
+                    "unique_ips": {"cardinality": {"field": "source.ip"}},
+                    "sample":     {"top_hits": {"size": 5, "_source": ["cowrie.session_id", "source.ip"]}},
+                },
+            }},
+        )
+    except Exception as exc:
+        log.warning("findings.discovery: outlier_burst agg failed: %s", exc)
+        return []
+    buckets = ((resp.get("aggregations") or {}).get("by_artifact") or {}).get("buckets") or []
+    out: list[dict[str, Any]] = []
+    for b in buckets:
+        artifact = b.get("key")
+        sess_count = int(b.get("doc_count") or 0)
+        ip_count = int(((b.get("unique_ips") or {}).get("value")) or 0)
+        sample_hits = ((b.get("sample") or {}).get("hits", {}).get("hits") or [])
+        sample_ips = sorted({
+            ((h.get("_source") or {}).get("source") or {}).get("ip")
+            for h in sample_hits
+            if (((h.get("_source") or {}).get("source") or {}).get("ip"))
+        })
+        score = math.log1p(sess_count) + math.log1p(ip_count)
+        out.append({
+            "kind": "outlier_burst",
+            "run_id": run_id,
+            "artifact": {"kind": "shared_artifact", "value": artifact},
+            "score": score,
+            "narrative": (
+                f"{sess_count} outlier session(s) across {ip_count} IP(s) "
+                f"share {artifact!r} in the last {win_h}h."
+            ),
+            "evidence": {
+                "shared_artifact": artifact,
+                "session_count":   sess_count,
+                "ip_count":        ip_count,
+                "window_hours":    win_h,
+                "sample_ips":      sample_ips[:5],
+            },
+        })
+    out.sort(key=lambda f: f["score"], reverse=True)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# novel_edge_session (P1b follow-up)
+# ---------------------------------------------------------------------------
+
+def mine_novel_edge_session(es: Elasticsearch, cfg: Any, run_id: str) -> list[dict[str, Any]]:
+    """Sessions whose `cluster.novelty_score` is in the top-K per cluster.
+
+    Per-cluster terms agg with a top_hits sub-agg ordered by novelty_score
+    descending, capped at `discovery.novel_edge_top_k_per_cluster` (default
+    3) — approximates the design's "top 1%" without a per-cluster
+    percentile round-trip. Gated by `novel_edge_min_cluster_size` so a
+    cluster of 3 sessions doesn't produce 3 "edge" findings.
+    """
+    cowrie = cfg.elasticsearch.indexes.cowrie
+    sess_idx = cowrie.sessions_rollup
+    if not es.indices.exists(index=sess_idx):
+        return []
+    top_k = int(getattr(getattr(cfg.findings, "discovery", None),
+                        "novel_edge_top_k_per_cluster", 3))
+    min_cl = int(getattr(getattr(cfg.findings, "discovery", None),
+                         "novel_edge_min_cluster_size", 20))
+    cluster_field = "dshield.cowrie.enrichment.session.cluster.id"
+    novelty_field = "dshield.cowrie.enrichment.session.cluster.novelty_score"
+    try:
+        resp = es.search(
+            index=sess_idx, size=0,
+            query={"bool": {
+                "must":     [{"exists": {"field": cluster_field}}],
+                "must_not": [{"term":   {cluster_field: "outlier"}}],
+            }},
+            aggs={"by_cluster": {
+                "terms": {"field": cluster_field, "size": 200,
+                          "min_doc_count": min_cl},
+                "aggs": {
+                    "top": {"top_hits": {
+                        "size":    top_k,
+                        "sort":    [{novelty_field: {"order": "desc"}}],
+                        "_source": ["cowrie.session_id", "source.ip",
+                                     novelty_field,
+                                     "dshield.cowrie.enrichment.session.playbook_id",
+                                     "dshield.cowrie.enrichment.session.playbook_name"],
+                    }},
+                },
+            }},
+        )
+    except Exception as exc:
+        log.warning("findings.discovery: novel_edge_session agg failed: %s", exc)
+        return []
+    buckets = ((resp.get("aggregations") or {}).get("by_cluster") or {}).get("buckets") or []
+    out: list[dict[str, Any]] = []
+    for b in buckets:
+        cl_id = b.get("key")
+        for h in ((b.get("top") or {}).get("hits", {}).get("hits") or []):
+            src = h.get("_source") or {}
+            sid = ((src.get("cowrie") or {}).get("session_id")) or h.get("_id")
+            if not sid:
+                continue
+            enr_sess = (((src.get("dshield") or {}).get("cowrie") or {})
+                        .get("enrichment", {}).get("session", {})) or {}
+            novelty = float((enr_sess.get("cluster") or {}).get("novelty_score") or 0.0)
+            pid = enr_sess.get("playbook_id")
+            pname = enr_sess.get("playbook_name") or "(unnamed)"
+            ip = ((src.get("source") or {}).get("ip"))
+            out.append({
+                "kind": "novel_edge_session",
+                "run_id": run_id,
+                "artifact": {"kind": "session", "value": sid},
+                "score": novelty,
+                "narrative": (
+                    f"Session {sid} sits at the novelty edge of playbook "
+                    f"'{pname}' (novelty {novelty:.2f}) — top-{top_k} within its cluster."
+                ),
+                "evidence": {
+                    "session_id":     sid,
+                    "source_ip":      ip,
+                    "playbook_id":    pid,
+                    "playbook_name":  enr_sess.get("playbook_name"),
+                    "cluster_id":     cl_id,
+                    "novelty_score":  round(novelty, 4),
+                    "cluster_size":   int(b.get("doc_count") or 0),
+                },
+            })
+    out.sort(key=lambda f: f["score"], reverse=True)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# campaign_convergence (P1b follow-up)
+# ---------------------------------------------------------------------------
+
+def mine_campaign_convergence(es: Elasticsearch, cfg: Any, run_id: str) -> list[dict[str, Any]]:
+    """Behaviour campaign × infrastructure campaign IP overlap >= threshold.
+
+    Pairwise compare every `cmp-bhv-*` against every `cmp-inf-*`; emit
+    when the intersection of `member_source_ips` divided by
+    `min(|bhv|, |inf|)` clears
+    `discovery.convergence_min_ip_overlap_ratio`. Surfaces "the IPs
+    running this playbook are also running this infrastructure" without
+    requiring an analyst to spot it.
+    """
+    cowrie = cfg.elasticsearch.indexes.cowrie
+    cidx = cowrie.campaigns
+    if not es.indices.exists(index=cidx):
+        return []
+    ratio_min = float(getattr(getattr(cfg.findings, "discovery", None),
+                              "convergence_min_ip_overlap_ratio", 0.4))
+    bhv: list[dict] = []
+    inf: list[dict] = []
+    # Pull every campaign once. `member_source_ips` is a keyword[] capped
+    # at the campaign miner's per-campaign limit, so totals are bounded.
+    body = {
+        "size": 500,
+        "_source": ["campaign_id", "name", "kind", "member_source_ips"],
+        "query": {"term": {"doc_type": "campaign"}},
+        "sort": [{"_doc": "asc"}],
+    }
+    for src in _scroll(es, cidx, body):
+        kind = (src.get("kind") or "").lower()
+        ips = src.get("member_source_ips") or []
+        if not ips:
+            continue
+        entry = {"id": src.get("campaign_id"),
+                 "name": src.get("name"),
+                 "ips": set(ips)}
+        if kind in ("behaviour", "behavior"):
+            bhv.append(entry)
+        elif kind in ("infrastructure", "infra"):
+            inf.append(entry)
+
+    out: list[dict[str, Any]] = []
+    for b in bhv:
+        for i in inf:
+            inter = b["ips"] & i["ips"]
+            if not inter:
+                continue
+            denom = min(len(b["ips"]), len(i["ips"]))
+            ratio = len(inter) / denom if denom > 0 else 0.0
+            if ratio < ratio_min:
+                continue
+            pair_key = f"{b['id']}+{i['id']}"
+            out.append({
+                "kind": "campaign_convergence",
+                "run_id": run_id,
+                "artifact": {"kind": "campaign_pair", "value": pair_key},
+                "score": ratio + math.log1p(len(inter)),
+                "narrative": (
+                    f"{len(inter)} shared IP(s) between behaviour campaign "
+                    f"'{b['name']}' and infrastructure campaign '{i['name']}' "
+                    f"(overlap ratio {ratio:.2f})."
+                ),
+                "evidence": {
+                    "behaviour_id":         b["id"],
+                    "behaviour_name":       b["name"],
+                    "infrastructure_id":    i["id"],
+                    "infrastructure_name":  i["name"],
+                    "shared_ip_count":      len(inter),
+                    "behaviour_ip_count":   len(b["ips"]),
+                    "infrastructure_ip_count": len(i["ips"]),
+                    "overlap_ratio":        round(ratio, 4),
+                    "sample_shared_ips":    sorted(inter)[:10],
+                },
+            })
+    out.sort(key=lambda f: f["score"], reverse=True)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Public set
 # ---------------------------------------------------------------------------
 
 DISCOVERY_MINERS = {
-    "new_playbook":       mine_new_playbook,
-    "intel_verdict_flip": mine_intel_verdict_flip,
-    "ip_behavior_shift":  mine_ip_behavior_shift,
+    "new_playbook":         mine_new_playbook,
+    "intel_verdict_flip":   mine_intel_verdict_flip,
+    "ip_behavior_shift":    mine_ip_behavior_shift,
+    "outlier_burst":        mine_outlier_burst,
+    "novel_edge_session":   mine_novel_edge_session,
+    "campaign_convergence": mine_campaign_convergence,
 }
 
 # Step 3 follow-up will add: outlier_burst, novel_edge_session,
