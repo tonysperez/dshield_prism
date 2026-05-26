@@ -509,6 +509,40 @@ def build_app(config_path: str | None = None) -> FastAPI:
         return TableResponse(total=r["total"], rows=r["rows"],
                              page={"from": 0, "size": size})
 
+    @app.get("/api/ioc/command/{sha}/shape-siblings", response_model=TableResponse)
+    def table_shape_siblings(
+        sha: str, size: int = Query(50, ge=1, le=500),
+    ) -> TableResponse:
+        """List every doc sharing this command's shape signature.
+
+        Drives the "expand N variants" affordance on the command detail
+        page (ROADMAP #9). The pivot command itself is excluded from the
+        result. Ordered by occurrence_count desc so the most-prevalent
+        siblings surface first.
+        """
+        idx = cfg.elasticsearch.indexes.cowrie.commands
+        try:
+            pivot = es.get(index=idx, id=sha.lower())
+        except Exception:
+            raise HTTPException(404, "command not found")
+        psrc = pivot["_source"]
+        penr = (psrc.get("dshield") or {}).get("cowrie", {}).get("enrichment") or {}
+        shape_hash = (penr.get("shape") or {}).get("hash") or ""
+        if not shape_hash:
+            return TableResponse(total=0, rows=[], page={"from": 0, "size": size})
+        body = {
+            "size": size,
+            "query": {
+                "bool": {
+                    "filter": [{"term": {"dshield.cowrie.enrichment.shape.hash": shape_hash}}],
+                    "must_not": [{"term": {"_id": sha.lower()}}],
+                }
+            },
+            "sort": [{"dshield.cowrie.enrichment.occurrence_count": "desc"}],
+        }
+        r = es.search(index=idx, **body)
+        return _table(r, 0, size)
+
     @app.get("/api/cluster/{kind}/{cid}/members", response_model=TableResponse)
     def table_cluster_members(
         kind: str, cid: str, size: int = Query(50, ge=1, le=500),
@@ -792,6 +826,7 @@ def _detail_command(sha: str, doc: dict) -> IOCDetail:
     enr = src.get("dshield", {}).get("cowrie", {}).get("enrichment") or {}
     fb = enr.get("local_fallback") or {}
     threat = src.get("threat") or {}
+    shape = enr.get("shape") or {}
     summary: dict[str, Any] = {
         "sha256": sha,
         "command_line": (src.get("process") or {}).get("command_line"),
@@ -808,6 +843,15 @@ def _detail_command(sha: str, doc: dict) -> IOCDetail:
         "novelty_score": (enr.get("cluster") or {}).get("novelty_score"),
         "is_outlier": (enr.get("cluster") or {}).get("is_outlier"),
         "model": enr.get("model"),
+        # Functional-duplicate gating (ROADMAP #9). `shape_role` is one
+        # of canonical/standalone/child; `functional_parent` is the
+        # canonical's _id when role=child. `inherited_from_model`
+        # records which LLM produced the inherited text.
+        "shape_hash": shape.get("hash"),
+        "shape_role": shape.get("role"),
+        "functional_parent": shape.get("functional_parent"),
+        "inherited_from_model": shape.get("inherited_from_model"),
+        "confidence_at_link": shape.get("confidence_at_link"),
     }
     return IOCDetail(type="command", id=sha, title=f"command {sha[:12]}…", summary=summary, raw=src)
 

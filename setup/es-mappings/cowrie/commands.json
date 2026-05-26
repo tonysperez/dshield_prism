@@ -115,6 +115,16 @@
                       "is_outlier":    { "type": "boolean" },
                       "scored_at":     { "type": "date" }
                     }
+                  },
+                  "shape": {
+                    "properties": {
+                      "hash":                  { "type": "keyword" },
+                      "role":                  { "type": "keyword" },
+                      "functional_parent":     { "type": "keyword" },
+                      "linked_at":             { "type": "date" },
+                      "inherited_from_model":  { "type": "keyword" },
+                      "confidence_at_link":    { "type": "byte" }
+                    }
                   }
                 }
               }

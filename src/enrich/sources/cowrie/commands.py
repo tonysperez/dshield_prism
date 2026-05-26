@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from elasticsearch import Elasticsearch
 
 from ...cache import StateDB
+from ...command_shape import compute_shape_hash, extract_iocs_regex
 from ...config import (
     AppConfig, Secrets, CommandClusterConfig,
     compute_embed_config_hash, compute_llm_config_hash, load_prompt,
@@ -120,6 +121,55 @@ _CLUSTER_UPDATE_SCRIPT = (
 # touch enrichment fields or cluster.* — purely cosmetic to the stored list.
 # An empty `params.triage_reasons` removes the field entirely so a row that
 # would no longer escalate doesn't carry a stale empty list.
+# Painless: backfill the `shape` block on an existing doc. Stamps hash +
+# role + linked_at without touching any LLM-derived field. Used by
+# `backfill-shape` to retroactively label the corpus so the inherit gate
+# in `enrich` can find canonicals among historically-enriched commands.
+_BACKFILL_SHAPE_SCRIPT = (
+    "if (ctx._source.dshield == null) { ctx._source.dshield = [:]; }"
+    "if (ctx._source.dshield.cowrie == null) { ctx._source.dshield.cowrie = [:]; }"
+    "if (ctx._source.dshield.cowrie.enrichment == null) { ctx._source.dshield.cowrie.enrichment = [:]; }"
+    "def en = ctx._source.dshield.cowrie.enrichment;"
+    "if (en.shape == null) { en.shape = [:]; }"
+    "en.shape.hash = params.shape_hash;"
+    "en.shape.role = params.role;"
+    "en.shape.linked_at = params.linked_at;"
+    "if (params.confidence_at_link != null) { en.shape.confidence_at_link = params.confidence_at_link; }"
+)
+
+# Painless: re-enrich a child via the inherit path. Overwrites the LLM-
+# derived fields with the parent's values + writes the shape block.
+# Same field set as `_REENRICH_SCRIPT` but adds the shape pointer
+# updates and uses `local_inherited` as the provider.
+_REENRICH_INHERIT_SCRIPT = (
+    "if (ctx._source.event == null) { ctx._source.event = [:]; }"
+    "ctx._source.event.provider = 'local_inherited';"
+    "ctx._source.event.reason = params.description;"
+    "if (ctx._source.dshield == null) { ctx._source.dshield = [:]; }"
+    "if (ctx._source.dshield.cowrie == null) { ctx._source.dshield.cowrie = [:]; }"
+    "if (ctx._source.dshield.cowrie.enrichment == null) { ctx._source.dshield.cowrie.enrichment = [:]; }"
+    "def en = ctx._source.dshield.cowrie.enrichment;"
+    "en.intent = params.intent;"
+    "en.confidence = params.confidence;"
+    "en.model = params.model;"
+    "en.llm_config_hash = params.llm_config_hash;"
+    "en.embed_config_hash = params.embed_config_hash;"
+    "en.embedding = params.embedding;"
+    "if (en.shape == null) { en.shape = [:]; }"
+    "en.shape.hash = params.shape_hash;"
+    "en.shape.role = 'child';"
+    "en.shape.functional_parent = params.functional_parent;"
+    "en.shape.linked_at = params.linked_at;"
+    "en.shape.inherited_from_model = params.inherited_from_model;"
+    "en.shape.confidence_at_link = params.confidence_at_link;"
+    "if (ctx._source.threat == null) { ctx._source.threat = [:]; }"
+    "if (ctx._source.threat.tactic == null) { ctx._source.threat.tactic = [:]; }"
+    "if (ctx._source.threat.technique == null) { ctx._source.threat.technique = [:]; }"
+    "ctx._source.threat.tactic.id = params.tactics;"
+    "ctx._source.threat.technique.id = params.techniques;"
+    "ctx._source.threat.indicator = params.indicators;"
+)
+
 _RETRIAGE_SCRIPT = (
     "if (ctx._source.dshield == null) { ctx._source.dshield = [:]; }"
     "if (ctx._source.dshield.cowrie == null) { ctx._source.dshield.cowrie = [:]; }"
@@ -269,6 +319,7 @@ def _build_ecs_doc(
     triage_reasons: Optional[list[str]] = None,
     notes: str = "",
     local_fallback: Optional[dict] = None,
+    shape: Optional[dict] = None,
 ) -> dict:
     enrichment_block = {
         "intent": intent,
@@ -288,6 +339,8 @@ def _build_ecs_doc(
         enrichment_block["notes"] = notes
     if local_fallback:
         enrichment_block["local_fallback"] = local_fallback
+    if shape:
+        enrichment_block["shape"] = shape
     return {
         "@timestamp": now,
         "event": {
@@ -604,6 +657,113 @@ def cloud_enrich_one(
     return parsed, in_tok, out_tok
 
 
+def lookup_canonical_for_shape(
+    es: Elasticsearch,
+    commands_index: str,
+    shape_hash: str,
+    min_confidence: int,
+    require_known_intent: bool,
+) -> Optional[dict]:
+    """Find the best already-enriched canonical doc for a shape signature.
+
+    Returns a compact dict of inheritable fields, or None when no parent
+    qualifies. Used by the functional-duplicate gate (ROADMAP #9):
+    callers skip the LLM generation step and inherit `intent`,
+    `description`, `tactics`, `techniques`, `confidence`, `model`, and
+    `notes` from the returned dict.
+
+    Selection rules:
+      - `shape.hash` must equal `shape_hash`.
+      - `shape.role` must be `canonical` or `standalone` — children
+        themselves are never canonical for further inheritance (avoids
+        a chain that propagates a regression).
+      - `confidence` >= `min_confidence`.
+      - When `require_known_intent`, intent must not be `unknown`.
+
+    Tie-break: highest confidence first, then highest occurrence_count
+    (most-representative doc wins).
+    """
+    must_not: list[dict] = []
+    if require_known_intent:
+        must_not.append({"term": {"dshield.cowrie.enrichment.intent": "unknown"}})
+    body = {
+        "size": 1,
+        "_source": [
+            "process.command_line",
+            "event.reason",
+            "dshield.cowrie.enrichment.intent",
+            "dshield.cowrie.enrichment.confidence",
+            "dshield.cowrie.enrichment.model",
+            "dshield.cowrie.enrichment.notes",
+            "dshield.cowrie.enrichment.llm_config_hash",
+            "dshield.cowrie.enrichment.embed_config_hash",
+            "dshield.cowrie.enrichment.occurrence_count",
+            "dshield.cowrie.enrichment.shape",
+            "threat.tactic",
+            "threat.technique",
+        ],
+        "query": {
+            "bool": {
+                "filter": [
+                    {"term": {"dshield.cowrie.enrichment.shape.hash": shape_hash}},
+                    {"terms": {"dshield.cowrie.enrichment.shape.role": ["canonical", "standalone"]}},
+                    {"range": {"dshield.cowrie.enrichment.confidence": {"gte": min_confidence}}},
+                ],
+                "must_not": must_not,
+            }
+        },
+        "sort": [
+            {"dshield.cowrie.enrichment.confidence": "desc"},
+            {"dshield.cowrie.enrichment.occurrence_count": "desc"},
+        ],
+    }
+    try:
+        resp = es.search(index=commands_index, **body)
+    except Exception as exc:
+        log.warning("shape canonical lookup failed (%s): %s", shape_hash, exc)
+        return None
+    hits = resp.get("hits", {}).get("hits", [])
+    if not hits:
+        return None
+    h0 = hits[0]
+    src = h0["_source"]
+    enr = (src.get("dshield") or {}).get("cowrie", {}).get("enrichment") or {}
+    threat = src.get("threat") or {}
+    tactic = threat.get("tactic") or {}
+    technique = threat.get("technique") or {}
+    return {
+        "_id": h0["_id"],
+        "intent": enr.get("intent") or "unknown",
+        "confidence": int(enr.get("confidence") or 0),
+        "description": (src.get("event") or {}).get("reason") or "",
+        "tactics": tactic.get("id") or [],
+        "techniques": technique.get("id") or [],
+        "model": enr.get("model") or "",
+        "notes": enr.get("notes") or "",
+        "llm_config_hash": enr.get("llm_config_hash") or "",
+        "embed_config_hash": enr.get("embed_config_hash") or "",
+    }
+
+
+def _synth_parsed_from_parent(parent: dict) -> CommandEnrichment:
+    """Build a `CommandEnrichment`-shaped object from a canonical parent's
+    inheritable fields. The downstream `_build_embed_text` / cluster step
+    consume `parsed.intent` / `parsed.description` / etc. — this gives
+    the inherit path the same object shape as the LLM path.
+
+    `iocs` is left empty here; the caller fills indicators from the
+    child command's own regex extraction so they reflect THIS command's
+    literals, not the parent's.
+    """
+    return CommandEnrichment(
+        description=parent.get("description", "") or "",
+        intent=parent.get("intent", "unknown") or "unknown",
+        tactics=list(parent.get("tactics") or []),
+        techniques=list(parent.get("techniques") or []),
+        confidence=int(parent.get("confidence") or 1),
+    )
+
+
 def enrich_one(
     llm,
     prompt_template: str,
@@ -799,10 +959,48 @@ def run_enrich(cfg: AppConfig, secrets: Secrets, dry_run: bool = False, no_cloud
         log.info("dry-run: skipping LLM + writes")
         return dict(stats, unique_commands=len(groups))
 
+    # Functional-duplicate gating (ROADMAP #9): compute a shape signature
+    # for each unique command. Same shape_hash → candidate to inherit
+    # enrichment from a canonical sibling instead of running the LLM.
+    dedup_cfg = cfg.command_shape_dedup
+    for h, g in groups.items():
+        g["shape_hash"] = compute_shape_hash(g["command"]) if dedup_cfg.enabled else ""
+
+    # Iterate so that for each shape_hash bucket, the highest-count
+    # group is processed first. When two new commands share a shape and
+    # neither has an ES canonical yet, the most-representative one runs
+    # the LLM and becomes the in-batch canonical; the rest inherit.
+    def _iter_order():
+        # Two passes: groups with no shape signature (degenerate parse,
+        # or dedup disabled) keep insertion order. Groups with a shape
+        # are bucketed and emitted in (shape_hash, -count) order so the
+        # canonical candidate comes first within each shape.
+        no_shape = [h for h, g in groups.items() if not g.get("shape_hash")]
+        with_shape: dict[str, list[str]] = defaultdict(list)
+        for h, g in groups.items():
+            sh = g.get("shape_hash")
+            if sh:
+                with_shape[sh].append(h)
+        for sh in with_shape:
+            with_shape[sh].sort(key=lambda h: -groups[h]["count"])
+        for h in no_shape:
+            yield h
+        for sh, members in with_shape.items():
+            for h in members:
+                yield h
+
+    # Cached canonical info for shapes seen in this run. Populated either
+    # by an ES lookup (cross-corpus parent) or by a just-built in-batch
+    # canonical doc. Subsequent same-shape members consult this map
+    # instead of re-querying ES (and to find in-batch parents that
+    # haven't been refreshed into ES yet).
+    shape_canonical_cache: dict[str, dict] = {}
+
     actions: list[dict] = []
 
     with make_llm_client(cfg.llm) as llm:
-        for h, g in groups.items():
+        for h in _iter_order():
+            g = groups[h]
             cached = db.is_cached(
                 h, cfg.llm.generation_model, llm_config_hash, embed_config_hash,
             )
@@ -833,6 +1031,115 @@ def run_enrich(cfg: AppConfig, secrets: Secrets, dry_run: bool = False, no_cloud
 
             stats["cache_miss"] += 1
 
+            # ---- Functional-duplicate gate (ROADMAP #9) -------------------
+            #
+            # If this command's shape signature matches an already-enriched
+            # canonical (either from ES corpus or from a just-built
+            # in-batch parent), skip the LLM generation entirely and
+            # inherit intent / description / tactics / techniques. The
+            # per-command-unique parts (regex IOCs, embedding) still run.
+            sh = g.get("shape_hash") or ""
+            inherit_parent: Optional[dict] = None
+            if sh and dedup_cfg.enabled:
+                inherit_parent = shape_canonical_cache.get(sh)
+                if inherit_parent is None:
+                    inherit_parent = lookup_canonical_for_shape(
+                        es, commands_idx, sh,
+                        min_confidence=dedup_cfg.min_parent_confidence,
+                        require_known_intent=dedup_cfg.require_known_intent,
+                    )
+                    if inherit_parent is not None:
+                        shape_canonical_cache[sh] = inherit_parent
+
+            if inherit_parent is not None:
+                now = _now()
+                full_hash = hash_command_full(g["command"])
+                # Cooccurrence siblings still inform the embed text, so
+                # children sitting in different behavioral neighborhoods
+                # get distinguishable vectors. Skip when cooc disabled
+                # to match the standalone path.
+                cooccurring = []
+                if cooc_cfg.enabled:
+                    cooccurring = fetch_cooccurring_commands(
+                        es, events_idx, g["command"],
+                        session_sample_size=cooc_cfg.session_sample_size,
+                        top_k=cooc_cfg.top_k,
+                        min_sessions=cooc_cfg.min_sessions,
+                        total_sessions=total_sessions,
+                    )
+
+                parent_parsed = _synth_parsed_from_parent(inherit_parent)
+                embed_text = _build_embed_text(
+                    g["command"], parent_parsed, cfg.llm.embed_context,
+                    cooccurring=cooccurring,
+                    embed_cooccurrence=cooc_cfg.enabled and cooc_cfg.embed_cooccurrence,
+                )
+                try:
+                    embedding = llm.embed(embed_text)
+                except Exception as e:
+                    log.error("inherit-path embed failed for %s: %s", h, e)
+                    stats["embed_failed"] += 1
+                    continue
+
+                # Inherit structural fields, but pull IOCs from THIS
+                # command's literals via the regex extractor.
+                indicators = _build_indicators(extract_iocs_regex(g["command"]))
+
+                shape_block = {
+                    "hash": sh,
+                    "role": "child",
+                    "functional_parent": inherit_parent["_id"],
+                    "linked_at": now,
+                    "inherited_from_model": inherit_parent.get("model", ""),
+                    "confidence_at_link": int(inherit_parent.get("confidence", 0)),
+                }
+                doc = _build_ecs_doc(
+                    now=now,
+                    short_hash=h,
+                    full_hash=full_hash,
+                    command=g["command"],
+                    truncated=g["truncated"],
+                    first_seen=g["first_seen"],
+                    last_seen=g["last_seen"],
+                    occurrence_count=g["count"],
+                    unique_sessions=len(g["sessions"]),
+                    unique_source_ips=len(g["ips"]),
+                    description=parent_parsed.description,
+                    provider="local_inherited",
+                    model=inherit_parent.get("model", ""),
+                    llm_config_hash=inherit_parent.get("llm_config_hash") or "",
+                    embed_config_hash=embed_config_hash,
+                    intent=parent_parsed.intent,
+                    confidence=parent_parsed.confidence,
+                    tactics=parent_parsed.tactics,
+                    techniques=parent_parsed.techniques,
+                    indicators=indicators,
+                    embedding=embedding,
+                    shape=shape_block,
+                )
+                actions.append({"_op_type": "index", "_id": h, "_source": doc})
+                # Stamp the child cache row with the parent's llm hash so
+                # re-enrich-stale skips the child when the parent is still
+                # fresh and revisits it when the parent drifts. The embed
+                # hash is current — we just embedded.
+                db.mark_cached(
+                    h, cfg.llm.generation_model,
+                    inherit_parent.get("llm_config_hash") or "",
+                    embed_config_hash, now,
+                )
+                stats["functional_duplicates_linked"] += 1
+                stats["generation_calls_saved"] += 1
+
+                if len(actions) >= 50:
+                    ok, errs = bulk_write(es, commands_idx, actions)
+                    stats["bulk_ok"] += ok
+                    stats["bulk_errors"] += len(errs)
+                    if errs:
+                        log.warning("bulk errors (%d): %s", len(errs), errs[:2])
+                    actions = []
+                continue
+
+            # ---- Standalone / canonical path (full LLM call) --------------
             cooccurring: list[tuple[str, int]] = []
             if cooc_cfg.enabled:
                 cooccurring = fetch_cooccurring_commands(
@@ -964,6 +1271,26 @@ def run_enrich(cfg: AppConfig, secrets: Secrets, dry_run: bool = False, no_cloud
                 stats["embed_failed"] += 1
                 continue
 
+            # Shape role: canonical if the shape signature is non-empty
+            # and we produced a usable parsed enrichment; standalone if
+            # parse failed or the shape signature is degenerate (so it
+            # never canonicalizes for anyone). Children would have taken
+            # the inherit branch above and never reach this point.
+            if sh and parsed is not None and parsed.intent != "unknown":
+                shape_role = "canonical"
+            else:
+                shape_role = "standalone"
+            shape_block_canon: Optional[dict] = None
+            if sh:
+                shape_block_canon = {
+                    "hash": sh,
+                    "role": shape_role,
+                    "functional_parent": None,
+                    "linked_at": now,
+                    "inherited_from_model": "",
+                    "confidence_at_link": int(confidence),
+                }
+
             doc = _build_ecs_doc(
                 now=now,
                 short_hash=h,
@@ -989,6 +1316,7 @@ def run_enrich(cfg: AppConfig, secrets: Secrets, dry_run: bool = False, no_cloud
                 triage_reasons=triage_reasons,
                 notes=notes,
                 local_fallback=local_fallback_doc,
+                shape=shape_block_canon,
             )
             actions.append({"_op_type": "index", "_id": h, "_source": doc})
             if doc_provider in ("local", "claude"):
@@ -996,6 +1324,28 @@ def run_enrich(cfg: AppConfig, secrets: Secrets, dry_run: bool = False, no_cloud
                     h, cfg.llm.generation_model,
                     llm_config_hash, embed_config_hash, now,
                 )
+
+            # Register this just-built canonical in the per-run cache so
+            # subsequent same-shape members in this batch inherit from
+            # it without waiting for an ES refresh.
+            if (
+                shape_role == "canonical"
+                and parsed is not None
+                and confidence >= dedup_cfg.min_parent_confidence
+            ):
+                shape_canonical_cache[sh] = {
+                    "_id": h,
+                    "intent": intent,
+                    "confidence": int(confidence),
+                    "description": description,
+                    "tactics": list(tactics or []),
+                    "techniques": list(techniques or []),
+                    "model": doc_model,
+                    "notes": notes,
+                    "llm_config_hash": llm_config_hash,
+                    "embed_config_hash": embed_config_hash,
+                }
+                stats["functional_canonicals_promoted"] += 1
 
             if len(actions) >= 50:
                 ok, errs = bulk_write(es, commands_idx, actions)
@@ -1453,18 +1803,27 @@ def run_reembed(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) -> dict
 
 
 # ---------------------------------------------------------------------------
-# Re-enrich stale rows (LLM-side mirror of reembed)
+# Shape backfill (ROADMAP #9 — one-time admin op after mapping deploy)
 # ---------------------------------------------------------------------------
 
-def iter_docs_for_reenrich(
+def iter_docs_for_shape_backfill(
     es: Elasticsearch,
     index: str,
-    page_size: int = 200,
+    page_size: int = 500,
 ) -> Iterator[dict]:
-    """Yield {doc_id, command_line} for every enriched-commands doc."""
+    """Yield (doc_id, command_line, existing_shape_hash, confidence) tuples
+    for every doc in the commands index. Driver for `run_backfill_shape`.
+
+    Projects `confidence` so the backfill can stamp `confidence_at_link`
+    on the shape block at the same time as `hash` and `role`.
+    """
     body: dict = {
         "size": page_size,
-        "_source": ["process.command_line"],
+        "_source": [
+            "process.command_line",
+            "dshield.cowrie.enrichment.confidence",
+            "dshield.cowrie.enrichment.shape.hash",
+        ],
         "query": {"exists": {"field": "process.command_line"}},
         "sort": [{"@timestamp": "asc"}, {"_doc": "asc"}],
     }
@@ -1477,9 +1836,155 @@ def iter_docs_for_reenrich(
         if not hits:
             return
         for h in hits:
-            cmd = ((h["_source"].get("process") or {}).get("command_line") or "")
-            if cmd:
-                yield {"doc_id": h["_id"], "command_line": cmd}
+            src = h["_source"]
+            cmd = (src.get("process") or {}).get("command_line") or ""
+            if not cmd:
+                continue
+            enr = ((src.get("dshield") or {}).get("cowrie") or {}).get("enrichment") or {}
+            yield {
+                "doc_id": h["_id"],
+                "command_line": cmd,
+                "existing_shape_hash": (enr.get("shape") or {}).get("hash") or "",
+                "confidence": int(enr.get("confidence") or 0),
+            }
+        search_after = hits[-1]["sort"]
+
+
+def run_backfill_shape(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) -> dict:
+    """Stamp `shape.hash` + `shape.role` on every existing commands doc.
+
+    One-shot admin operation, run once after the mapping deploy that adds
+    `dshield.cowrie.enrichment.shape.*`. Every doc gets role=standalone
+    because each was LLM-enriched independently — the canonical/child
+    distinction only applies to the inherit gate in `enrich`. Once the
+    backfill runs, subsequent `enrich` passes can promote standalones to
+    canonicals (or re-label existing docs as children) organically as
+    new same-shape commands arrive.
+
+    No LLM. No embedding. Just a structural label.
+
+    Idempotent: if `shape.hash` is already set on a doc and matches the
+    recomputed value, the update is suppressed via `detect_noop`.
+    """
+    es = make_client(cfg.elasticsearch, secrets)
+    commands_idx = cfg.elasticsearch.indexes.cowrie.commands
+    now = _now()
+
+    log.info(
+        "backfill-shape: index=%s dry_run=%s", commands_idx, dry_run,
+    )
+
+    stats: dict = defaultdict(int)
+    actions: list[dict] = []
+
+    for doc in iter_docs_for_shape_backfill(es, commands_idx):
+        stats["docs_seen"] += 1
+        norm, _ = normalize(doc["command_line"], cfg.worker.command_max_chars)
+        sh = compute_shape_hash(norm) if norm else ""
+        if not sh:
+            stats["shape_degenerate"] += 1
+            continue
+        if doc["existing_shape_hash"] == sh:
+            stats["shape_unchanged"] += 1
+            continue
+        stats["shape_stamped"] += 1
+        if dry_run:
+            continue
+        actions.append({
+            "_op_type": "update",
+            "_id": doc["doc_id"],
+            "script": {
+                "source": _BACKFILL_SHAPE_SCRIPT,
+                "params": {
+                    "shape_hash": sh,
+                    "role": "standalone",
+                    "linked_at": now,
+                    "confidence_at_link": doc["confidence"],
+                },
+            },
+        })
+        if len(actions) >= 200:
+            ok, errs = bulk_write(es, commands_idx, actions)
+            stats["bulk_ok"] += ok
+            stats["bulk_errors"] += len(errs)
+            if errs:
+                log.warning("backfill-shape bulk errors (%d): %s", len(errs), errs[:2])
+            actions = []
+
+    if actions:
+        ok, errs = bulk_write(es, commands_idx, actions)
+        stats["bulk_ok"] += ok
+        stats["bulk_errors"] += len(errs)
+        if errs:
+            log.warning("backfill-shape bulk errors (%d): %s", len(errs), errs[:2])
+
+    try:
+        es.indices.refresh(index=commands_idx)
+    except Exception as exc:
+        log.warning("backfill-shape refresh failed (continuing): %s", exc)
+
+    return dict(stats, dry_run=dry_run)
+
+
+# ---------------------------------------------------------------------------
+# Re-enrich stale rows (LLM-side mirror of reembed)
+# ---------------------------------------------------------------------------
+
+def iter_docs_for_reenrich(
+    es: Elasticsearch,
+    index: str,
+    page_size: int = 200,
+    role_filter: Optional[str] = None,
+    exclude_role: Optional[str] = None,
+) -> Iterator[dict]:
+    """Yield {doc_id, command_line, shape_hash, shape_role} for every
+    enriched-commands doc.
+
+    `role_filter` scopes the walk to a single shape role
+    (`"canonical"`, `"standalone"`, or `"child"`). Used by the two-pass
+    re-enrich: pass-1 excludes children via `exclude_role`, pass-2
+    walks children directly via `role_filter`.
+
+    `exclude_role` removes one role from the walk. Used in pass-1 so
+    children (handled in pass-2) don't get a wasted LLM call before
+    pass-2 overwrites them via inheritance.
+    """
+    filters: list[dict] = [{"exists": {"field": "process.command_line"}}]
+    must_not: list[dict] = []
+    if role_filter:
+        filters.append({"term": {"dshield.cowrie.enrichment.shape.role": role_filter}})
+    if exclude_role:
+        must_not.append({"term": {"dshield.cowrie.enrichment.shape.role": exclude_role}})
+    body: dict = {
+        "size": page_size,
+        "_source": [
+            "process.command_line",
+            "dshield.cowrie.enrichment.shape",
+        ],
+        "query": {"bool": {"filter": filters, "must_not": must_not}},
+        "sort": [{"@timestamp": "asc"}, {"_doc": "asc"}],
+    }
+    search_after = None
+    while True:
+        if search_after:
+            body["search_after"] = search_after
+        resp = es.search(index=index, **body)
+        hits = resp["hits"]["hits"]
+        if not hits:
+            return
+        for h in hits:
+            src = h["_source"]
+            cmd = (src.get("process") or {}).get("command_line") or ""
+            if not cmd:
+                continue
+            enr = ((src.get("dshield") or {}).get("cowrie") or {}).get("enrichment") or {}
+            shape = enr.get("shape") or {}
+            yield {
+                "doc_id": h["_id"],
+                "command_line": cmd,
+                "shape_hash": shape.get("hash") or "",
+                "shape_role": shape.get("role") or "",
+            }
         search_after = hits[-1]["sort"]
 
 
@@ -1531,8 +2036,51 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
     actions: list[dict] = []
     now = _now()
 
+    # Functional-duplicate gating (ROADMAP #9) extends into re-enrich:
+    #
+    # Pass-1 here walks canonicals + standalones (children skipped via
+    # `exclude_role` — pass-2 handles them). For each stale doc we
+    # check the shape-bucket: if another doc with the same shape has
+    # already been re-LLM'd in THIS pass, the current doc inherits
+    # without re-running the LLM. Same savings as `run_enrich`'s
+    # in-batch dedup, applied to the re-enrich path.
+    #
+    # We also check ES for an already-fresh canonical via
+    # `lookup_canonical_for_shape` (with a freshness gate on the
+    # parent's llm_config_hash) so a partial drift — where some shape
+    # members are fresh and others aren't — converges in one pass.
+    dedup_cfg = cfg.command_shape_dedup
+    shape_parent_cache: dict[str, Optional[dict]] = {}
+
+    def _maybe_get_fresh_parent(sh: str, exclude_id: str) -> Optional[dict]:
+        """Lookup helper memoized for the run. Returns the parent only
+        when its `llm_config_hash` already matches live (we won't
+        inherit from a parent that's itself stale — its values are
+        about to change).
+        """
+        if not sh or not dedup_cfg.enabled:
+            return None
+        if sh in shape_parent_cache:
+            cached = shape_parent_cache[sh]
+            if cached is None or cached["_id"] == exclude_id:
+                return None
+            return cached
+        cand = lookup_canonical_for_shape(
+            es, commands_idx, sh,
+            min_confidence=dedup_cfg.min_parent_confidence,
+            require_known_intent=dedup_cfg.require_known_intent,
+        )
+        if cand is not None and cand["_id"] == exclude_id:
+            cand = None
+        if cand is not None and (cand.get("llm_config_hash") or "") != live_llm_hash:
+            cand = None
+        shape_parent_cache[sh] = cand
+        return cand
+
     with make_llm_client(cfg.llm) as llm:
-        for doc in iter_docs_for_reenrich(es, commands_idx):
+        for doc in iter_docs_for_reenrich(
+            es, commands_idx, exclude_role="child",
+        ):
             stats["docs_seen"] += 1
             cached_hash = cached_llm_hashes.get(doc["doc_id"], "")
             if cached_hash == live_llm_hash:
@@ -1555,6 +2103,76 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
                 stats["skipped_empty_command"] += 1
                 continue
 
+            # ---- Inherit branch: same shape already has a fresh parent.
+            sh = doc["shape_hash"]
+            parent = _maybe_get_fresh_parent(sh, doc["doc_id"])
+            if parent is not None:
+                cooccurring2: list[tuple[str, int]] = []
+                if cooc_cfg.enabled:
+                    cooccurring2 = fetch_cooccurring_commands(
+                        es, events_idx, norm,
+                        session_sample_size=cooc_cfg.session_sample_size,
+                        top_k=cooc_cfg.top_k,
+                        min_sessions=cooc_cfg.min_sessions,
+                        total_sessions=total_sessions,
+                    )
+                parent_parsed = _synth_parsed_from_parent(parent)
+                embed_text = _build_embed_text(
+                    norm, parent_parsed, cfg.llm.embed_context,
+                    cooccurring=cooccurring2,
+                    embed_cooccurrence=cooc_cfg.enabled and cooc_cfg.embed_cooccurrence,
+                )
+                try:
+                    embedding = llm.embed(embed_text)
+                except Exception as e:
+                    log.error("pass-1 inherit embed failed on %s: %s", doc["doc_id"], e)
+                    stats["embed_failed"] += 1
+                    continue
+                indicators = _build_indicators(extract_iocs_regex(doc["command_line"]))
+                actions.append({
+                    "_op_type": "update",
+                    "_id": doc["doc_id"],
+                    "script": {
+                        "source": _REENRICH_INHERIT_SCRIPT,
+                        "params": {
+                            "description": parent_parsed.description,
+                            "intent": parent_parsed.intent,
+                            "confidence": parent_parsed.confidence,
+                            "model": parent.get("model", ""),
+                            "llm_config_hash": live_llm_hash,
+                            "embed_config_hash": live_embed_hash,
+                            "embedding": embedding,
+                            "tactics": parent_parsed.tactics,
+                            "techniques": parent_parsed.techniques,
+                            "indicators": indicators,
+                            "shape_hash": sh,
+                            "functional_parent": parent["_id"],
+                            "linked_at": now,
+                            "inherited_from_model": parent.get("model", ""),
+                            "confidence_at_link": int(parent_parsed.confidence),
+                        },
+                    },
+                })
+                db.mark_cached(
+                    doc["doc_id"], cfg.llm.generation_model,
+                    live_llm_hash, live_embed_hash, now,
+                )
+                # Keep cached_llm_hashes consistent so pass-2 (which
+                # re-reads from the in-memory dict) doesn't treat the
+                # doc as still stale after the inherit-write.
+                cached_llm_hashes[doc["doc_id"]] = live_llm_hash
+                stats["reenrich_inherited"] += 1
+
+                if len(actions) >= 50:
+                    ok, errs = bulk_write(es, commands_idx, actions)
+                    stats["bulk_ok"] += ok
+                    stats["bulk_errors"] += len(errs)
+                    if errs:
+                        log.warning("re-enrich bulk errors (%d): %s", len(errs), errs[:2])
+                    actions = []
+                continue
+
+            # ---- Standalone branch: full LLM call.
             cooccurring: list[tuple[str, int]] = []
             if cooc_cfg.enabled:
                 cooccurring = fetch_cooccurring_commands(
@@ -1614,7 +2232,28 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
                 doc["doc_id"], cfg.llm.generation_model,
                 live_llm_hash, live_embed_hash, now,
             )
+            cached_llm_hashes[doc["doc_id"]] = live_llm_hash
             stats["reenriched_ok"] += 1
+
+            # Promote this just-re-LLM'd doc as the in-batch parent for
+            # its shape so subsequent same-shape stale docs inherit.
+            if (
+                sh
+                and dedup_cfg.enabled
+                and parsed.intent != "unknown"
+                and parsed.confidence >= dedup_cfg.min_parent_confidence
+            ):
+                shape_parent_cache[sh] = {
+                    "_id": doc["doc_id"],
+                    "intent": parsed.intent,
+                    "confidence": int(parsed.confidence),
+                    "description": parsed.description,
+                    "tactics": list(parsed.tactics or []),
+                    "techniques": list(parsed.techniques or []),
+                    "model": model,
+                    "llm_config_hash": live_llm_hash,
+                    "embed_config_hash": live_embed_hash,
+                }
 
             if len(actions) >= 50:
                 ok, errs = bulk_write(es, commands_idx, actions)
@@ -1635,6 +2274,147 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
         es.indices.refresh(index=commands_idx)
     except Exception as exc:
         log.warning("re-enrich refresh failed (continuing): %s", exc)
+
+    # ---- Pass-2: re-inherit children from now-refreshed canonicals ----
+    #
+    # Functional-duplicate gating (ROADMAP #9). Children carry the
+    # parent's `llm_config_hash`, so when a parent re-enriches its hash
+    # flips and every child shows up as stale in pass-1's cache check.
+    # Pass-1 would have re-LLM'd them — wasteful. Pass-2 instead
+    # looks up the current best canonical for each child's shape and
+    # re-inherits, skipping the LLM and just re-embedding.
+    #
+    # NB: we walk pass-2 unconditionally (even when dedup is disabled in
+    # config) because legacy children written under an earlier toggle
+    # still need maintenance. The lookup respects min_confidence /
+    # require_known_intent from current config.
+    #
+    # Note: this is a separate lookup cache from pass-1's
+    # `shape_parent_cache`. Pass-1 only accepts parents whose own
+    # llm_config_hash already matches live (so the inherited values
+    # aren't about to change). Pass-2 runs after pass-1's refresh, so
+    # any newly-fresh canonical is fair game.
+    canonical_cache: dict[str, Optional[dict]] = {}
+
+    actions = []
+    with make_llm_client(cfg.llm) as llm:
+        for doc in iter_docs_for_reenrich(es, commands_idx, role_filter="child"):
+            stats["children_seen"] += 1
+            sh = doc["shape_hash"]
+            if not sh:
+                stats["children_orphaned"] += 1
+                continue
+
+            if sh in canonical_cache:
+                parent = canonical_cache[sh]
+            else:
+                parent = lookup_canonical_for_shape(
+                    es, commands_idx, sh,
+                    min_confidence=dedup_cfg.min_parent_confidence,
+                    require_known_intent=dedup_cfg.require_known_intent,
+                )
+                canonical_cache[sh] = parent
+
+            # Skip self-referential parent (child's own doc somehow
+            # returned by lookup, e.g. role flipped between passes).
+            if parent is not None and parent["_id"] == doc["doc_id"]:
+                parent = None
+
+            if parent is None:
+                # No usable canonical for this shape anymore — leave the
+                # child's existing enrichment intact. A future enrich
+                # cycle will re-promote when a new canonical appears.
+                stats["children_no_canonical"] += 1
+                continue
+
+            cached_hash = cached_llm_hashes.get(doc["doc_id"], "")
+            parent_hash = parent.get("llm_config_hash") or ""
+            if cached_hash and cached_hash == parent_hash:
+                # Child already carries this parent's hash — inheritance
+                # is fresh, nothing to do.
+                stats["children_skipped_fresh"] += 1
+                continue
+
+            if dry_run:
+                stats["children_would_relink"] += 1
+                continue
+
+            norm, _ = normalize(doc["command_line"], cfg.worker.command_max_chars)
+            if not norm:
+                continue
+
+            cooccurring2: list[tuple[str, int]] = []
+            if cooc_cfg.enabled:
+                cooccurring2 = fetch_cooccurring_commands(
+                    es, events_idx, norm,
+                    session_sample_size=cooc_cfg.session_sample_size,
+                    top_k=cooc_cfg.top_k,
+                    min_sessions=cooc_cfg.min_sessions,
+                    total_sessions=total_sessions,
+                )
+            parent_parsed = _synth_parsed_from_parent(parent)
+            embed_text = _build_embed_text(
+                norm, parent_parsed, cfg.llm.embed_context,
+                cooccurring=cooccurring2,
+                embed_cooccurrence=cooc_cfg.enabled and cooc_cfg.embed_cooccurrence,
+            )
+            try:
+                embedding = llm.embed(embed_text)
+            except Exception as e:
+                log.error("pass-2 embed failed on %s: %s", doc["doc_id"], e)
+                stats["children_embed_failed"] += 1
+                continue
+            indicators = _build_indicators(extract_iocs_regex(doc["command_line"]))
+
+            actions.append({
+                "_op_type": "update",
+                "_id": doc["doc_id"],
+                "script": {
+                    "source": _REENRICH_INHERIT_SCRIPT,
+                    "params": {
+                        "description": parent_parsed.description,
+                        "intent": parent_parsed.intent,
+                        "confidence": parent_parsed.confidence,
+                        "model": parent.get("model", ""),
+                        "llm_config_hash": parent_hash,
+                        "embed_config_hash": live_embed_hash,
+                        "embedding": embedding,
+                        "tactics": parent_parsed.tactics,
+                        "techniques": parent_parsed.techniques,
+                        "indicators": indicators,
+                        "shape_hash": sh,
+                        "functional_parent": parent["_id"],
+                        "linked_at": now,
+                        "inherited_from_model": parent.get("model", ""),
+                        "confidence_at_link": int(parent_parsed.confidence),
+                    },
+                },
+            })
+            db.mark_cached(
+                doc["doc_id"], cfg.llm.generation_model,
+                parent_hash, live_embed_hash, now,
+            )
+            stats["children_relinked"] += 1
+
+            if len(actions) >= 50:
+                ok, errs = bulk_write(es, commands_idx, actions)
+                stats["bulk_ok"] += ok
+                stats["bulk_errors"] += len(errs)
+                if errs:
+                    log.warning("pass-2 bulk errors (%d): %s", len(errs), errs[:2])
+                actions = []
+
+    if actions:
+        ok, errs = bulk_write(es, commands_idx, actions)
+        stats["bulk_ok"] += ok
+        stats["bulk_errors"] += len(errs)
+        if errs:
+            log.warning("pass-2 bulk errors (%d): %s", len(errs), errs[:2])
+
+    try:
+        es.indices.refresh(index=commands_idx)
+    except Exception as exc:
+        log.warning("pass-2 refresh failed (continuing): %s", exc)
 
     db.close()
     return dict(

@@ -574,6 +574,26 @@ def _build_parser() -> argparse.ArgumentParser:
     p_reenrich.add_argument("--dry-run", action="store_true",
                             help="Count stale rows without calling LLM or writing.")
 
+    # backfill-shape — one-shot admin op. Stamps shape.hash + role on
+    # every existing command doc so the functional-duplicate gate in
+    # `enrich` (ROADMAP #9) can find canonicals among historically-
+    # enriched commands. No LLM. No embedding.
+    p_backfill_shape = sub.add_parser(
+        "backfill-shape",
+        help=(
+            "Stamp shape.hash + role on every enriched command doc. "
+            "Run once after the mapping deploy that adds the shape "
+            "block. No LLM. Idempotent — re-running only touches docs "
+            "whose recomputed hash differs from what's stored. "
+            "ROADMAP issue #9."
+        ),
+    )
+    p_backfill_shape.add_argument(
+        "--source", default="cowrie", help="Source name (default: cowrie)")
+    p_backfill_shape.add_argument(
+        "--dry-run", action="store_true",
+        help="Count docs that would be stamped without writing.")
+
     # re-triage — re-evaluate stored `triage_reasons` against current rules.
     # No LLM/cloud calls. Closes the gap that `re-enrich-stale` doesn't cover:
     # triage.py changes (e.g. ROADMAP #23) don't affect llm_config_hash, so
@@ -976,6 +996,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[ERROR] Source {args.source!r} has no commands layer", flush=True)
             return 1
         stats = mod.run_reenrich_stale(cfg, secrets, dry_run=args.dry_run)
+        print(json.dumps(stats, indent=2, default=str))
+        return 0
+
+    if args.verb == "backfill-shape":
+        mod = _commands_layer(args.source)
+        if mod is None:
+            print(f"[ERROR] Source {args.source!r} has no commands layer", flush=True)
+            return 1
+        stats = mod.run_backfill_shape(cfg, secrets, dry_run=args.dry_run)
         print(json.dumps(stats, indent=2, default=str))
         return 0
 

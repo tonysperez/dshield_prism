@@ -472,6 +472,18 @@ class DiscoveryConfig(BaseModel):
     # session_count floor — bots that hit once per week don't fire.
     ip_shift_min_sessions: int = 5
     unattributed_min_sessions: int = 5
+    # `outlier_burst`: window + grouping thresholds.
+    outlier_burst_window_hours: int = 24
+    outlier_burst_min_sessions: int = 5
+    # `novel_edge_session`: per-cluster top-K novel sessions (approximates
+    # the design's "top 1%" — exact percentile would need two ES round-
+    # trips, the top-K approximation gives the same surfacing for clusters
+    # of size <= 300 and a 1% cap above that without the second query).
+    novel_edge_top_k_per_cluster: int = 3
+    novel_edge_min_cluster_size: int = 20
+    # `campaign_convergence`: IP overlap ratio between cmp-bhv-X and
+    # cmp-inf-Y (intersection / min(|bhv|, |inf|)).
+    convergence_min_ip_overlap_ratio: float = 0.4
 
 
 class NarrativeConfig(BaseModel):
@@ -592,6 +604,28 @@ class PromptsConfig(BaseModel):
     cluster_pair_explanation: Optional[str] = None
 
 
+class ShapeDedupConfig(BaseModel):
+    """Functional-duplicate gating on command enrichment (ROADMAP #9).
+
+    When a new command's shape signature (literals replaced with type
+    placeholders, see `command_shape.normalize_to_shape`) matches an
+    already-enriched canonical, skip the LLM generation call and inherit
+    the canonical's intent/description/tactics/techniques. The new
+    command still gets its own embedding + regex-extracted IOCs because
+    those are per-command-unique.
+
+    Toggle off to force a full LLM call on every command (useful for
+    A/B'ing the dedup quality or for debugging a suspected miscanon).
+    """
+    enabled: bool = True
+    # Parent must have at least this confidence (1-10 scale) for a child
+    # to inherit. Cutoff guards against propagating a noisy enrichment.
+    min_parent_confidence: int = 5
+    # Parent's intent must not be "unknown" — a parent whose enrichment
+    # failed to commit an intent shouldn't be canonical for anyone.
+    require_known_intent: bool = True
+
+
 class AppConfig(BaseModel):
     elasticsearch: ESConfig
     llm: LLMConfig
@@ -604,6 +638,7 @@ class AppConfig(BaseModel):
     cooccurrence: CooccurrenceConfig = Field(default_factory=CooccurrenceConfig)
     intel: IntelConfig = Field(default_factory=IntelConfig)
     findings: FindingsConfig = Field(default_factory=FindingsConfig)
+    command_shape_dedup: ShapeDedupConfig = Field(default_factory=ShapeDedupConfig)
 
 
 class Secrets(BaseSettings):
@@ -795,10 +830,21 @@ def compute_llm_config_hash(cfg: AppConfig) -> str:
     cooc_payload = json.dumps(cooc_subset, sort_keys=True, separators=(",", ":"))
     prompt_payload = _hash_prompt_files(cfg)
     grounding_payload = _hash_command_grounding()
+    # Shape-dedup gate flips cached-LLM trust: when gating turns on, a
+    # row written as standalone-via-LLM is still trustworthy, but a row
+    # previously written via inherit-path is only as trustworthy as its
+    # parent. Including the toggle here so an operator-level flip
+    # (off→on or on→off) routes through the normal re-enrich-stale
+    # machinery rather than silently changing semantics.
+    dedup_payload = json.dumps({
+        "enabled": cfg.command_shape_dedup.enabled,
+        "require_known_intent": cfg.command_shape_dedup.require_known_intent,
+    }, sort_keys=True, separators=(",", ":"))
     combined = (
         f"cooc:{cooc_payload}\n"
         f"prompts:{prompt_payload}\n"
-        f"grounding:{grounding_payload}"
+        f"grounding:{grounding_payload}\n"
+        f"shape_dedup:{dedup_payload}"
     )
     return hashlib.sha256(combined.encode("utf-8")).hexdigest()[:_CONFIG_HASH_LEN]
 
