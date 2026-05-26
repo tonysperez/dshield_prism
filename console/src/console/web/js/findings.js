@@ -12,23 +12,46 @@
 
 const STATUSES = ["new", "ack", "confirmed", "rejected"];
 const STREAMS = ["drift", "discovery", "coverage"];
+const FACET_DIMS = ["score_band", "age_band", "ip_band", "intent", "intel_verdict"];
+const FACET_LABEL = {
+  score_band:    "Score",
+  age_band:      "Age",
+  ip_band:       "IP count",
+  intent:        "Intent",
+  intel_verdict: "Intel verdict",
+};
 
 const state = {
   status: "new",     // single status (chip click), or "all"
   sort: "score",
+  facets: {},        // {dim: bucket_key} — one active bucket per dim
 };
 
 function parseQuery() {
   const q = new URLSearchParams(location.search);
   if (q.has("status")) state.status = q.get("status");
   if (q.has("sort")) state.sort = q.get("sort");
+  for (const dim of FACET_DIMS) {
+    if (q.has(dim)) state.facets[dim] = q.get(dim);
+  }
 }
 
 function pushQuery() {
   const q = new URLSearchParams();
   q.set("status", state.status);
   if (state.sort !== "score") q.set("sort", state.sort);
+  for (const dim of FACET_DIMS) {
+    if (state.facets[dim]) q.set(dim, state.facets[dim]);
+  }
   history.replaceState(null, "", "?" + q.toString());
+}
+
+function facetParams() {
+  const p = new URLSearchParams();
+  for (const dim of FACET_DIMS) {
+    if (state.facets[dim]) p.set(dim, state.facets[dim]);
+  }
+  return p;
 }
 
 function el(tag, attrs, children) {
@@ -85,6 +108,56 @@ function sizeCell(r) {
 // ---------------------------------------------------------------------------
 // Filter chips
 // ---------------------------------------------------------------------------
+
+function renderFacets(facetCounts) {
+  const root = document.getElementById("facet-rail-extras");
+  if (!root) return;
+  root.innerHTML = "";
+
+  const activeCount = Object.values(state.facets).filter(Boolean).length;
+  if (activeCount > 0) {
+    const clear = el("div", {class: "facet-group"}, [
+      el("h5", null, ["Active facets"]),
+      el("a", {
+        href: "#", class: "facet-row",
+        onclick: (e) => {
+          e.preventDefault();
+          state.facets = {};
+          pushQuery();
+          refreshAll();
+        },
+      }, [`clear ${activeCount} filter${activeCount === 1 ? "" : "s"}`]),
+    ]);
+    root.appendChild(clear);
+  }
+
+  for (const dim of FACET_DIMS) {
+    const buckets = facetCounts[dim] || [];
+    // Skip empty dimensions to keep the rail compact.
+    const hasAny = buckets.some(b => b.count > 0) || state.facets[dim];
+    if (!hasAny) continue;
+    const group = el("div", {class: "facet-group"});
+    group.appendChild(el("h5", null, [FACET_LABEL[dim] || dim]));
+    for (const b of buckets) {
+      if (b.count === 0 && state.facets[dim] !== b.key) continue;
+      const isActive = state.facets[dim] === b.key;
+      const row = el("div", {
+        class: "facet-row" + (isActive ? " active" : ""),
+        onclick: () => {
+          // Toggle: clicking active bucket clears the dim; clicking a
+          // different one swaps.
+          state.facets[dim] = isActive ? "" : b.key;
+          if (!state.facets[dim]) delete state.facets[dim];
+          pushQuery();
+          refreshAll();
+        },
+      }, [b.key, el("span", {class: "count"}, [`${b.count}`])]);
+      group.appendChild(row);
+    }
+    root.appendChild(group);
+  }
+}
+
 
 function renderStatusChips(counts) {
   const wrap = document.getElementById("status-chips");
@@ -171,7 +244,7 @@ function renderStreamRows(stream, rows) {
 }
 
 async function fetchStream(stream) {
-  const params = new URLSearchParams();
+  const params = facetParams();
   params.set("status", state.status);
   params.set("stream", stream);
   params.set("size", 200);
@@ -194,13 +267,28 @@ async function fetchStream(stream) {
   }
 }
 
-async function refreshAll() {
-  let firstData = null;
-  for (const s of STREAMS) {
-    const d = await fetchStream(s);
-    if (!firstData) firstData = d;
+// One fetch (no stream filter) drives the facet rail + status chips, so the
+// rail reflects the entire inbox under the current status + facet selection.
+async function fetchFacets() {
+  const params = facetParams();
+  params.set("status", state.status);
+  params.set("size", 1);  // facets only; rows discarded
+  try {
+    const r = await fetch("/api/findings?" + params.toString());
+    if (!r.ok) return {};
+    return await r.json();
+  } catch {
+    return {};
   }
-  if (firstData) renderStatusChips(firstData.status_counts || {});
+}
+
+async function refreshAll() {
+  const facetData = await fetchFacets();
+  renderStatusChips(facetData.status_counts || {});
+  renderFacets(facetData.facet_counts || {});
+  for (const s of STREAMS) {
+    await fetchStream(s);
+  }
 }
 
 async function mutateStatus(fid, newStatus, selEl) {

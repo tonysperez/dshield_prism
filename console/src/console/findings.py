@@ -57,6 +57,7 @@ def list_findings(
     status: Optional[list[str]] = None,
     kind: Optional[str] = None,
     stream: Optional[str] = None,
+    facets: Optional[dict[str, str]] = None,
     size: int = 100,
     frm: int = 0,
     sort: str = "score",
@@ -95,12 +96,10 @@ def list_findings(
     if stream:
         if stream not in valid_streams():
             raise ValueError(f"invalid stream: {stream!r}")
-        kinds_in_stream = (
-            _COVERAGE_KINDS if stream == "coverage" else
-            _DRIFT_KINDS if stream == "drift" else
-            _DISCOVERY_KINDS
-        )
+        kinds_in_stream = _kinds_for_stream(stream)
         must.append({"terms": {"kind": sorted(kinds_in_stream)}})
+    if facets:
+        must.extend(_facet_filters(facets))
 
     sort_clause: list[dict]
     if sort == "last_seen":
@@ -170,6 +169,199 @@ def kind_counts(es, cfg, *, status: Optional[list[str]] = None) -> dict[str, int
         return {}
     buckets = resp.get("aggregations", {}).get("by_kind", {}).get("buckets", []) or []
     return {b["key"]: int(b["doc_count"]) for b in buckets}
+
+
+_SCORE_BANDS = [
+    ("low",    {"lt": 0.5}),
+    ("medium", {"gte": 0.5, "lt": 1.5}),
+    ("high",   {"gte": 1.5}),
+]
+_AGE_BANDS = [
+    ("today",  {"gte": "now-24h"}),
+    ("week",   {"gte": "now-7d/d", "lt": "now-24h"}),
+    ("older",  {"lt": "now-7d/d"}),
+]
+_IP_BANDS = [
+    ("small",  {"lt": 5}),
+    ("medium", {"gte": 5, "lt": 25}),
+    ("large",  {"gte": 25}),
+]
+
+
+def _facet_filters(facets: dict[str, str]) -> list[dict]:
+    """Translate `{dimension: bucket_name}` into ES must clauses. Findings v2 P1c."""
+    must: list[dict] = []
+    for dim, val in (facets or {}).items():
+        if not val:
+            continue
+        if dim == "score_band":
+            for name, rng in _SCORE_BANDS:
+                if name == val:
+                    must.append({"range": {"score": rng}})
+                    break
+        elif dim == "age_band":
+            for name, rng in _AGE_BANDS:
+                if name == val:
+                    must.append({"range": {"first_seen_at": rng}})
+                    break
+        elif dim == "ip_band":
+            for name, rng in _IP_BANDS:
+                if name == val:
+                    # `ip_count` lives on discovery findings; coverage uses
+                    # `member_ips`. Either-matches.
+                    must.append({"bool": {"should": [
+                        {"range": {"evidence.ip_count":   rng}},
+                        {"range": {"evidence.member_ips": rng}},
+                    ], "minimum_should_match": 1}})
+                    break
+        elif dim == "intent":
+            must.append({"term": {"evidence.dominant_intent": val}})
+        elif dim == "intel_verdict":
+            # `intel_verdict_flip` writes verdict_curr; coverage IP intel
+            # writes consensus_label. Either-matches.
+            must.append({"bool": {"should": [
+                {"term": {"evidence.verdict_curr":   val}},
+                {"term": {"evidence.consensus_label": val}},
+            ], "minimum_should_match": 1}})
+    return must
+
+
+def facet_counts(
+    es, cfg, *,
+    status: Optional[list[str]] = None,
+    stream: Optional[str] = None,
+    facets: Optional[dict[str, str]] = None,
+) -> dict[str, list[dict]]:
+    """Bucket counts for the left facet rail. Returns:
+
+      {
+        "score_band":     [{"key": "low", "count": N}, ...],
+        "age_band":       [...],
+        "ip_band":        [...],
+        "intent":         [{"key": "execution", "count": N}, ...],
+        "intel_verdict":  [...],
+      }
+
+    The bucket-count query honours the current status + stream filter
+    plus any *other* active facets, but NOT the facet being counted —
+    so a user who has `score_band=high` selected still sees the
+    distribution of score bands. Standard faceted-search semantics.
+
+    Findings v2 P1c.
+    """
+    idx = cfg.findings.indexes.default
+    if not es.indices.exists(index=idx):
+        return {}
+    facets = facets or {}
+
+    def _base_must(exclude_dim: Optional[str]) -> list[dict]:
+        m: list[dict] = []
+        if status:
+            m.append({"terms": {"status": status}})
+        if stream:
+            kinds = _kinds_for_stream(stream)
+            if kinds:
+                m.append({"terms": {"kind": sorted(kinds)}})
+        other = {d: v for d, v in facets.items() if d != exclude_dim}
+        m.extend(_facet_filters(other))
+        return m
+
+    out: dict[str, list[dict]] = {}
+
+    def _range_facet(dim: str, field_or_should: Any, bands: list) -> None:
+        ranges = []
+        for name, rng in bands:
+            ranges.append({"key": name, **rng})
+        try:
+            if isinstance(field_or_should, str):
+                agg = {"range": {"field": field_or_should, "ranges": ranges, "keyed": False}}
+            else:
+                # composite shouldn't occur for these; keep simple
+                return
+            resp = es.search(
+                index=idx, size=0,
+                query={"bool": {"must": _base_must(dim) or [{"match_all": {}}]}},
+                aggs={"f": agg},
+            )
+            buckets = ((resp.get("aggregations") or {}).get("f") or {}).get("buckets") or []
+            out[dim] = [{"key": b.get("key"), "count": int(b.get("doc_count") or 0)} for b in buckets]
+        except Exception as exc:
+            log.warning("findings: facet %s failed: %s", dim, exc)
+            out[dim] = []
+
+    def _terms_facet(dim: str, field: str, size: int = 8) -> None:
+        try:
+            resp = es.search(
+                index=idx, size=0,
+                query={"bool": {"must": _base_must(dim) or [{"match_all": {}}]}},
+                aggs={"f": {"terms": {"field": field, "size": size}}},
+            )
+            buckets = ((resp.get("aggregations") or {}).get("f") or {}).get("buckets") or []
+            out[dim] = [{"key": b.get("key"), "count": int(b.get("doc_count") or 0)} for b in buckets]
+        except Exception as exc:
+            log.warning("findings: facet %s failed: %s", dim, exc)
+            out[dim] = []
+
+    _range_facet("score_band", "score", _SCORE_BANDS)
+    _range_facet("age_band",   "first_seen_at", _AGE_BANDS)
+    # ip_band: prefer evidence.ip_count, fall back to evidence.member_ips.
+    # Run two range aggs and merge counts per band — same shape downstream.
+    try:
+        ranges = [{"key": n, **r} for n, r in _IP_BANDS]
+        resp = es.search(
+            index=idx, size=0,
+            query={"bool": {"must": _base_must("ip_band") or [{"match_all": {}}]}},
+            aggs={
+                "ip_count":   {"range": {"field": "evidence.ip_count",   "ranges": ranges, "keyed": False}},
+                "member_ips": {"range": {"field": "evidence.member_ips", "ranges": ranges, "keyed": False}},
+            },
+        )
+        aggs = resp.get("aggregations") or {}
+        merged: dict[str, int] = {}
+        for src_key in ("ip_count", "member_ips"):
+            for b in ((aggs.get(src_key) or {}).get("buckets") or []):
+                k = b.get("key")
+                if k:
+                    merged[k] = merged.get(k, 0) + int(b.get("doc_count") or 0)
+        out["ip_band"] = [{"key": n, "count": merged.get(n, 0)} for n, _ in _IP_BANDS]
+    except Exception as exc:
+        log.warning("findings: facet ip_band failed: %s", exc)
+        out["ip_band"] = []
+
+    _terms_facet("intent",        "evidence.dominant_intent", size=10)
+    # intel_verdict: union of evidence.verdict_curr + evidence.consensus_label
+    try:
+        resp = es.search(
+            index=idx, size=0,
+            query={"bool": {"must": _base_must("intel_verdict") or [{"match_all": {}}]}},
+            aggs={
+                "v": {"terms": {"field": "evidence.verdict_curr",   "size": 8}},
+                "c": {"terms": {"field": "evidence.consensus_label", "size": 8}},
+            },
+        )
+        aggs = resp.get("aggregations") or {}
+        merged: dict[str, int] = {}
+        for src_key in ("v", "c"):
+            for b in ((aggs.get(src_key) or {}).get("buckets") or []):
+                k = b.get("key")
+                if k:
+                    merged[k] = merged.get(k, 0) + int(b.get("doc_count") or 0)
+        out["intel_verdict"] = [{"key": k, "count": n}
+                                for k, n in sorted(merged.items(), key=lambda kv: -kv[1])]
+    except Exception as exc:
+        log.warning("findings: facet intel_verdict failed: %s", exc)
+        out["intel_verdict"] = []
+
+    return out
+
+
+def _kinds_for_stream(stream: str) -> frozenset[str]:
+    return (
+        _COVERAGE_KINDS if stream == "coverage" else
+        _DRIFT_KINDS if stream == "drift" else
+        _DISCOVERY_KINDS if stream == "discovery" else
+        frozenset()
+    )
 
 
 def stream_counts(es, cfg, *, status: Optional[list[str]] = None) -> dict[str, int]:

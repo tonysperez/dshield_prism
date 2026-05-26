@@ -245,6 +245,12 @@ def build_app(config_path: str | None = None) -> FastAPI:
         status: str = Query("new", description="Comma-separated list of statuses, or 'all'"),
         kind: Optional[str] = Query(None, description="Single finding kind to filter on"),
         stream: Optional[str] = Query(None, description="drift | discovery | coverage"),
+        # P1c facet rail — each accepts a single bucket key per dimension.
+        score_band:    Optional[str] = Query(None, description="low | medium | high"),
+        age_band:      Optional[str] = Query(None, description="today | week | older"),
+        ip_band:       Optional[str] = Query(None, description="small | medium | large"),
+        intent:        Optional[str] = Query(None, description="dominant_intent value"),
+        intel_verdict: Optional[str] = Query(None, description="clean | malicious | mixed | no_data"),
         size: int = Query(50, ge=1, le=500),
         frm: int = Query(0, ge=0),
         sort: str = Query("score", description="score | last_seen | first_seen"),
@@ -254,10 +260,19 @@ def build_app(config_path: str | None = None) -> FastAPI:
             status_list = []
         else:
             status_list = [s.strip() for s in status.split(",") if s.strip()]
+        facets = {
+            "score_band":    score_band,
+            "age_band":      age_band,
+            "ip_band":       ip_band,
+            "intent":        intent,
+            "intel_verdict": intel_verdict,
+        }
+        facets = {k: v for k, v in facets.items() if v}
         try:
             data = findings_mod.list_findings(
                 es, cfg,
                 status=status_list, kind=kind, stream=stream,
+                facets=facets,
                 size=size, frm=frm, sort=sort,
             )
         except ValueError as exc:
@@ -271,6 +286,12 @@ def build_app(config_path: str | None = None) -> FastAPI:
         # Findings v2 step 3 — three-section page header relies on this.
         data["stream_counts"] = findings_mod.stream_counts(
             es, cfg, status=status_list if status_list else None,
+        )
+        # Findings v2 P1c — left facet rail bucket counts.
+        data["facet_counts"] = findings_mod.facet_counts(
+            es, cfg,
+            status=status_list if status_list else None,
+            stream=stream, facets=facets,
         )
         return JSONResponse(data)
 
