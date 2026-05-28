@@ -24,7 +24,6 @@ from __future__ import annotations
 import hashlib
 import re
 import shlex
-from typing import Iterable
 
 # ---------------------------------------------------------------------------
 # Tokenization

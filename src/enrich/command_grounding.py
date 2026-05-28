@@ -189,7 +189,7 @@ def add_to_denylist(token: str, rationale: str) -> tuple[bool, str]:
         return False, f"rejected token (whitespace or invalid characters): {token!r}"
     rationale = (rationale or "").strip()[:300]
     entries = dict(_load_denylist())
-    entries[norm] = rationale or f"added via Health page (no rationale supplied)"
+    entries[norm] = rationale or "added via Health page (no rationale supplied)"
     _write_denylist(entries)
     return True, f"added {norm!r} to denylist"
 

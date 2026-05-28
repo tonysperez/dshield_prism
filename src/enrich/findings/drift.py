@@ -32,7 +32,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
-from collections import Counter
 from typing import Any, Iterable, Optional
 
 from elasticsearch import Elasticsearch

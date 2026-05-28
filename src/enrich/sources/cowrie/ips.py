@@ -15,7 +15,10 @@ import logging
 import time
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
-from typing import Iterator, Optional
+from typing import TYPE_CHECKING, Iterator, Optional
+
+if TYPE_CHECKING:
+    import numpy as np
 
 from elasticsearch import Elasticsearch
 

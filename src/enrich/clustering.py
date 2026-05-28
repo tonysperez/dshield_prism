@@ -14,7 +14,7 @@ import logging
 import math
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Callable, Iterator
 
 from elasticsearch import Elasticsearch

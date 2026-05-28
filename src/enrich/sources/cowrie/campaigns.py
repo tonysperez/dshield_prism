@@ -712,7 +712,6 @@ def run_mine_infrastructure(
     """
     es = make_client(cfg.elasticsearch, secrets)
     raw_idx       = cfg.elasticsearch.indexes.cowrie.sessions_raw
-    sessions_idx  = cfg.elasticsearch.indexes.cowrie.sessions_rollup
     commands_idx  = cfg.elasticsearch.indexes.cowrie.commands
     out_idx       = cfg.elasticsearch.indexes.cowrie.campaigns
 

@@ -30,7 +30,7 @@ from typing import Iterable, Iterator, Optional
 
 from ..cache import StateDB
 from ..config import AppConfig, IntelPriorityConfig
-from .artifact import Artifact, canonical_ip, canonical_url, is_in_cidrs, make_artifact
+from .artifact import Artifact, canonical_ip, canonical_url, is_in_cidrs
 
 log = logging.getLogger(__name__)
 

@@ -15,7 +15,10 @@ import re
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Iterator, Optional
+from typing import TYPE_CHECKING, Iterator, Optional
+
+if TYPE_CHECKING:
+    import numpy as np
 
 from pydantic import ValidationError
 from elasticsearch import Elasticsearch
@@ -26,7 +29,7 @@ from ...config import (
     AppConfig, Secrets, CommandClusterConfig,
     compute_embed_config_hash, compute_llm_config_hash, load_prompt,
 )
-from ...es_client import bulk_write, init_index, make_client
+from ...es_client import bulk_write, make_client
 from ...llm import make_llm_client
 from ...llm.schemas import CommandEnrichment, CloudCommandEnrichment
 from ... import triage as triage_mod

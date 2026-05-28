@@ -249,7 +249,7 @@ def main() -> int:
             "finish in Kibana Dev Tools manually.\n"
         )
         try:
-            resp = input(f"  Proceed? [y/N] ").strip().lower()
+            resp = input("  Proceed? [y/N] ").strip().lower()
         except EOFError:
             resp = ""
         if resp not in ("y", "yes"):

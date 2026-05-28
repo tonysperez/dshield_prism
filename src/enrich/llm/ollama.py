@@ -1,7 +1,6 @@
 """Ollama HTTP client. Generation (JSON-mode) + embeddings."""
 from __future__ import annotations
 
-import json
 import logging
 from typing import Optional
 
@@ -94,5 +93,5 @@ class OllamaClient:
         data = r.json()
         emb = data.get("embedding")
         if not emb or not isinstance(emb, list):
-            raise OllamaError(f"embed: empty/invalid embedding in response")
+            raise OllamaError("embed: empty/invalid embedding in response")
         return emb

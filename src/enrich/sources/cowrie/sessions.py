@@ -10,9 +10,11 @@ import hashlib
 import logging
 import math
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Iterator, Optional
+from typing import TYPE_CHECKING, Iterable, Iterator, Optional
+
+if TYPE_CHECKING:
+    import numpy as np
 
 from elasticsearch import Elasticsearch
 
