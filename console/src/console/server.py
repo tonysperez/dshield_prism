@@ -482,6 +482,15 @@ def build_app(config_path: str | None = None) -> FastAPI:
                 error=f"{e.__class__.__name__}: {e}",
             )
 
+    @app.get("/api/config/ui")
+    def config_ui() -> JSONResponse:
+        """UI-facing config values, fetched once at frontend boot. Distinct
+        from /api/health so widening it stays a no-op for the health route's
+        typed schema. ROADMAP #4 — the spotlight threshold lives here."""
+        return JSONResponse({
+            "specificity_threshold": cfg.session.specificity_threshold,
+        })
+
     @app.get("/api/search", response_model=SearchResponse)
     def search(q: str = Query(..., min_length=1)) -> SearchResponse:
         refs = ioc.detect(q)
@@ -601,6 +610,27 @@ def build_app(config_path: str | None = None) -> FastAPI:
         sf = _session_filter(require_login, require_commands) if kind == "session" else None
         r = queries.members_of_cluster(es, cfg, kind, cid, size=size, sf=sf)
         return _table(r, 0, size)
+
+    # --- Cluster-anchored investigation pivots (ROADMAP #4) ---------------
+    @app.get("/api/ip/{ip}/activity")
+    def ip_activity_api(ip: str) -> JSONResponse:
+        """Cross-cluster footprint for an IP — playbooks, campaigns, totals,
+        intel verdict. Drives the drawer's click-to-pivot sub-panel."""
+        return JSONResponse(queries.ip_activity(es, cfg, ip))
+
+    @app.get("/api/command/{sha}/activity")
+    def command_activity_api(sha: str) -> JSONResponse:
+        """Cross-cluster footprint for a command (16-hex short id) — sessions,
+        playbooks, IPs that ran it."""
+        return JSONResponse(queries.command_activity(es, cfg, sha.lower()))
+
+    @app.get("/api/playbook/{playbook_id}/distinctive")
+    def playbook_distinctive_api(
+        playbook_id: str, top_n: int = Query(20, ge=1, le=200),
+    ) -> JSONResponse:
+        """Top-N most cluster-specific IPs + commands for a playbook, from the
+        persisted specificity maps."""
+        return JSONResponse(queries.playbook_distinctive(es, cfg, playbook_id, top_n=top_n))
 
     @app.get("/api/ioc/{ioc_type}/{ident}", response_model=IOCDetail)
     def ioc_detail(ioc_type: str, ident: str) -> IOCDetail:

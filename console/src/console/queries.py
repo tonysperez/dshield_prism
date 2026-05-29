@@ -755,6 +755,200 @@ def sessions_for_command(
     return {"rows": rows, "total": len(rows)}
 
 
+# ----------------------------------------------------------------------------
+# Cluster-anchored investigation pivots (ROADMAP #4)
+#
+# "Where else has this IP / command shown up, and is it distinctive to this
+# cluster or commodity?" Specificity is precomputed on the session-cluster
+# centroid docs (ip_specificity / command_specificity flattened maps); the
+# pivot lookups read cross-cluster footprints from the session rollup.
+# ----------------------------------------------------------------------------
+
+_PB_ID_PATH = "dshield.cowrie.enrichment.session.playbook_id"
+_PB_NAME_PATH = "dshield.cowrie.enrichment.session.playbook_name"
+_CMD_SET_PATH = "dshield.cowrie.enrichment.session.command_set.keyword"
+_INTEL_LABEL_PATH = "dshield.cowrie.enrichment.session.source_ip_intel.consensus_label"
+
+
+def playbook_specificity_maps(
+    es: Elasticsearch, cfg: AppConfig, playbook_id: str,
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Merge `ip_specificity` / `command_specificity` across every centroid
+    doc carrying this playbook_id (a playbook can span >1 cluster). Keeps the
+    max score per key. Returns `(ip_scores, command_scores)` — possibly empty
+    if the cluster pass hasn't yet written specificity for this playbook."""
+    idx = cfg.elasticsearch.indexes.cowrie.session_clusters
+    ip_scores: dict[str, float] = {}
+    cmd_scores: dict[str, float] = {}
+    try:
+        field = _resolve_agg_field(es, idx, "playbook_id")
+        r = es.search(
+            index=idx, size=100,
+            _source=["ip_specificity", "command_specificity"],
+            query={"bool": {"must": [
+                {"term": {"doc_type": "cluster"}},
+                {"term": {field: playbook_id}},
+            ]}},
+        )
+    except Exception as exc:  # pragma: no cover -- network paths
+        log.warning("specificity maps lookup failed for %s: %s", playbook_id, exc)
+        return ip_scores, cmd_scores
+    for h in r["hits"]["hits"]:
+        src = h["_source"]
+        for store, key in ((ip_scores, "ip_specificity"), (cmd_scores, "command_specificity")):
+            for k, v in (src.get(key) or {}).items():
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if fv > store.get(k, -1.0):
+                    store[k] = fv
+    return ip_scores, cmd_scores
+
+
+def _playbooks_for_sessions(
+    es: Elasticsearch, cfg: AppConfig, base_query: dict, *, size: int = 25,
+) -> list[dict]:
+    """Playbooks (with names + session counts) over the sessions matched by
+    `base_query`. Drives the IP / command pivot 'also appears in' list."""
+    sess_idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
+    pb_field = _resolve_agg_field(es, sess_idx, _PB_ID_PATH)
+    try:
+        r = es.search(
+            index=sess_idx, size=0, query=base_query,
+            aggs={"pb": {
+                "terms": {"field": pb_field, "size": size},
+                "aggs": {"name": {"top_hits": {"size": 1, "_source": [_PB_NAME_PATH]}}},
+            }},
+        )
+    except Exception as exc:  # pragma: no cover
+        log.warning("playbooks-for-sessions agg failed: %s", exc)
+        return []
+    out: list[dict] = []
+    for b in r["aggregations"]["pb"]["buckets"]:
+        hits = b["name"]["hits"]["hits"]
+        name = None
+        if hits:
+            name = (((hits[0]["_source"].get("dshield") or {}).get("cowrie") or {})
+                    .get("enrichment", {}).get("session", {}).get("playbook_name"))
+        out.append({
+            "playbook_id": b["key"], "playbook_name": name,
+            "session_count": int(b["doc_count"]),
+        })
+    return out
+
+
+def ip_activity(es: Elasticsearch, cfg: AppConfig, ip: str) -> dict:
+    """Cross-cluster footprint for an IP: playbooks + campaigns it belongs to,
+    total sessions, first/last seen, intel verdict. ROADMAP #4."""
+    sess_idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
+    camp_idx = cfg.elasticsearch.indexes.cowrie.campaigns
+    base = {"term": {"source.ip": ip}}
+    total = 0
+    first_seen = last_seen = verdict = None
+    try:
+        r = es.search(index=sess_idx, size=1, query=base,
+                      _source=[_INTEL_LABEL_PATH],
+                      sort=[{"event.start": {"order": "desc"}}],
+                      aggs={"first": {"min": {"field": "event.start"}},
+                            "last": {"max": {"field": "event.start"}}})
+        total = int(r["hits"]["total"]["value"])
+        first_seen = r["aggregations"]["first"].get("value_as_string")
+        last_seen = r["aggregations"]["last"].get("value_as_string")
+        hits = r["hits"]["hits"]
+        if hits:
+            verdict = (((hits[0]["_source"].get("dshield") or {}).get("cowrie") or {})
+                       .get("enrichment", {}).get("session", {})
+                       .get("source_ip_intel", {}).get("consensus_label"))
+    except Exception as exc:  # pragma: no cover
+        log.warning("ip_activity sessions agg failed for %s: %s", ip, exc)
+    playbooks = _playbooks_for_sessions(es, cfg, base)
+    campaigns: list[dict] = []
+    try:
+        cr = es.search(index=camp_idx, size=25, _source=["campaign_id", "name"],
+                       query={"term": {"member_source_ips": ip}})
+        campaigns = [{"campaign_id": h["_source"].get("campaign_id"),
+                      "name": h["_source"].get("name")} for h in cr["hits"]["hits"]]
+    except Exception:
+        pass
+    return {
+        "ip": ip, "total_sessions": total,
+        "first_seen": first_seen, "last_seen": last_seen,
+        "intel_verdict": verdict, "playbooks": playbooks, "campaigns": campaigns,
+    }
+
+
+def command_activity(
+    es: Elasticsearch, cfg: AppConfig, short_hash: str, *, sample: int = 10,
+) -> dict:
+    """Cross-cluster footprint for a command (by its 16-hex short id =
+    command_set key): sessions / playbooks / IPs that ran it, occurrence
+    count, sample sessions. ROADMAP #4."""
+    sess_idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
+    base = {"term": {_CMD_SET_PATH: short_hash}}
+    command_line = intent = None
+    occurrence = None
+    doc = lookup_command(es, cfg, short_hash)
+    if doc:
+        enr = ((doc["_source"].get("dshield") or {}).get("cowrie") or {}).get("enrichment") or {}
+        command_line = ((doc["_source"].get("process") or {}).get("command_line"))
+        intent = enr.get("intent")
+        occurrence = enr.get("occurrence_count")
+    total = 0
+    ips: list[dict] = []
+    samples: list[str] = []
+    try:
+        r = es.search(index=sess_idx, size=sample, query=base,
+                      _source=["cowrie.session_id"],
+                      aggs={"by_ip": {"terms": {"field": "source.ip", "size": 25}}})
+        total = int(r["hits"]["total"]["value"])
+        ips = [{"ip": b["key"], "session_count": int(b["doc_count"])}
+               for b in r["aggregations"]["by_ip"]["buckets"]]
+        samples = [((h["_source"].get("cowrie") or {}).get("session_id"))
+                   for h in r["hits"]["hits"]]
+        samples = [s for s in samples if s]
+    except Exception as exc:  # pragma: no cover
+        log.warning("command_activity agg failed for %s: %s", short_hash, exc)
+    playbooks = _playbooks_for_sessions(es, cfg, base)
+    return {
+        "command_id": short_hash, "command_line": command_line,
+        "intent": intent, "occurrence_count": occurrence,
+        "total_sessions": total, "playbooks": playbooks, "ips": ips,
+        "sample_session_ids": samples,
+    }
+
+
+def playbook_distinctive(
+    es: Elasticsearch, cfg: AppConfig, playbook_id: str, *, top_n: int = 20,
+) -> dict:
+    """Top-N most cluster-specific IPs + commands for a playbook, read from the
+    persisted specificity maps and ranked by score desc. Command text is joined
+    by `_id` (= the 16-hex command_set key). ROADMAP #4."""
+    ip_scores, cmd_scores = playbook_specificity_maps(es, cfg, playbook_id)
+    top_ips = sorted(ip_scores.items(), key=lambda kv: -kv[1])[:top_n]
+    top_cmds = sorted(cmd_scores.items(), key=lambda kv: -kv[1])[:top_n]
+
+    cmd_text: dict[str, str] = {}
+    if top_cmds:
+        try:
+            cr = es.search(
+                index=cfg.elasticsearch.indexes.cowrie.commands,
+                size=len(top_cmds), _source=["process.command_line"],
+                query={"terms": {"_id": [h for h, _ in top_cmds]}},
+            )
+            for h in cr["hits"]["hits"]:
+                line = ((h["_source"].get("process") or {}).get("command_line")) or ""
+                cmd_text[h["_id"]] = line[:240]
+        except Exception as exc:  # pragma: no cover
+            log.warning("distinctive command-text join failed for %s: %s", playbook_id, exc)
+    return {
+        "playbook_id": playbook_id,
+        "ips": [{"ip": ip, "specificity": sc} for ip, sc in top_ips],
+        "commands": [{"command_id": h, "specificity": sc,
+                      "command": cmd_text.get(h, "")} for h, sc in top_cmds],
+    }
+
+
 def members_of_cluster(
     es: Elasticsearch, cfg: AppConfig, kind: str, cluster_id: str, *,
     size: int = 50,

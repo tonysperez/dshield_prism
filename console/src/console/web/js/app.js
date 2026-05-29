@@ -134,6 +134,66 @@
     return r.json();
   }
 
+  // ROADMAP #4 — UI config shared by drawer + graph. `specThreshold` is the
+  // "distinctive" cutoff for specificity pills/rings: scores at or above
+  // render filled, below render faded. Precedence (each step wins over the
+  // next): localStorage `prism.spotlightThreshold` → server `/api/config/ui`
+  // → 0.5 fallback. Initialized synchronously from localStorage so pre-fetch
+  // renders aren't wrong; the async fetch updates the value AFTER boot, and
+  // triggers a graph redraw so any in-view pills/rings reflect the new
+  // threshold immediately. Drawer picks up on its next open.
+  function _parseSpecThresholdLS() {
+    const raw = localStorage.getItem("prism.spotlightThreshold");
+    if (raw == null) return null;
+    const v = parseFloat(raw);
+    return (isFinite(v) && v >= 0 && v <= 1) ? v : null;
+  }
+  window.PrismUI = window.PrismUI || {};
+  if (window.PrismUI.specThreshold == null) {
+    const ls = _parseSpecThresholdLS();
+    window.PrismUI.specThreshold = ls == null ? 0.5 : ls;
+  }
+  async function _loadUIConfig() {
+    try {
+      const r = await fetch("/api/config/ui");
+      if (!r.ok) return;
+      const c = await r.json();
+      // Stash the server default so the threshold input's "reset" button
+      // knows what value to revert to (and what to render when no LS
+      // override is set).
+      if (typeof c.specificity_threshold === "number"
+          && c.specificity_threshold >= 0 && c.specificity_threshold <= 1) {
+        window.PrismUI.serverSpecThreshold = c.specificity_threshold;
+      }
+      // localStorage override wins; server value only fills the slot when
+      // the analyst hasn't pinned a per-browser preference.
+      if (_parseSpecThresholdLS() != null) {
+        _syncSpotlightThresholdUI();
+        return;
+      }
+      if (typeof c.specificity_threshold === "number"
+          && c.specificity_threshold >= 0 && c.specificity_threshold <= 1
+          && c.specificity_threshold !== window.PrismUI.specThreshold) {
+        window.PrismUI.specThreshold = c.specificity_threshold;
+        if (window.Graph && typeof window.Graph.setSpotlight === "function") {
+          window.Graph.setSpotlight({});
+        }
+      }
+      _syncSpotlightThresholdUI();
+    } catch (_) { /* fallback already in place */ }
+  }
+  // Reflect the current threshold (and override state) into the topbar
+  // input, if it exists on this page. Idempotent — called at boot, after
+  // the async fetch, and whenever the value changes.
+  function _syncSpotlightThresholdUI() {
+    const input = document.getElementById("spotlight-threshold");
+    const reset = document.getElementById("spotlight-threshold-reset");
+    if (!input) return;
+    input.value = (window.PrismUI.specThreshold ?? 0.5).toFixed(2);
+    if (reset) reset.hidden = (_parseSpecThresholdLS() == null);
+  }
+  _loadUIConfig();
+
   // ---------------------------------------------------------------------
   // Health badge
   // ---------------------------------------------------------------------
@@ -280,8 +340,17 @@
     }
   }
 
+  // ROADMAP #4 — current detail-pane node + lazy Activity-tab cache.
+  // Keyed by node.id so re-clicking the Activity tab on the same selection
+  // is instant; cleared whenever the graph is replaced or the page reset.
+  let _currentSelectedNode = null;
+  const _activityCache = new Map();
+
   async function selectNode(node) {
     if (!node || !node.id) return;
+    _currentSelectedNode = node;
+    // Selection changed → next Activity-tab open should re-fetch fresh.
+    $("#tab-activity").innerHTML = "";
     // Campaign and cluster pill nodes also activate the sets filter so
     // clicking them instantly highlights every member without needing the
     // sidecar. Clicking the same node again clears the filter.
@@ -615,6 +684,81 @@
     // ES returns ISO-8601 with millis. Drop seconds for the table view.
     if (!s) return "";
     return String(s).replace("T", " ").replace(/:\d{2}\.\d+Z?$/, "").replace(/Z$/, "");
+  }
+
+  // ROADMAP #4 — render the Activity tab for the currently-selected node.
+  // Lazy: fetch happens on first Activity-tab open per node, memoised in
+  // `_activityCache`. Only IP and command nodes have a pivot endpoint; other
+  // node types show an N/A hint.
+  async function renderActivityTab(node) {
+    const host = $("#tab-activity");
+    if (!host) return;
+    if (!node) {
+      host.innerHTML = `<em>Select a node to see its cross-cluster activity.</em>`;
+      return;
+    }
+    if (node.type !== "ip" && node.type !== "command") {
+      host.innerHTML = `<em>N/A — cross-cluster activity is available for IP and command nodes.</em>`;
+      return;
+    }
+    if (_activityCache.has(node.id)) {
+      host.innerHTML = _activityCache.get(node.id);
+      return;
+    }
+    host.innerHTML = `<em>loading…</em>`;
+    let data;
+    try {
+      const path = node.type === "ip"
+        ? `/api/ip/${encodeURIComponent(node.label || node.id.replace(/^ip:/, ""))}/activity`
+        // command node id format `cmd:<64-hex>`; activity endpoint expects the
+        // 16-hex short id (= command index _id, = command_set key).
+        : `/api/command/${encodeURIComponent((node.sha256 || "").slice(0, 16))}/activity`;
+      data = await api(path);
+    } catch (e) {
+      host.innerHTML = `<em>activity load failed: ${escapeHtml(e.message)}</em>`;
+      return;
+    }
+
+    const parts = [];
+    const meta = [`${data.total_sessions ?? 0} sessions`];
+    if (node.type === "ip") {
+      if (data.intel_verdict) meta.push(`intel: ${escapeHtml(data.intel_verdict)}`);
+      if (data.first_seen) meta.push(`first ${escapeHtml(fmtShortDate(data.first_seen))}`);
+      if (data.last_seen) meta.push(`last ${escapeHtml(fmtShortDate(data.last_seen))}`);
+    } else {
+      if (data.occurrence_count != null) meta.push(`${data.occurrence_count} occurrences`);
+      if (data.intent) meta.push(`intent: ${escapeHtml(data.intent)}`);
+    }
+    parts.push(`<p class="meta">${meta.join("  •  ")}</p>`);
+    if (node.type === "command" && data.command_line) {
+      parts.push(`<pre class="cmd">${escapeHtml(data.command_line)}</pre>`);
+    }
+
+    const listBlock = (title, items, render) => {
+      if (!items || !items.length) return;
+      parts.push(`<h4>${escapeHtml(title)}</h4><ul>`);
+      for (const it of items) parts.push(`<li>${render(it)}</li>`);
+      parts.push(`</ul>`);
+    };
+    listBlock("Also appears in playbooks", data.playbooks, (p) => {
+      const id = escapeHtml(p.playbook_id || "");
+      const name = escapeHtml(p.playbook_name || p.playbook_id || "");
+      const cnt = `<span class="meta"> — ${p.session_count} sess</span>`;
+      const link = `<a href="/graph?ioc=playbook:${encodeURIComponent(p.playbook_id || "")}" class="pivot-link">↗</a>`;
+      return `${name}${cnt} ${link}`;
+    });
+    if (node.type === "ip") {
+      listBlock("Campaigns", data.campaigns, (c) => escapeHtml(c.name || c.campaign_id || ""));
+    } else {
+      listBlock("Source IPs", data.ips, (i) => {
+        const link = `<a href="/graph?ioc=ip:${encodeURIComponent(i.ip || "")}" class="pivot-link">↗</a>`;
+        return `${escapeHtml(i.ip || "")}<span class="meta"> — ${i.session_count} sess</span> ${link}`;
+      });
+    }
+
+    const html = `<div class="activity-panel">${parts.join("")}</div>`;
+    _activityCache.set(node.id, html);
+    host.innerHTML = html;
   }
 
   function renderDetailError(type, id, msg) {
@@ -1480,6 +1624,9 @@
       $("#detail-header").innerHTML = "<em>Search an IOC to begin.</em>";
       $("#tab-overview").innerHTML = "";
       $("#tab-related").innerHTML = "";
+      $("#tab-activity").innerHTML = "";
+      _activityCache.clear();
+      _currentSelectedNode = null;
       $("#raw-json").textContent = "";
       history.replaceState(null, "", "/");
     });
@@ -1498,6 +1645,71 @@
         setLaneVisible(e.target.dataset.lane, e.target.checked);
       });
     });
+
+    // ROADMAP #4 — cluster-specificity spotlight. Shares `prism.spotlightOnly`
+    // localStorage with the findings drawer so toggling in one view carries to
+    // the other. The "hide commodity" sub-toggle is its own key and is
+    // disabled in the UI while spotlight is off.
+    const SPOT_KEY = "prism.spotlightOnly";
+    const SPOT_HIDE_KEY = "prism.spotlightHide";
+    const spotOn = $("#spotlight-toggle");
+    const spotHide = $("#spotlight-hide");
+    if (spotOn && spotHide) {
+      spotOn.checked = localStorage.getItem(SPOT_KEY) === "1";
+      spotHide.checked = localStorage.getItem(SPOT_HIDE_KEY) === "1";
+      spotHide.disabled = !spotOn.checked;
+      Graph.setSpotlight({on: spotOn.checked, hide: spotHide.checked});
+      spotOn.addEventListener("change", () => {
+        localStorage.setItem(SPOT_KEY, spotOn.checked ? "1" : "0");
+        spotHide.disabled = !spotOn.checked;
+        Graph.setSpotlight({on: spotOn.checked, hide: spotHide.checked});
+      });
+      spotHide.addEventListener("change", () => {
+        localStorage.setItem(SPOT_HIDE_KEY, spotHide.checked ? "1" : "0");
+        Graph.setSpotlight({on: spotOn.checked, hide: spotHide.checked});
+      });
+    }
+
+    // ROADMAP #4 — threshold input (writes to the shared LS key the drawer +
+    // graph getters already read). Validation: clamp to [0,1] and snap to
+    // step 0.05; empty input resets to server-config default. Fires on
+    // "change" not "input" so mid-typing doesn't trigger 5 re-renders.
+    const SPOT_THRESH_KEY = "prism.spotlightThreshold";
+    const threshInput = $("#spotlight-threshold");
+    const threshReset = $("#spotlight-threshold-reset");
+    if (threshInput) {
+      _syncSpotlightThresholdUI();
+      threshInput.addEventListener("change", () => {
+        const raw = threshInput.value.trim();
+        if (raw === "") {
+          // Empty → fall back to server default.
+          localStorage.removeItem(SPOT_THRESH_KEY);
+          window.PrismUI.specThreshold = window.PrismUI.serverSpecThreshold ?? 0.5;
+        } else {
+          let v = parseFloat(raw);
+          if (!isFinite(v)) v = window.PrismUI.specThreshold ?? 0.5;
+          v = Math.max(0, Math.min(1, v));
+          localStorage.setItem(SPOT_THRESH_KEY, String(v));
+          window.PrismUI.specThreshold = v;
+        }
+        _syncSpotlightThresholdUI();
+        // Redraw graph; the drawer (if open) doesn't auto-refresh — analyst
+        // re-opens it. Documented in the field tooltip.
+        if (window.Graph && typeof window.Graph.setSpotlight === "function") {
+          window.Graph.setSpotlight({});
+        }
+      });
+    }
+    if (threshReset) {
+      threshReset.addEventListener("click", () => {
+        localStorage.removeItem(SPOT_THRESH_KEY);
+        window.PrismUI.specThreshold = window.PrismUI.serverSpecThreshold ?? 0.5;
+        _syncSpotlightThresholdUI();
+        if (window.Graph && typeof window.Graph.setSpotlight === "function") {
+          window.Graph.setSpotlight({});
+        }
+      });
+    }
 
     // Settings modal
     const modal = $("#settings-modal");
@@ -1578,6 +1790,8 @@
         document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
         btn.classList.add("active");
         $(`#tab-${btn.dataset.tab}`).classList.add("active");
+        // ROADMAP #4 — lazy-populate the Activity tab on first open per node.
+        if (btn.dataset.tab === "activity") renderActivityTab(_currentSelectedNode);
       });
     });
 

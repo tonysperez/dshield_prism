@@ -218,6 +218,16 @@ session:
   # Future tightening: a complete-linkage guard (require every pair in a
   # merged group to clear `threshold - δ`) — not implemented yet, tracked in README.
   playbook_merge_threshold: 0.96
+  # ROADMAP #4 — cluster specificity. Max keys kept per centroid in each of
+  # ip_specificity / command_specificity. Set well past realistic cluster
+  # sizes so every member carries a score (drawer / graph can show commodity
+  # pills, not missing ones). Safety valve against pathological clusters.
+  specificity_store_cap: 10000
+  # UI threshold for "distinctive" — pills / rings at or above render filled,
+  # below render faded. 0.5 corresponds to `df ≤ √C`. Served to the console
+  # via /api/config/ui; an analyst can override per-browser via the
+  # `prism.spotlightThreshold` localStorage key.
+  specificity_threshold: 0.5
 
 # IP-level rollup + clustering.
 ip:

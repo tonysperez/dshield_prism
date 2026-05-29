@@ -212,6 +212,20 @@ class SessionConfig(BaseModel):
     # A/B that validated the snap-to-prior approach over the rejected
     # quantised-centroid hash.
     stable_identity_dual_write: bool = True
+    # ROADMAP #4 — cluster specificity. Max keys stored per centroid in each
+    # of `ip_specificity` / `command_specificity`. Set well past realistic
+    # cluster sizes so EVERY member IP / command carries a score (so the
+    # drawer / graph can show a commodity pill, not a missing one). The cap
+    # remains a safety valve against a pathological cluster blowing up
+    # centroid doc size; lower it if you observe a problem at scale.
+    specificity_store_cap: int = 10000
+    # ROADMAP #4 — UI threshold for "distinctive" classification. Pills /
+    # graph rings at or above this score render as filled accent; below
+    # render as faded outline. 0.5 corresponds to `df ≤ √C` (appears in
+    # fewer than ~√C clusters); semantics scale with corpus size. Served
+    # to the frontend via /api/config/ui; an analyst can override per-browser
+    # via localStorage `prism.spotlightThreshold`.
+    specificity_threshold: float = 0.5
     # ROADMAP P1: see CommandClusterConfig.reference_max_age_days.
     reference_max_age_days: int = 45
 

@@ -162,6 +162,143 @@ def _playbook_group_centroid(member_docs: list[dict]) -> Optional["np.ndarray"]:
     return _unit_vector(mean)
 
 
+# ===========================================================================
+# Cluster specificity (ROADMAP #4)
+#
+# How distinctive is an IP / command to a behaviour cluster vs the rest of the
+# corpus? An IDF-shape score: a key that appears in only one cluster scores
+# ~1.0; one that spans ~every cluster scores ~0. Persisted per centroid doc as
+# `ip_specificity` / `command_specificity` flattened maps so the console drawer
+# + `/distinctive` pivot read it directly (no per-open aggregation).
+# ===========================================================================
+
+_SESSION_CLUSTER_ID_FIELD = "dshield.cowrie.enrichment.session.cluster.id"
+_SESSION_COMMAND_SET_FIELD = "dshield.cowrie.enrichment.session.command_set.keyword"
+
+
+def specificity_scores(
+    df_by_key: dict[str, int], total_clusters: int,
+) -> dict[str, float]:
+    """Normalized IDF specificity in [0, 1] for each key, given how many
+    clusters it appears in (`df`) and the total cluster count.
+
+    `score = ln(C/df) / ln(C)` — a key in one cluster scores exactly 1.0, a
+    key spanning every cluster scores 0. No `+1` smoothing: the "df=1 →
+    almost-1" ceiling produced by Laplace smoothing didn't match the
+    intuition that *appears in only this cluster* IS the maximum signal.
+    Degenerate `C <= 1` returns zeros (one cluster ⇒ nothing distinctive).
+    Pure/offline (reused by ROADMAP #5)."""
+    import math
+    if total_clusters <= 1 or not df_by_key:
+        return {k: 0.0 for k in df_by_key}
+    denom = math.log(total_clusters)
+    out: dict[str, float] = {}
+    for k, df in df_by_key.items():
+        d = max(1, int(df))
+        score = math.log(total_clusters / d) / denom
+        out[k] = round(max(0.0, min(1.0, score)), 3)
+    return out
+
+
+def _persist_cluster_specificity(
+    es: Elasticsearch, sessions_idx: str, clusters_idx: str,
+    run_id: str, cap: int,
+) -> dict:
+    """Compute per-cluster `ip_specificity` / `command_specificity` for this
+    run and write the maps onto every `doc_type=cluster` centroid doc.
+
+    One aggregation pass with three siblings:
+      - corpus `df_ip`, `df_cmd`  — how many distinct clusters each IP /
+        command appears in. MUST be top-level: putting the `cardinality`
+        sub-agg under the per-cluster terms bucket scopes it to that single
+        cluster and returns 1 for every key.
+      - per-cluster `by_cluster` — the member IPs and commands of each
+        cluster, taken straight from the rollup; we look up each member's
+        corpus-wide df from the sibling aggs to compute the score."""
+    stats = {"clusters_scored": 0, "centroids_updated": 0}
+    base = {"bool": {
+        "must": [{"exists": {"field": _SESSION_CLUSTER_ID_FIELD}}],
+        "must_not": [{"term": {_SESSION_CLUSTER_ID_FIELD: "outlier"}}],
+    }}
+    try:
+        resp = es.search(
+            index=sessions_idx, size=0, query=base,
+            aggs={
+                "total_clusters": {"cardinality": {"field": _SESSION_CLUSTER_ID_FIELD}},
+                "df_ip": {
+                    "terms": {"field": "source.ip", "size": 100000},
+                    "aggs": {"dfc": {"cardinality": {"field": _SESSION_CLUSTER_ID_FIELD}}},
+                },
+                "df_cmd": {
+                    "terms": {"field": _SESSION_COMMAND_SET_FIELD, "size": 100000},
+                    "aggs": {"dfc": {"cardinality": {"field": _SESSION_CLUSTER_ID_FIELD}}},
+                },
+                "by_cluster": {
+                    "terms": {"field": _SESSION_CLUSTER_ID_FIELD, "size": 20000},
+                    "aggs": {
+                        "ips":  {"terms": {"field": "source.ip", "size": cap}},
+                        "cmds": {"terms": {"field": _SESSION_COMMAND_SET_FIELD, "size": cap}},
+                    },
+                },
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 — specificity is best-effort
+        log.warning("specificity: aggregation failed (continuing): %s", exc)
+        return stats
+
+    aggs = resp.get("aggregations", {})
+    total_clusters = int(aggs.get("total_clusters", {}).get("value", 0) or 0)
+    df_ip = {b["key"]: int(b["dfc"]["value"])
+             for b in aggs.get("df_ip", {}).get("buckets", [])}
+    df_cmd = {b["key"]: int(b["dfc"]["value"])
+              for b in aggs.get("df_cmd", {}).get("buckets", [])}
+
+    spec_by_cid: dict[str, tuple[dict, dict]] = {}
+    for b in aggs.get("by_cluster", {}).get("buckets", []):
+        cid = b["key"]
+        # Members of THIS cluster, scored against corpus-wide df.
+        ip_df = {x["key"]: df_ip.get(x["key"], 1) for x in b["ips"]["buckets"]}
+        cmd_df = {x["key"]: df_cmd.get(x["key"], 1) for x in b["cmds"]["buckets"]}
+        spec_by_cid[cid] = (
+            specificity_scores(ip_df, total_clusters),
+            specificity_scores(cmd_df, total_clusters),
+        )
+        stats["clusters_scored"] += 1
+    if not spec_by_cid:
+        return stats
+
+    # Map cluster_id -> centroid doc _id(s) for this run, then bulk-update.
+    actions: list[dict] = []
+    try:
+        cresp = es.search(
+            index=clusters_idx, size=10000,
+            _source=["cluster_id"],
+            query={"bool": {"must": [
+                {"term": {"doc_type": "cluster"}},
+                {"term": {"run_id": run_id}},
+            ]}},
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("specificity: centroid scan failed (continuing): %s", exc)
+        return stats
+    for h in cresp["hits"]["hits"]:
+        cid = h["_source"].get("cluster_id")
+        spec = spec_by_cid.get(cid)
+        if not spec:
+            continue
+        actions.append({
+            "_op_type": "update",
+            "_id": h["_id"],
+            "doc": {"ip_specificity": spec[0], "command_specificity": spec[1]},
+        })
+    if actions:
+        ok, errs = bulk_write(es, clusters_idx, actions)
+        stats["centroids_updated"] = ok
+        if errs:
+            log.warning("specificity: %d centroid update errors: %s", len(errs), errs[:2])
+    return stats
+
+
 def _load_stable_anchors(
     es: Elasticsearch, anchor_idx: str,
 ) -> list[tuple["np.ndarray", str]]:
@@ -1244,7 +1381,7 @@ def run_cluster(
             "Run 'rollup sessions' first, or check elasticsearch.indexes.cowrie.sessions_rollup in config."
         )
 
-    return run_layer_clustering(
+    result = run_layer_clustering(
         es=es,
         docs_iter=iter_session_docs(es, sessions_idx, scfg.page_size),
         docs_index=sessions_idx,
@@ -1270,6 +1407,17 @@ def run_cluster(
         # playbook_merge_threshold=1.0 to disable (also disables centroid merge).
         rescue_threshold=scfg.playbook_merge_threshold,
     )
+
+    # ROADMAP #4: per-cluster IP/command specificity, persisted on the centroid
+    # docs the core just wrote (+ refreshed). Best-effort — a failure here
+    # never fails the clustering run. Session docs already carry this run's
+    # cluster.id, so the aggregations see the fresh membership.
+    run_id = result.get("run_id")
+    if not dry_run and run_id and result.get("cluster_docs_written"):
+        result["specificity"] = _persist_cluster_specificity(
+            es, sessions_idx, clusters_idx, run_id, scfg.specificity_store_cap,
+        )
+    return result
 
 
 # ---------------------------------------------------------------------------

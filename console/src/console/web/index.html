@@ -35,6 +35,15 @@
       <label class="lane-chk"><input type="checkbox" data-lane="file" checked /><span>file</span></label>
       <label class="lane-chk"><input type="checkbox" data-lane="mitre" checked /><span>mitre</span></label>
     </div>
+    <div class="spotlight" title="Highlight nodes that are cluster-specific (specificity above the threshold). Only takes effect when the graph anchor is a playbook or session — multi-playbook views have no single score to filter on.">
+      <label class="spot-chk"><input type="checkbox" id="spotlight-toggle" /><span>distinctive only</span></label>
+      <label class="spot-chk spot-hide"><input type="checkbox" id="spotlight-hide" disabled /><span>hide commodity</span></label>
+      <label class="spot-chk spot-threshold" title="Cutoff at which a node counts as 'distinctive'. Per-browser; persists in localStorage. Click ↺ to fall back to the server-config default.">
+        <span>≥</span>
+        <input id="spotlight-threshold" type="number" min="0" max="1" step="0.05" inputmode="decimal" />
+        <button type="button" id="spotlight-threshold-reset" class="spot-reset" title="Reset to server-config default" hidden>↺</button>
+      </label>
+    </div>
     <div id="loading" class="loading hidden" aria-live="polite"></div>
     <div id="health" class="health">…</div>
     <!-- Breadcrumb lives in the topbar as a second wrapping row -->
@@ -103,11 +112,13 @@
       <nav id="detail-tabs">
         <button data-tab="overview" class="active">Overview</button>
         <button data-tab="related">Related</button>
+        <button data-tab="activity">Activity</button>
         <button data-tab="raw">Raw JSON</button>
       </nav>
       <div id="detail-body">
         <div id="tab-overview" class="tab active"></div>
         <div id="tab-related" class="tab"></div>
+        <div id="tab-activity" class="tab"></div>
         <div id="tab-raw" class="tab"><pre id="raw-json"></pre></div>
       </div>
     </aside>

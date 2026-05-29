@@ -161,6 +161,25 @@
   // lane checkboxes (its visibility is purely data-driven, not user-controlled).
   let laneVisibility = new Set(["geo", "ip", "session", "command", "file", "mitre"]);
 
+  // ROADMAP #4 — cluster specificity spotlight. `on` hides/dims commodity IP
+  // and command nodes (score below the threshold or absent). `hide:false`
+  // (default) → alpha-dim; `hide:true` → skip the draw entirely (also drops
+  // incident edges). Toggled from the graph topbar; shares
+  // `prism.spotlightOnly` with the findings drawer's pill filter via app.js.
+  // Threshold reads from window.PrismUI.specThreshold (init'd in app.js with
+  // localStorage > server-config > 0.5 precedence) so the same value drives
+  // drawer and graph; updates take effect on the next render.
+  function _specThreshold() {
+    return (window.PrismUI && window.PrismUI.specThreshold) ?? 0.5;
+  }
+  let _spotlight = { on: false, hide: false };
+  function _spotlightSuppressed(n) {
+    if (!_spotlight.on) return null;
+    if (n.type !== "ip" && n.type !== "command") return null;
+    if (n.specificity != null && n.specificity >= _specThreshold()) return null;
+    return _spotlight.hide ? "hide" : "dim";
+  }
+
   // ===================================================================
   // Init / sizing
   // ===================================================================
@@ -1465,6 +1484,10 @@
       const a = nodesById.get(e.source);
       const b = nodesById.get(e.target);
       if (!a || !b || !isFinite(a.x) || !isFinite(b.x)) continue;
+      // ROADMAP #4 spotlight: an edge whose endpoint is hidden has no node
+      // to anchor to; skip it. (Dim mode lets the edge stay — the dimmed
+      // node is still visible.)
+      if (_spotlightSuppressed(a) === "hide" || _spotlightSuppressed(b) === "hide") continue;
 
       // An edge is "on path" when both endpoints are inside the
       // pipeline-reach of some focus node. Edges touching only one
@@ -1607,12 +1630,15 @@
       const focused = focus && focus.has(n.id);
       const isAnchor = n.id === anchorId;
       const greyed = _greyedReach();
+      // ROADMAP #4 spotlight: drop commodity nodes (hide) or fade them (dim).
+      const spotMode = _spotlightSuppressed(n);
+      if (spotMode === "hide") continue;
       const dim = (focus && !undimmed.has(n.id))
                 || (setActive && !setPass)
                 || (greyed && greyed.has(n.id) && !focused);
 
       ctx.save();
-      ctx.globalAlpha = dim ? 0.20 : 1;
+      ctx.globalAlpha = spotMode === "dim" ? 0.15 : (dim ? 0.20 : 1);
       const isCluster = n.type && n.type.endsWith("_cluster");
       // A cluster pill counts as "collapsed" if no other nodes in its
       // column carry its cluster_id. Visually we keep the pill but skip
@@ -1652,6 +1678,18 @@
         _roundRectPath(left - 2, top - 2, n.w + 4, n.h + 4, 5);
         ctx.stroke();
         ctx.setLineDash([]);
+      }
+      // ROADMAP #4 — distinctive ring (solid accent, outside any dashed
+      // outlier ring). IP / command nodes whose cluster-specificity is at
+      // or above the threshold get a thin solid --accent ring so they pop
+      // against commodity neighbours.
+      if (n.specificity != null && n.specificity >= _specThreshold() &&
+          (n.type === "ip" || n.type === "command")) {
+        ctx.strokeStyle = _hexA("#4cc1ff", 0.9);
+        ctx.lineWidth = 1.6 / zoom;
+        ctx.beginPath();
+        _roundRectPath(left - 3, top - 3, n.w + 6, n.h + 6, 6);
+        ctx.stroke();
       }
 
       // Type chip (small color dot at left)
@@ -1748,6 +1786,20 @@
       for (const t of ta) {
         out.push({ type: "mitre_tactic", id: t, prefix: "ta", label: t });
       }
+    }
+    // ROADMAP #4 — cluster-specificity chip. Surfaced for IP and command
+    // nodes whenever the backend attached a score (single-playbook scope).
+    // Unshift so it leads the row — distinctive is the headline signal —
+    // and stays in view if the slice(0, 4) truncates trailing chips.
+    if ((n.type === "ip" || n.type === "command") && n.specificity != null) {
+      const s = n.specificity;
+      out.unshift({
+        type:     "specificity",
+        id:       n.id,
+        prefix:   "spec",
+        label:    (s >= _specThreshold() ? "★ " : "") + s.toFixed(2),
+        nonPivot: true,
+      });
     }
     // truncate to avoid blowing past row height
     return out.slice(0, 4);
@@ -2124,8 +2176,17 @@
     return Object.assign({}, rest, { id: n.id });
   }
 
+  // ROADMAP #4 — cluster-specificity spotlight. Callers pass {on, hide};
+  // either may be omitted (current value retained). Triggers a redraw.
+  function setSpotlight(opts) {
+    if (opts && typeof opts.on === "boolean") _spotlight.on = opts.on;
+    if (opts && typeof opts.hide === "boolean") _spotlight.hide = opts.hide;
+    _scheduleRender();
+  }
+
   window.Graph = {
     init, replace, merge, setAnchor, hasNode, removeNodes, setLaneVisibility,
+    setSpotlight,
     onSelect, onExpand, onPivot, onDataChange,
     fit: () => fit(300),
     getSets, highlightSets, highlightIntersection, allNodes,

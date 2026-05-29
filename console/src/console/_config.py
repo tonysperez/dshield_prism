@@ -97,12 +97,23 @@ class FindingsConfig(BaseModel):
     indexes: FindingsIndexes = FindingsIndexes()
 
 
+class SessionConfig(BaseModel):
+    """Slim mirror — the console only needs the UI-facing knobs. Any
+    pipeline-side `session.*` fields not declared here are silently ignored
+    (pydantic default), so adding fields in the parent config doesn't break
+    the console."""
+    # ROADMAP #4 — UI threshold for "distinctive" classification, served to
+    # the frontend via /api/config/ui. Default mirrors the parent config.
+    specificity_threshold: float = 0.5
+
+
 class AppConfig(BaseModel):
     """Slimmed-down config — only what the console needs."""
     elasticsearch: ESConfig
     llm: Optional[LLMConfig] = None
     intel: IntelConfig = IntelConfig()
     findings: FindingsConfig = FindingsConfig()
+    session: SessionConfig = SessionConfig()
 
 
 class Secrets(BaseSettings):
@@ -159,11 +170,18 @@ def load_config(path: Optional[str] = None) -> AppConfig:
     raw_llm = data.get("llm")
     raw_intel = data.get("intel") or {}
     raw_findings = data.get("findings") or {}
+    raw_session = data.get("session") or {}
+    # Pluck the UI-facing fields the console knows about; anything else in the
+    # parent's `session:` block is intentionally ignored here.
+    session_fields = {
+        k: raw_session[k] for k in ("specificity_threshold",) if k in raw_session
+    }
     return AppConfig(
         elasticsearch=data["elasticsearch"],
         llm=LLMConfig(**raw_llm) if raw_llm else None,
         intel=IntelConfig(**raw_intel),
         findings=FindingsConfig(**raw_findings),
+        session=SessionConfig(**session_fields),
     )
 
 

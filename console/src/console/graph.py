@@ -266,6 +266,40 @@ def _emit_command_files(
 
 
 # ----------------------------------------------------------------------------
+# Cluster-specificity attachment (ROADMAP #4 graph extension)
+#
+# Attach `specificity` to IP / command nodes when the graph view has a
+# single-playbook scope (playbook anchor or a session whose playbook_id is
+# known). Multi-playbook anchors (raw ip / command / campaign / ip_cluster
+# etc.) intentionally skip — one score per node would mean different things
+# across the multiple playbooks in view. Command graph nodes use the 64-hex
+# `sha256`; specificity maps key on the 16-hex command_id (same `[:16]`
+# convention used in `_emit_command_files`). Best-effort: a missing maps
+# fetch silently leaves nodes unscored.
+# ----------------------------------------------------------------------------
+
+def _attach_specificity(
+    nodes: list[dict], ip_scores: dict[str, float], cmd_scores: dict[str, float],
+) -> None:
+    """Stamp `specificity` onto IP nodes by `label` (the IP value) and on
+    command nodes by `sha256[:16]`. Idempotent — re-running on the same
+    node list with the same maps is a no-op."""
+    for n in nodes:
+        d = n.get("data") or {}
+        t = d.get("type")
+        if t == "ip":
+            s = ip_scores.get(d.get("label"))
+            if s is not None:
+                d["specificity"] = s
+        elif t == "command":
+            sha = d.get("sha256") or ""
+            if sha:
+                s = cmd_scores.get(sha[:16])
+                if s is not None:
+                    d["specificity"] = s
+
+
+# ----------------------------------------------------------------------------
 # Per-anchor neighborhood builders
 # ----------------------------------------------------------------------------
 
@@ -420,6 +454,17 @@ def _session_anchor(es: Elasticsearch, cfg: AppConfig, session_id: str, *, limit
                                "source": _nid("session", session_id), "target": _nid("cmd", sha),
                                "label": "ran", "kind": "ran"}})
         _emit_command_cluster_mitre(nodes, edges, sha, enr, threat)
+    # ROADMAP #4 — if the session belongs to a known playbook, attach
+    # cluster-specificity to its IP + the emitted command nodes. A session
+    # without playbook_id (pre-naming, or genuine outlier) leaves nodes
+    # unscored — the frontend just renders no badge / ring.
+    session_pid = (sdoc["_source"].get("dshield", {}).get("cowrie", {})
+                   .get("enrichment", {}).get("session", {}).get("playbook_id")
+                   if sdoc else None)
+    if session_pid:
+        ip_scores, cmd_scores = queries.playbook_specificity_maps(es, cfg, session_pid)
+        if ip_scores or cmd_scores:
+            _attach_specificity(nodes, ip_scores, cmd_scores)
     return _dedup({"nodes": nodes, "edges": edges})
 
 
@@ -805,6 +850,12 @@ def _playbook_anchor(
                                "source": _nid("ip", ip), "target": _nid("session", sid),
                                "label": "saw", "kind": "saw"}})
         _emit_ip_cluster(nodes, edges, ip, ienr)
+    # ROADMAP #4 — single-playbook scope: attach cluster-specificity to IP
+    # nodes. Commands aren't emitted at this anchor; that lands in
+    # `_session_anchor` when the analyst expands a session.
+    ip_scores, cmd_scores = queries.playbook_specificity_maps(es, cfg, playbook_id)
+    if ip_scores or cmd_scores:
+        _attach_specificity(nodes, ip_scores, cmd_scores)
     return _dedup({"nodes": nodes, "edges": edges})
 
 

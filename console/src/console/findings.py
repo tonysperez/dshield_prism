@@ -445,6 +445,7 @@ def get_finding_detail(es, cfg, finding_id: str) -> Optional[dict[str, Any]]:
             out["top_commands"] = _top_commands_for_playbook(es, cowrie_idx, a_value)
             out["top_ips"] = _top_ips_for_playbook(es, cowrie_idx, a_value)
             out["convergent_campaigns"] = _convergent_campaigns(es, cowrie_idx, a_value)
+            _attach_specificity(es, cfg, a_value, out["top_commands"], out["top_ips"])
         elif a_kind == "campaign":
             lc_index = _idx_attr("campaign_lifecycle",
                                  "lifecycle-dshield.cowrie.campaign-default")
@@ -517,6 +518,28 @@ def _fetch_lifecycle(es, index: str, doc_id: str) -> dict:
     except Exception as exc:
         log.warning("findings: lifecycle fetch %s/%s failed: %s", index, doc_id, exc)
         return {}
+
+
+def _attach_specificity(
+    es, cfg, playbook_id: str, top_commands: list[dict], top_ips: list[dict],
+) -> None:
+    """Annotate each top command / IP with its cluster `specificity` score
+    (ROADMAP #4) from the persisted maps, in place. Best-effort — missing maps
+    (cluster pass hasn't run yet) leave the entries unscored."""
+    from . import queries
+    try:
+        ip_scores, cmd_scores = queries.playbook_specificity_maps(es, cfg, playbook_id)
+    except Exception as exc:  # pragma: no cover
+        log.warning("findings: specificity attach for %s failed: %s", playbook_id, exc)
+        return
+    for c in top_commands:
+        s = cmd_scores.get(c.get("command_id"))
+        if s is not None:
+            c["specificity"] = s
+    for iprow in top_ips:
+        s = ip_scores.get(iprow.get("ip"))
+        if s is not None:
+            iprow["specificity"] = s
 
 
 def _top_commands_for_playbook(es, cowrie_idx, playbook_id: str) -> list[dict]:

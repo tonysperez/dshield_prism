@@ -350,9 +350,65 @@ function intelPill(label) {
   return el("span", {class: `intel-pill ${cls}`}, [label]);
 }
 
+// --- Cluster specificity (ROADMAP #4) -------------------------------------
+const SPOT_KEY = "prism.spotlightOnly";
+// "Distinctive" cutoff. Source-of-truth precedence:
+//   localStorage `prism.spotlightThreshold` → server /api/config/ui → 0.5
+// Initialized synchronously from localStorage; server value fills in async.
+// Mirror of the same init in app.js so the findings page works standalone
+// (findings.html doesn't load app.js).
+function _parseSpecThresholdLS() {
+  const raw = localStorage.getItem("prism.spotlightThreshold");
+  if (raw == null) return null;
+  const v = parseFloat(raw);
+  return (isFinite(v) && v >= 0 && v <= 1) ? v : null;
+}
+window.PrismUI = window.PrismUI || {};
+if (window.PrismUI.specThreshold == null) {
+  const ls = _parseSpecThresholdLS();
+  window.PrismUI.specThreshold = ls == null ? 0.5 : ls;
+}
+(async function _loadUIConfig() {
+  try {
+    const r = await fetch("/api/config/ui");
+    if (!r.ok) return;
+    const c = await r.json();
+    if (_parseSpecThresholdLS() != null) return;
+    if (typeof c.specificity_threshold === "number"
+        && c.specificity_threshold >= 0 && c.specificity_threshold <= 1) {
+      window.PrismUI.specThreshold = c.specificity_threshold;
+      // If a drawer is currently open, re-render it so pills reflect the
+      // new threshold; otherwise next open picks it up.
+      if (window.__drawerData) renderDrawer(window.__drawerData);
+    }
+  } catch (_) { /* fallback in place */ }
+})();
+function specThreshold() {
+  return (window.PrismUI && window.PrismUI.specThreshold) ?? 0.5;
+}
+function spotlightOn() { return localStorage.getItem(SPOT_KEY) === "1"; }
+function setSpotlight(v) { localStorage.setItem(SPOT_KEY, v ? "1" : "0"); }
+
+// Filled pill for cluster-specific entries, faded outline for commodity ones.
+function specPill(score) {
+  if (score == null) return null;
+  const specific = score >= specThreshold();
+  return el("span", {
+    class: `spec-pill ${specific ? "specific" : "commodity"}`,
+    title: `cluster specificity ${score.toFixed(2)} (1.0 = unique to this cluster, 0 = commodity)`,
+  }, [(specific ? "★ " : "") + score.toFixed(2)]);
+}
+
+// True when spotlight is on AND this entry is below the distinctiveness floor.
+function spotlightHides(score) {
+  return spotlightOn() && (score == null || score < specThreshold());
+}
+
 function renderDrawer(data) {
   const body = document.getElementById("drawer-body");
   body.innerHTML = "";
+  // Stash so the spotlight toggle can re-render without a re-fetch.
+  window.__drawerData = data;
   const a = data.artifact || {};
   document.getElementById("drawer-title").textContent =
     `${data.kind || "finding"} — ${artifactLabel(data)}`;
@@ -393,19 +449,43 @@ function renderDrawer(data) {
     body.appendChild(sec);
   }
 
-  // Top commands
+  // Spotlight toggle (ROADMAP #4) — show only cluster-distinctive entries.
+  // Only rendered when specificity is available (cluster pass has run).
   const cmds = data.top_commands || [];
-  if (cmds.length) {
+  const ips = data.top_ips || [];
+  const hasSpec = cmds.some(c => c.specificity != null) || ips.some(i => i.specificity != null);
+  if (hasSpec) {
+    const cb = el("input", {type: "checkbox"});
+    cb.checked = spotlightOn();
+    cb.addEventListener("change", () => { setSpotlight(cb.checked); renderDrawer(window.__drawerData); });
+    const sec = el("div", {class: "drawer-section"}, [
+      el("label", {class: "spotlight-toggle"}, [cb, " show distinctive only"]),
+    ]);
+    body.appendChild(sec);
+  }
+
+  // Pivot sub-panel host — populated when a command/IP is clicked.
+  const pivotHost = el("div", {id: "drawer-pivot"});
+
+  // Top commands
+  const cmdsShown = spotlightOn() ? cmds.filter(c => !spotlightHides(c.specificity)) : cmds;
+  if (cmdsShown.length) {
     const sec = el("div", {class: "drawer-section"});
     sec.appendChild(el("h4", null, ["Top novel commands"]));
     const ul = el("ul", {style: "padding-left:18px;margin:0;"});
-    for (const c of cmds) {
+    for (const c of cmdsShown) {
+      const code = el("a", {
+        class: "pivot-link", href: "#",
+        onclick: (e) => { e.preventDefault(); openPivot("command", c.command_id, pivotHost); },
+      }, [el("code", null, [c.command || "(empty)"])]);
       const li = el("li", null, [
-        el("code", null, [c.command || "(empty)"]),
-        el("span", {class: "drawer-meta", style:"margin-left:6px;"}, [
+        code,
+        el("span", {class: "drawer-meta", style: "margin-left:6px;"}, [
           `nov ${c.novelty?.toFixed(2) ?? "?"}`,
         ]),
       ]);
+      const sp = specPill(c.specificity);
+      if (sp) li.appendChild(sp);
       if (c.description) {
         li.appendChild(el("div", {class: "drawer-meta"}, [c.description]));
       }
@@ -416,16 +496,22 @@ function renderDrawer(data) {
   }
 
   // Top IPs
-  const ips = data.top_ips || [];
-  if (ips.length) {
+  const ipsShown = spotlightOn() ? ips.filter(i => !spotlightHides(i.specificity)) : ips;
+  if (ipsShown.length) {
     const sec = el("div", {class: "drawer-section"});
     sec.appendChild(el("h4", null, ["Top member IPs"]));
     const ul = el("ul", {style: "padding-left:18px;margin:0;"});
-    for (const i of ips) {
+    for (const i of ipsShown) {
+      const link = el("a", {
+        class: "pivot-link", href: "#",
+        onclick: (e) => { e.preventDefault(); openPivot("ip", i.ip, pivotHost); },
+      }, [i.ip || "?"]);
       const li = el("li", null, [
-        i.ip || "?",
-        el("span", {class: "drawer-meta", style:"margin-left:6px;"}, [`${i.session_count} sess`]),
+        link,
+        el("span", {class: "drawer-meta", style: "margin-left:6px;"}, [`${i.session_count} sess`]),
       ]);
+      const sp = specPill(i.specificity);
+      if (sp) li.appendChild(sp);
       const pill = intelPill(i.intel_verdict);
       if (pill) li.appendChild(pill);
       ul.appendChild(li);
@@ -433,6 +519,8 @@ function renderDrawer(data) {
     sec.appendChild(ul);
     body.appendChild(sec);
   }
+
+  body.appendChild(pivotHost);
 
   // Convergent campaigns
   const convs = data.convergent_campaigns || [];
@@ -519,6 +607,81 @@ function renderDrawer(data) {
     sec.appendChild(el("a", {href: url, class: "nav-link"}, ["Open in graph →"]));
     body.appendChild(sec);
   }
+}
+
+// Click-to-pivot (ROADMAP #4): fetch an IP / command cross-cluster footprint
+// and render it into the drawer's pivot host.
+async function openPivot(kind, id, host) {
+  if (!id || !host) return;
+  host.replaceChildren(el("div", {class: "drawer-section pivot-panel"}, [
+    el("p", {class: "drawer-meta"}, ["loading pivot…"]),
+  ]));
+  host.scrollIntoView({behavior: "smooth", block: "nearest"});
+  let data;
+  try {
+    const path = kind === "ip"
+      ? `/api/ip/${encodeURIComponent(id)}/activity`
+      : `/api/command/${encodeURIComponent(id)}/activity`;
+    const r = await fetch(path);
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    data = await r.json();
+  } catch (e) {
+    host.replaceChildren(el("div", {class: "drawer-section pivot-panel"}, [
+      el("p", {class: "drawer-meta"}, [`pivot failed: ${e.message}`]),
+    ]));
+    return;
+  }
+
+  const sec = el("div", {class: "drawer-section pivot-panel"});
+  const close = el("button", {class: "pivot-close", title: "close pivot",
+    onclick: () => host.replaceChildren()}, ["✕"]);
+  sec.appendChild(el("div", {class: "pivot-head"}, [
+    el("h4", null, [kind === "ip" ? `IP pivot — ${id}` : `Command pivot — ${id}`]), close,
+  ]));
+
+  const meta = [`${data.total_sessions ?? 0} sessions`];
+  if (kind === "ip") {
+    if (data.intel_verdict) meta.push(`intel: ${data.intel_verdict}`);
+    if (data.first_seen) meta.push(`first ${fmtTs(data.first_seen)}`);
+    if (data.last_seen) meta.push(`last ${fmtTs(data.last_seen)}`);
+  } else {
+    if (data.occurrence_count != null) meta.push(`${data.occurrence_count} occurrences`);
+    if (data.intent) meta.push(`intent: ${data.intent}`);
+  }
+  sec.appendChild(el("p", {class: "drawer-meta"}, [meta.join("  •  ")]));
+  if (kind === "command" && data.command_line) {
+    sec.appendChild(el("code", {class: "pivot-cmd"}, [data.command_line]));
+  }
+
+  const listBlock = (title, items, render) => {
+    if (!items || !items.length) return;
+    sec.appendChild(el("div", {class: "drawer-meta", style: "margin-top:6px;"}, [title]));
+    const ul = el("ul", {style: "padding-left:18px;margin:0;"});
+    for (const it of items) ul.appendChild(el("li", null, render(it)));
+    sec.appendChild(ul);
+  };
+  // Closes the loop drawer → graph: every row carries a tiny ↗ that opens
+  // the graph anchored to that entity (uses the existing /graph?ioc= route).
+  const graphLink = (type, id) => el("a", {
+    class: "pivot-link", href: `/graph?ioc=${encodeURIComponent(type)}:${encodeURIComponent(id || "")}`,
+    title: `open ${type} in graph`,
+    style: "margin-left:6px;",
+  }, ["↗"]);
+  listBlock("also appears in playbooks:", data.playbooks, (p) => [
+    `${p.playbook_name || p.playbook_id}`,
+    el("span", {class: "drawer-meta", style: "margin-left:6px;"}, [`${p.session_count} sess`]),
+    graphLink("playbook", p.playbook_id),
+  ]);
+  if (kind === "ip") {
+    listBlock("campaigns:", data.campaigns, (c) => [c.name || c.campaign_id]);
+  } else {
+    listBlock("source IPs:", data.ips, (i) => [
+      i.ip, el("span", {class: "drawer-meta", style: "margin-left:6px;"}, [`${i.session_count} sess`]),
+      graphLink("ip", i.ip),
+    ]);
+  }
+  host.replaceChildren(sec);
+  host.scrollIntoView({behavior: "smooth", block: "nearest"});
 }
 
 async function openDrawer(finding_id) {
