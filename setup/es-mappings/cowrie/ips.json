@@ -63,6 +63,23 @@
                       "last_seen":               { "type": "date" },
                       "ip_embed_version":        { "type": "keyword" },
                       "credentials":             { "type": "keyword" },
+                      "hassh": {
+                        "type": "text",
+                        "fields": {
+                          "keyword": { "type": "keyword", "ignore_above": 64 }
+                        }
+                      },
+                      "hassh_distribution": {
+                        "properties": {
+                          "hassh": {
+                            "type": "text",
+                            "fields": {
+                              "keyword": { "type": "keyword", "ignore_above": 64 }
+                            }
+                          },
+                          "count":  { "type": "long" }
+                        }
+                      },
                       "embedding": {
                         "type": "dense_vector",
                         "dims": 768,

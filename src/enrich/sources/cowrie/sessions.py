@@ -399,6 +399,7 @@ def _fetch_session_events(
             "network.protocol", "network.type",
             "user.name", "user_agent.original",
             "cowrie.session_id", "cowrie.password", "cowrie.hassh_algorithms",
+            "cowrie.hassh",
             "process.command_line",
             # File-event hashes (ROADMAP #3). The ingest pipeline already
             # structures the cowrie shasum at `file.hash.sha256`; `destfile`
@@ -579,6 +580,15 @@ def _record_credential(credentials_set: set[str], ev: dict) -> None:
     password = ((ev.get("cowrie") or {}).get("password") or "")
     if user or password:
         credentials_set.add(f"{user}:{password}")
+
+
+def _compute_hassh(algorithms: str) -> str:
+    """HASSH = md5 of the SSH client's `kex;enc;mac;comp` algorithm string.
+
+    cowrie's `hassh_algorithms` is already that semicolon-joined string, so this
+    reproduces cowrie's own `hassh` md5 for events that lack the precomputed
+    value (older cowrie builds / custom forks). ROADMAP attribution scaffolding."""
+    return hashlib.md5(algorithms.encode("utf-8")).hexdigest()
 
 
 def _filename_is_specific(basename: str) -> bool:
@@ -806,6 +816,14 @@ def _build_session_doc(
             cowrie_extra["password"] = cowrie["password"]
         if not cowrie_extra.get("hassh_algorithms") and cowrie.get("hassh_algorithms"):
             cowrie_extra["hassh_algorithms"] = cowrie["hassh_algorithms"]
+        if not cowrie_extra.get("hassh") and cowrie.get("hassh"):
+            cowrie_extra["hassh"] = cowrie["hassh"]
+
+    # HASSH md5 fallback (ROADMAP attribution scaffolding): when cowrie didn't
+    # emit its precomputed `hassh` but did emit the algorithm string, derive it
+    # locally so every SSH session carries a fingerprint to cluster on.
+    if not cowrie_extra.get("hassh") and cowrie_extra.get("hassh_algorithms"):
+        cowrie_extra["hassh"] = _compute_hassh(cowrie_extra["hassh_algorithms"])
 
     embeddings: list[list[float]] = []
     # Per-command IDF weight for the pool — boilerplate (high occurrence)

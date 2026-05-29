@@ -69,7 +69,8 @@
         "properties": {
           "session_id":       { "type": "keyword" },
           "password":         { "type": "keyword" },
-          "hassh_algorithms": { "type": "keyword" }
+          "hassh_algorithms": { "type": "keyword" },
+          "hassh":            { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 64 } } }
         }
       },
 

@@ -144,6 +144,7 @@ PUT _index_template/prism.raw
             "session_id":         { "type": "keyword" },
             "password":           { "type": "keyword" },
             "hassh_algorithms":   { "type": "keyword" },
+            "hassh":              { "type": "keyword" },
             "kex_algorithms":     { "type": "keyword" },
             "key_algorithms":     { "type": "keyword" },
             "enc_cs":             { "type": "keyword" },

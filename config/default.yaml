@@ -242,6 +242,11 @@ ip:
   # tried is hashed into one of K bins; the column is that bin's share
   # of the IP's credential set (sum=1 per row).
   attribution_cred_hash_dim: 16
+  # SSH client fingerprint (HASSH) sub-block. Low weight — SSH stack
+  # diversity is small, so it's a weak corroborating attribution signal.
+  # 0 disables. Feature-hash dim mirrors the credential hash.
+  cluster_hassh_weight: 0.05
+  attribution_hassh_hash_dim: 8
   page_size: 1000
   batch_size: 200
 

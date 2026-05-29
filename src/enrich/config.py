@@ -239,6 +239,14 @@ class IPConfig(BaseModel):
     # column value is that bin's share of the IP's credential set, so the
     # block sums to 1 per row. K=16 trades collisions for compactness.
     attribution_cred_hash_dim: int = 16
+    # SSH client fingerprint (HASSH) sub-block. Weight kept lower than the
+    # attribution block: SSH stack diversity is small, so HASSH is a weak
+    # corroborating signal (two IPs with the same client stack lean together,
+    # it won't override behaviour). 0 disables. ROADMAP attribution scaffolding.
+    cluster_hassh_weight: float = 0.05
+    # Feature-hash dimension for the HASSH distribution (same scheme as the
+    # credential hash). Small — observed HASSH cardinality is low.
+    attribution_hassh_hash_dim: int = 8
     page_size: int = 1000
     batch_size: int = 200
     # ROADMAP P1: see CommandClusterConfig.reference_max_age_days. IP layer

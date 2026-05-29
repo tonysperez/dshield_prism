@@ -123,6 +123,7 @@ def _fetch_ip_session_docs(
             "dshield.cowrie.enrichment.session.embedding",
             "dshield.cowrie.enrichment.session.credentials",
             "cowrie.session_id",
+            "cowrie.hassh",
         ],
         "query": {"term": {"source.ip": ip}},
         "sort": [{"@timestamp": "asc"}, {"_doc": "asc"}],
@@ -165,6 +166,7 @@ def _build_ip_doc(
     geo_info: dict = {}
     as_info: dict = {}
     credentials_set: set[str] = set()
+    hassh_counter: Counter = Counter()
 
     for s in sessions:
         en = ((s.get("dshield") or {}).get("cowrie") or {}).get("enrichment", {}).get("session", {})
@@ -224,6 +226,12 @@ def _build_ip_doc(
             if username or password:
                 credentials_set.add(f"{username}:{password}")
 
+        # SSH client fingerprint (HASSH). Tally per-session so the IP rollup
+        # carries the modal fingerprint + full distribution for clustering.
+        hassh = (s.get("cowrie") or {}).get("hassh")
+        if hassh:
+            hassh_counter[hassh] += 1
+
     embedding = _mean_pool(embeddings) if embeddings else None
     dominant_intent, intent_distribution = _summarize_intents(intents)
     mean_novelty = round(sum(novelty_scores) / len(novelty_scores), 4) if novelty_scores else None
@@ -259,6 +267,15 @@ def _build_ip_doc(
     if credentials_set:
         # Sorted + capped so the doc is bounded and idempotent across runs.
         ip_block["credentials"] = sorted(credentials_set)[:_MAX_CREDENTIALS_PER_IP]
+    if hassh_counter:
+        # Modal HASSH + the full distribution (as an object array, not a
+        # dynamic-key map, to keep the mapping explicit). Sorted by count desc
+        # then hash for idempotence. Feeds the IP clustering attribution block.
+        ip_block["hassh"] = hassh_counter.most_common(1)[0][0]
+        ip_block["hassh_distribution"] = [
+            {"hassh": h, "count": c}
+            for h, c in sorted(hassh_counter.items(), key=lambda kv: (-kv[1], kv[0]))
+        ]
 
     source_block: dict = {"ip": ip}
     if geo_info:
@@ -449,6 +466,8 @@ def iter_ip_docs(
                 "country_iso_code": country,
                 "as_number": int(as_number) if as_number is not None else None,
                 "credentials": list(ip_en.get("credentials") or []),
+                # HASSH distribution as [{hassh, count}, ...] — attribution input.
+                "hassh_distribution": list(ip_en.get("hassh_distribution") or []),
                 # M3.B intel sub-block inputs. Defaults preserve cluster
                 # behaviour when intel is disabled / not yet populated.
                 "external_rarity_score": 0.0,
@@ -564,6 +583,39 @@ def _build_attribution_block(
     return block * weight
 
 
+def _build_hassh_block(
+    scalars_list: list[dict], weight: float, hassh_hash_dim: int,
+) -> "np.ndarray":
+    """SSH-client-fingerprint (HASSH) scalar sub-block.
+
+    Feature-hashes the IP's HASSH distribution into `hassh_hash_dim` bins,
+    weighted by per-fingerprint session count, then L1-normalises each row so
+    an IP that only ever presented one SSH client stack is a single hot bin.
+    Mirrors the credential-hash sub-block. Scaled by `weight`, kept low: SSH
+    stack diversity is small, so HASSH is a weak corroborating attribution
+    signal (two IPs with the same client stack lean together; it won't
+    override behaviour). ROADMAP attribution scaffolding (HASSH)."""
+    import numpy as np
+
+    n = len(scalars_list)
+    if n == 0 or hassh_hash_dim <= 0:
+        return np.zeros((n, 0), dtype=np.float32)
+    block = np.zeros((n, hassh_hash_dim), dtype=np.float32)
+    for i, s in enumerate(scalars_list):
+        counts = np.zeros(hassh_hash_dim, dtype=np.float32)
+        for entry in s.get("hassh_distribution") or []:
+            if not isinstance(entry, dict):
+                continue
+            h = entry.get("hassh")
+            c = float(entry.get("count") or 0)
+            if h and c > 0:
+                counts[_hash_credential_bin(h, hassh_hash_dim)] += c
+        total = counts.sum()
+        if total > 0:
+            block[i] = counts / total
+    return block * weight
+
+
 def _build_intel_block(
     scalars_list: list[dict], weight: float,
 ) -> "np.ndarray":
@@ -648,6 +700,8 @@ def make_full_scalar_builder(
     top_asns: list[int],
     attribution_weight: float,
     cred_hash_dim: int,
+    hassh_weight: float = 0.0,
+    hassh_hash_dim: int = 0,
 ):
     """Return a builder closure that produces the combined IP scalar
     matrix (behavior + attribution) given the per-run attribution params.
@@ -671,10 +725,15 @@ def make_full_scalar_builder(
         # external reputation is attribution-type signal (who is this
         # IP) rather than behavior-type signal (what did this IP do).
         intel = _build_intel_block(scalars_list, attribution_weight)
+        # HASSH (SSH client fingerprint) — attribution-type signal at its own
+        # (low) weight; no-op when hassh_weight/dim are 0 or no IP carries one.
+        hassh = _build_hassh_block(scalars_list, hassh_weight, hassh_hash_dim)
         blocks = [behavior]
         if attribution.shape[1] > 0:
             blocks.append(attribution)
         blocks.append(intel)
+        if hassh.shape[1] > 0:
+            blocks.append(hassh)
         return np.hstack(blocks).astype(np.float32)
 
     return _builder
@@ -905,16 +964,19 @@ def run_cluster(
     top_asns = _compute_top_asns(es, ips_idx, ipcfg.attribution_top_asns)
     log.info(
         "[cowrie.ips] attribution: top_asns=%d (configured=%d) cred_hash_dim=%d "
-        "behavior_weight=%.3f attribution_weight=%.3f",
+        "hassh_dim=%d behavior_weight=%.3f attribution_weight=%.3f hassh_weight=%.3f",
         len(top_asns), ipcfg.attribution_top_asns,
-        ipcfg.attribution_cred_hash_dim,
+        ipcfg.attribution_cred_hash_dim, ipcfg.attribution_hassh_hash_dim,
         ipcfg.cluster_scalar_weight, ipcfg.cluster_attribution_weight,
+        ipcfg.cluster_hassh_weight,
     )
 
     scalar_builder = make_full_scalar_builder(
         top_asns=top_asns,
         attribution_weight=ipcfg.cluster_attribution_weight,
         cred_hash_dim=ipcfg.attribution_cred_hash_dim,
+        hassh_weight=ipcfg.cluster_hassh_weight,
+        hassh_hash_dim=ipcfg.attribution_hassh_hash_dim,
     )
 
     # M3.B: external-intel sub-block. Always-on when intel data is
