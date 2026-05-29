@@ -8,6 +8,14 @@ import httpx
 
 log = logging.getLogger(__name__)
 
+# Deterministic generation: greedy decoding (temperature 0) + a fixed seed so a
+# re-enrich reproduces the prior output. Non-deterministic generation (the old
+# default of 0.1) silently shifts intent/description text on every re-enrich,
+# which feeds the embed context and churns session embeddings — and therefore
+# clustering, playbooks, and campaigns. See ROADMAP "Open audit items".
+_GEN_TEMPERATURE = 0.0
+_GEN_SEED = 0
+
 
 class OllamaError(RuntimeError):
     pass
@@ -53,12 +61,18 @@ class OllamaClient:
 
         Ollama supports format='json' (loose) or format=<JSON Schema dict> (strict, v0.5+).
         """
+        # Defaults always include deterministic temperature/seed + context size;
+        # caller-supplied options merge on top (and may override) rather than
+        # replacing the whole dict, so determinism can't be dropped by passing
+        # e.g. just max_tokens.
+        gen_options = {"temperature": _GEN_TEMPERATURE, "seed": _GEN_SEED, "num_ctx": 4096}
+        gen_options.update(options or {})
         payload = {
             "model": self.gen_model,
             "prompt": prompt,
             "format": schema if schema is not None else "json",
             "stream": False,
-            "options": options or {"temperature": 0.1, "num_ctx": 4096},
+            "options": gen_options,
         }
         r = self._client.post(f"{self.base_url}/api/generate", json=payload)
         if r.status_code != 200:

@@ -100,6 +100,10 @@ class AnthropicClient:
         payload: dict = {
             "model": self.gen_model,
             "max_tokens": max_tokens or self.max_tokens,
+            # Greedy decoding for reproducibility — cloud-escalated enrichments
+            # also feed the embed context, so non-determinism here churns
+            # clustering the same way the local model does. See ROADMAP.
+            "temperature": 0,
             "messages": [{"role": "user", "content": prompt}],
         }
         if system:

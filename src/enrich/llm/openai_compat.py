@@ -24,6 +24,15 @@ def _strip_think(text: str) -> str:
     return text.strip()
 
 
+# Deterministic generation: greedy decoding (temperature 0) + a fixed seed so a
+# re-enrich reproduces the prior output. Non-deterministic generation (the old
+# default of 0.1) silently shifts intent/description text on every re-enrich,
+# which feeds the embed context and churns session embeddings — and therefore
+# clustering, playbooks, and campaigns. See ROADMAP "Open audit items".
+_GEN_TEMPERATURE = 0.0
+_GEN_SEED = 0
+
+
 class LLMError(RuntimeError):
     pass
 
@@ -81,8 +90,9 @@ class OpenAICompatClient:
         payload: dict = {
             "model": self.gen_model,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": opts.get("temperature", 0.1),
+            "temperature": opts.get("temperature", _GEN_TEMPERATURE),
             "max_tokens": opts.get("max_tokens", 1024),
+            "seed": opts.get("seed", _GEN_SEED),
             "stream": False,
         }
         if schema is not None:
