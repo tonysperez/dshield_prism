@@ -1598,11 +1598,16 @@ def _run_disambiguation_pass(
         "  (none — this is a within-run collision only)"
     )
 
+    from ...llm.fencing import SYSTEM_PROMPT, fence, make_nonce
+    # The renamable/frozen blocks embed attacker-controlled command text and
+    # extracted IOCs — fence them. `<<<NAME>>>` is the short collision label.
+    nonce = make_nonce()
     prompt = (
         prompt_template
         .replace("<<<NAME>>>", name)
-        .replace("<<<RENAMABLE_BLOCK>>>", "\n\n".join(renamable_blocks))
-        .replace("<<<FROZEN_BLOCK>>>", frozen_section)
+        .replace("<<<RENAMABLE_BLOCK>>>",
+                 fence("renamable_clusters", "\n\n".join(renamable_blocks), nonce))
+        .replace("<<<FROZEN_BLOCK>>>", fence("frozen_clusters", frozen_section, nonce))
     )
 
     try:
@@ -1611,6 +1616,7 @@ def _run_disambiguation_pass(
             schema=PLAYBOOK_DISAMBIGUATE_JSON_SCHEMA,
             schema_name="playbook_disambiguate",
             options={"max_tokens": 1024},
+            system=SYSTEM_PROMPT,
         )
         parsed = PlaybookDisambiguation.model_validate_json(raw)
     except Exception as exc:
@@ -2253,12 +2259,17 @@ def run_name_playbooks(
                 member_cids[0] if len(member_cids) == 1
                 else f"{playbook_id} (clusters: {', '.join(member_cids)})"
             )
+            from ...llm.fencing import SYSTEM_PROMPT, fence, make_nonce
+            # The coverage-ranked command list is raw attacker command text —
+            # fence it. Cluster/session ids + size are system-generated.
+            nonce = make_nonce()
             prompt = (
                 prompt_template
                 .replace("<<<CLUSTER_ID>>>", cluster_id_for_prompt)
                 .replace("<<<SIZE>>>", str(total_size))
                 .replace("<<<SAMPLE_IDS>>>", ", ".join(sample_sids))
-                .replace("<<<COMMANDS>>>", _format_coverage_lines(cmd_coverage, cov_total))
+                .replace("<<<COMMANDS>>>",
+                         fence("commands", _format_coverage_lines(cmd_coverage, cov_total), nonce))
             )
 
             try:
@@ -2267,6 +2278,7 @@ def run_name_playbooks(
                     schema=PLAYBOOK_NAME_JSON_SCHEMA,
                     schema_name="playbook_name",
                     options={"max_tokens": 512},
+                    system=SYSTEM_PROMPT,
                 )
                 parsed = PlaybookName.model_validate_json(raw)
                 name = parsed.playbook_name

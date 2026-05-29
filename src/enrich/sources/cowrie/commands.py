@@ -645,14 +645,19 @@ def cloud_enrich_one(
 ) -> tuple[Optional[CloudCommandEnrichment], int, int]:
     """Returns (parsed_or_None, input_tokens, output_tokens)."""
     from ...llm.anthropic import parse_cloud_json, _strip_code_fences
+    from ...llm.fencing import SYSTEM_PROMPT, fence, make_nonce
+    # Fence attacker-controlled regions (the command + co-occurring siblings);
+    # the triage-reason tags are a trusted enum, left unfenced.
+    nonce = make_nonce()
     prompt = (
         prompt_template
-        .replace("<<<COMMAND>>>", command)
+        .replace("<<<COMMAND>>>", fence("command", command, nonce))
         .replace("<<<TRIAGE_REASONS>>>", ", ".join(triage_reasons) if triage_reasons else "(none)")
-        .replace("<<<COOCCURRING_COMMANDS>>>", cooccurring_block)
+        .replace("<<<COOCCURRING_COMMANDS>>>",
+                 fence("cooccurring_commands", cooccurring_block, nonce))
     )
     try:
-        text, in_tok, out_tok = cloud_client.generate_with_usage(prompt)
+        text, in_tok, out_tok = cloud_client.generate_with_usage(prompt, system=SYSTEM_PROMPT)
     except Exception as e:
         log.warning("cloud generate failed: %s", e)
         return None, 0, 0
@@ -782,10 +787,15 @@ def enrich_one(
     LLM sees only what's relevant, not the whole flag vocabulary.
     """
     from ...command_grounding import build_ground_truth_block
+    from ...llm.fencing import SYSTEM_PROMPT, fence, make_nonce
+    # Fence attacker-controlled regions (the command + co-occurring siblings);
+    # leave the curated ground-truth block unfenced (trusted).
+    nonce = make_nonce()
     base_prompt = (
         prompt_template
-        .replace("<<<COMMAND>>>", command)
-        .replace("<<<COOCCURRING_COMMANDS>>>", cooccurring_block)
+        .replace("<<<COMMAND>>>", fence("command", command, nonce))
+        .replace("<<<COOCCURRING_COMMANDS>>>",
+                 fence("cooccurring_commands", cooccurring_block, nonce))
         .replace("<<<COMMAND_GROUND_TRUTH>>>", build_ground_truth_block(command))
     )
     prompt = base_prompt
@@ -796,6 +806,7 @@ def enrich_one(
                 prompt,
                 schema=_ENRICHMENT_SCHEMA,
                 schema_name="command_enrichment",
+                system=SYSTEM_PROMPT,
             )
         except Exception as e:
             log.warning("llm generate failed (attempt %d): %s", attempt, e)

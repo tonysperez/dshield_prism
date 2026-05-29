@@ -81,15 +81,20 @@ class OpenAICompatClient:
         options: Optional[dict] = None,
         schema: Optional[dict] = None,
         schema_name: str = "structured_output",
+        system: Optional[str] = None,
     ) -> str:
         """Send chat completion. If `schema` provided, uses response_format=json_schema
         (LM Studio / OpenAI structured outputs); otherwise falls back to free-text mode
         and relies on the prompt to coax JSON.
         """
         opts = options or {}
+        messages: list[dict] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
         payload: dict = {
             "model": self.gen_model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             "temperature": opts.get("temperature", _GEN_TEMPERATURE),
             "max_tokens": opts.get("max_tokens", 1024),
             "seed": opts.get("seed", _GEN_SEED),

@@ -130,11 +130,12 @@ class AnthropicClient:
         options: Optional[dict] = None,
         schema: Optional[dict] = None,
         schema_name: str = "structured_output",
+        system: Optional[str] = None,
     ) -> str:
         """LLMClient-compatible signature. Schema is advisory — Claude follows
         the prompt's JSON instructions reliably without needing tool-use.
         """
-        text, _, _ = self.generate_with_usage(prompt)
+        text, _, _ = self.generate_with_usage(prompt, system=system)
         return _strip_code_fences(text)
 
     def generate_text(self, prompt: str, *, max_tokens: int = 16) -> str:

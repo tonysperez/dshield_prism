@@ -692,7 +692,9 @@ def build_app(config_path: str | None = None) -> FastAPI:
             raise HTTPException(503, "LLM not configured — add an llm: block to local.yaml")
         if not body.question.strip():
             raise HTTPException(400, "question is required")
-        prompt = _build_ask_prompt(body.question, body.context)
+        from enrich.llm.fencing import FENCE_NOTICE, fence, make_nonce
+        nonce = make_nonce()
+        prompt = _build_ask_prompt(body.question, body.context, nonce)
         try:
             headers = {"Content-Type": "application/json"}
             if llm_cfg.api_key:
@@ -704,7 +706,8 @@ def build_app(config_path: str | None = None) -> FastAPI:
                     {"role": "system", "content": (
                         "You are a cybersecurity analyst assistant helping investigate "
                         "honeypot intrusion data from DShield sensors. "
-                        "Be concise and actionable. Refer specifically to the data provided."
+                        "Be concise and actionable. Refer specifically to the data provided. "
+                        + FENCE_NOTICE
                     )},
                     {"role": "user", "content": prompt},
                 ],
@@ -732,7 +735,7 @@ def build_app(config_path: str | None = None) -> FastAPI:
     return app
 
 
-def _build_ask_prompt(question: str, context: dict) -> str:
+def _build_ask_prompt(question: str, context: dict, nonce: str | None = None) -> str:
     lines: list[str] = []
 
     anchor = context.get("anchor")
@@ -801,8 +804,14 @@ def _build_ask_prompt(question: str, context: dict) -> str:
             if n.get("is_outlier"): parts.append("OUTLIER")
             lines.append("  " + "  ".join(parts))
 
-    lines.append(f"\nQuestion: {question}")
-    return "\n".join(lines)
+    # The graph context above is built from node data (command text, IP
+    # labels, descriptions) that is attacker-controlled — fence it so the
+    # model treats it as data. The analyst's question rides outside the fence.
+    data_block = "\n".join(lines)
+    if nonce:
+        from enrich.llm.fencing import fence
+        data_block = fence("graph_context", data_block, nonce)
+    return f"{data_block}\n\nQuestion: {question}"
 
 
 # ---------------------------------------------------------------------------

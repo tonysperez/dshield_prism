@@ -175,6 +175,10 @@ done
 if [[ ! -s "${SRC_DIR}/.env" ]]; then
     die "Missing or empty .env at ${SRC_DIR}/.env. Copy .env.example and fill it in."
 fi
+# Lock down the source .env too (it holds ES creds, the cloud LLM key, and
+# intel-provider keys). The deployed copy is chmodded after rsync below; this
+# covers the working copy so it isn't left world-readable.
+chmod 600 "${SRC_DIR}/.env" 2>/dev/null || true
 if ! grep -qE '^(ES_API_KEY|ES_USERNAME)=' "${SRC_DIR}/.env"; then
     die ".env must define ES_API_KEY or ES_USERNAME/ES_PASSWORD."
 fi

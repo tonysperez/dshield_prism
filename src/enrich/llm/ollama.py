@@ -56,6 +56,7 @@ class OllamaClient:
         options: Optional[dict] = None,
         schema: Optional[dict] = None,
         schema_name: Optional[str] = None,  # accepted for interface parity; unused
+        system: Optional[str] = None,
     ) -> str:
         """Call /api/generate with format=json (or schema if provided).
 
@@ -74,6 +75,8 @@ class OllamaClient:
             "stream": False,
             "options": gen_options,
         }
+        if system:
+            payload["system"] = system
         r = self._client.post(f"{self.base_url}/api/generate", json=payload)
         if r.status_code != 200:
             raise OllamaError(f"generate {r.status_code}: {r.text[:300]}")

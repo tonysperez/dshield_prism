@@ -58,7 +58,10 @@ function el(tag, attrs, children) {
   const e = document.createElement(tag);
   if (attrs) for (const k in attrs) {
     if (k === "class") e.className = attrs[k];
-    else if (k === "html") e.innerHTML = attrs[k];
+    // Removed: a raw `html:` attr that set innerHTML directly. It was unused
+    // and a latent XSS sink for attacker-controlled fields. If a future caller
+    // genuinely needs raw HTML, re-add it with explicit escaping of any
+    // untrusted interpolation — do NOT pass attacker text through innerHTML.
     else if (k.startsWith("on")) e.addEventListener(k.slice(2), attrs[k]);
     else e.setAttribute(k, attrs[k]);
   }

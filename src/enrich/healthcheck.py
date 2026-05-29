@@ -74,7 +74,7 @@ def _diagnose_llm_failure(base_url: str, exc: Exception) -> list[str]:
     for path in candidates:
         url = f"{base}{path}"
         try:
-            r = httpx.get(url, timeout=5, verify=False)
+            r = httpx.get(url, timeout=5)
         except httpx.RequestError as e:
             out.append(f"        http {path}:   [FAIL] {type(e).__name__}: {e}")
             continue

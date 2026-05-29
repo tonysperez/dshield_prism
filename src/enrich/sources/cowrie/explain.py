@@ -357,12 +357,14 @@ def explain_cluster_pair_with_llm(
     # Local LLM only — keep cloud out of narrative generation per project
     # convention for non-critical LLM tasks (matches playbook naming).
     from ...llm import make_llm_client
+    from ...llm.fencing import SYSTEM_PROMPT
     with make_llm_client(cfg.llm) as llm:
         raw = llm.generate_json(
             prompt,
             schema=CLUSTER_PAIR_EXPLANATION_JSON_SCHEMA,
             schema_name="cluster_pair_explanation",
             options={"max_tokens": 1024},
+            system=SYSTEM_PROMPT,
         )
     parsed = ClusterPairExplanation.model_validate_json(raw)
     return parsed.model_dump()
@@ -389,6 +391,10 @@ def _render_explanation_prompt(template: str, a: dict) -> str:
     only_b = a["command_set_diff"]["only_b"]
     shared = a["command_set_diff"]["shared"]
 
+    # Fence the four command blocks — they carry raw attacker command text.
+    # The headline numbers, scalar stats, names and cluster ids are trusted.
+    from ...llm.fencing import fence, make_nonce
+    nonce = make_nonce()
     return (
         template
         .replace("<<<MERGE_THRESHOLD>>>",       f"{a['merge_threshold']:.3f}")
@@ -400,14 +406,14 @@ def _render_explanation_prompt(template: str, a: dict) -> str:
         .replace("<<<A_SIZE>>>",                str(a["a"]["size"]))
         .replace("<<<A_NAME>>>",                a["a"].get("playbook_name") or "(unnamed)")
         .replace("<<<A_SCALARS>>>",             _scalars_block("a"))
-        .replace("<<<A_TOP_COMMANDS>>>",        _commands_block(a["top_commands_a"]))
+        .replace("<<<A_TOP_COMMANDS>>>",        fence("top_commands_a", _commands_block(a["top_commands_a"]), nonce))
         .replace("<<<B_ID>>>",                  a["b"]["cluster_id"])
         .replace("<<<B_SIZE>>>",                str(a["b"]["size"]))
         .replace("<<<B_NAME>>>",                a["b"].get("playbook_name") or "(unnamed)")
         .replace("<<<B_SCALARS>>>",             _scalars_block("b"))
-        .replace("<<<B_TOP_COMMANDS>>>",        _commands_block(a["top_commands_b"]))
+        .replace("<<<B_TOP_COMMANDS>>>",        fence("top_commands_b", _commands_block(a["top_commands_b"]), nonce))
         .replace("<<<JACCARD>>>",               f"{a['command_set_diff']['jaccard']:.3f}")
         .replace("<<<SHARED_COUNT>>>",          str(len(shared)))
-        .replace("<<<ONLY_A_COMMANDS>>>",       ", ".join(only_a) or "(none)")
-        .replace("<<<ONLY_B_COMMANDS>>>",       ", ".join(only_b) or "(none)")
+        .replace("<<<ONLY_A_COMMANDS>>>",       fence("only_a_commands", ", ".join(only_a) or "(none)", nonce))
+        .replace("<<<ONLY_B_COMMANDS>>>",       fence("only_b_commands", ", ".join(only_b) or "(none)", nonce))
     )

@@ -947,11 +947,16 @@ def compute_llm_config_hash(cfg: AppConfig) -> str:
         "enabled": cfg.command_shape_dedup.enabled,
         "require_known_intent": cfg.command_shape_dedup.require_known_intent,
     }, sort_keys=True, separators=(",", ":"))
+    # The injection-fencing system prompt is part of what the model sees, so
+    # editing it changes enrichment output — fold it in so a change routes
+    # through the normal re-enrich-stale invalidation.
+    from .llm.fencing import SYSTEM_PROMPT
     combined = (
         f"cooc:{cooc_payload}\n"
         f"prompts:{prompt_payload}\n"
         f"grounding:{grounding_payload}\n"
-        f"shape_dedup:{dedup_payload}"
+        f"shape_dedup:{dedup_payload}\n"
+        f"system:{SYSTEM_PROMPT}"
     )
     return hashlib.sha256(combined.encode("utf-8")).hexdigest()[:_CONFIG_HASH_LEN]
 
