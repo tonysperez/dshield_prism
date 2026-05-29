@@ -10,6 +10,7 @@ import hashlib
 import logging
 import math
 import random
+import re
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Iterator, Optional
@@ -561,6 +562,40 @@ def _record_credential(credentials_set: set[str], ev: dict) -> None:
         credentials_set.add(f"{user}:{password}")
 
 
+def _filename_is_specific(basename: str) -> bool:
+    """Guard against false-positive filename links (ROADMAP #3). A name is
+    specific enough to match against command text only if it has a real
+    extension (`.sh`, `.arm7`, …) OR is at least 5 chars. Rejects short/common
+    basenames like `sshd`, `a`, `x` that would mislink to unrelated commands
+    (`service sshd restart`). Empty → not specific."""
+    if not basename:
+        return False
+    if re.search(r"\.[A-Za-z0-9]{1,6}$", basename):
+        return True
+    return len(basename) >= 5
+
+
+def _filename_match_command(
+    filename: str,
+    session_commands: list[tuple[str, str]],
+) -> Optional[str]:
+    """Best-effort file→command link by filename (ROADMAP #3): the hash of the
+    first session command that references the (specific-enough) basename as a
+    **whole token** — bounded by non-filename chars so a substring can't
+    mislink (`/usr/sbin/sshd` won't match `sshd`, and `sshd` is rejected by the
+    specificity guard anyway). Returns the command hash or None. Used as a
+    fallback for file_events with no stronger (url/destfile/preceding) link —
+    e.g. an SFTP upload later run by `sh setup.sh`."""
+    base = (filename or "").rsplit("/", 1)[-1]
+    if not _filename_is_specific(base):
+        return None
+    pat = re.compile(r"(?<![\w.\-])" + re.escape(base) + r"(?![\w.\-])")
+    for cmd_hash, cmd_line in session_commands:
+        if pat.search(cmd_line):
+            return cmd_hash
+    return None
+
+
 def _record_file_event(
     file_events: list[dict],
     ev: dict,
@@ -666,6 +701,9 @@ def _build_session_doc(
     # arrive @timestamp-ordered, so when a file event fires this holds the
     # command that triggered the drop. `(hash, command_line)` or None.
     last_command: Optional[tuple[str, str]] = None
+    # All `(command_hash, command_line)` this session, for the post-loop
+    # filename-match fallback (an SFTP upload is run by a *later* command).
+    session_commands: list[tuple[str, str]] = []
     command_hashes: list[str] = []
     unique_hashes: set[str] = set()
     # Every (user, password) pair attempted in this session, deduped. The
@@ -702,6 +740,20 @@ def _build_session_doc(
                     command_hashes.append(h)
                     unique_hashes.add(h)
                     last_command = (h, cmd)
+                    session_commands.append((h, cmd))
+
+    # ROADMAP #3 filename-match fallback: link file_events that have no
+    # stronger (url/destfile/preceding) command link by scanning the whole
+    # session for a command that references the filename as a guarded whole
+    # token — catches SFTP uploads run by a later `sh <file>`. Anything still
+    # unlinked is the cross-session backlog (ROADMAP open audit item).
+    for fe in file_events:
+        if fe.get("command_hash") or not fe.get("filename"):
+            continue
+        match = _filename_match_command(fe["filename"], session_commands)
+        if match:
+            fe["command_hash"] = match
+            fe["command_attribution"] = "filename_match"
 
     start_ts = (connect_event or {}).get("@timestamp") or (events[0].get("@timestamp") if events else None)
     end_ts = (closed_event or {}).get("@timestamp")
