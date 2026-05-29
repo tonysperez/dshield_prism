@@ -108,8 +108,9 @@ def classify_threatfox(
 
 class ThreatFoxProvider(Provider):
     name = "threatfox"
-    # M4 scope: URL only. Future M4+ can extend to ip / domain / hash.
-    handles = frozenset({"url"})
+    # URL (M4) + hash (#2). `search_ioc` accepts a hash value as-is. ip/domain
+    # remain a future single-line extension.
+    handles = frozenset({"url", "hash"})
 
     def __init__(self, provider_cfg, auth_key: Optional[str] = None) -> None:
         super().__init__(provider_cfg)

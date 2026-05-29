@@ -1,0 +1,110 @@
+{
+  "_comment": "External threat-intel for file-hash artifacts (ROADMAP #2). One doc per hash, keyed by canonical lowercase hex (md5/sha1/sha256 — see src/enrich/intel/artifact.py canonical_hash). Written by `dshield_prism intel refresh`. Mirrors prism.intel.url/ip layout; same `derived` rollup contract for cross-kind consumers. Strict-dynamic on the providers object: adding a new hash provider must update this mapping first. Providers: malwarebazaar + threatfox (abuse.ch), virustotal_public (scaffold, off by default).",
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "30s"
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "artifact": {
+        "properties": {
+          "kind":                    { "type": "keyword" },
+          "value":                   { "type": "keyword" },
+          "first_observed_locally":  { "type": "date" }
+        }
+      },
+      "last_refreshed":              { "type": "date" },
+      "providers": {
+        "type": "object",
+        "dynamic": "strict",
+        "properties": {
+          "malwarebazaar": {
+            "properties": {
+              "fetched_at":          { "type": "date" },
+              "ttl_expires_at":      { "type": "date" },
+              "malicious":           { "type": "boolean" },
+              "confidence":          { "type": "integer" },
+              "label":               { "type": "keyword" },
+              "tags":                { "type": "keyword" },
+              "authoritative_clean": { "type": "boolean" },
+              "evidence_direct":     { "type": "boolean" },
+              "structured": {
+                "properties": {
+                  "in_malwarebazaar": { "type": "boolean" },
+                  "signature":        { "type": "keyword" },
+                  "file_type":        { "type": "keyword" },
+                  "file_name":        { "type": "keyword" },
+                  "first_seen":       { "type": "keyword" },
+                  "tags":             { "type": "keyword" }
+                }
+              },
+              "raw": { "type": "object", "enabled": false }
+            }
+          },
+          "threatfox": {
+            "properties": {
+              "fetched_at":          { "type": "date" },
+              "ttl_expires_at":      { "type": "date" },
+              "malicious":           { "type": "boolean" },
+              "confidence":          { "type": "integer" },
+              "label":               { "type": "keyword" },
+              "tags":                { "type": "keyword" },
+              "authoritative_clean": { "type": "boolean" },
+              "evidence_direct":     { "type": "boolean" },
+              "structured": {
+                "properties": {
+                  "in_threatfox":     { "type": "boolean" },
+                  "threat_type":      { "type": "keyword" },
+                  "malware":          { "type": "keyword" },
+                  "malware_alias":    { "type": "keyword" },
+                  "confidence_level": { "type": "integer" },
+                  "first_seen":       { "type": "keyword" },
+                  "last_seen":        { "type": "keyword" }
+                }
+              },
+              "raw": { "type": "object", "enabled": false }
+            }
+          },
+          "virustotal_public": {
+            "properties": {
+              "fetched_at":          { "type": "date" },
+              "ttl_expires_at":      { "type": "date" },
+              "malicious":           { "type": "boolean" },
+              "confidence":          { "type": "integer" },
+              "label":               { "type": "keyword" },
+              "tags":                { "type": "keyword" },
+              "authoritative_clean": { "type": "boolean" },
+              "evidence_direct":     { "type": "boolean" },
+              "structured": {
+                "properties": {
+                  "in_virustotal":      { "type": "boolean" },
+                  "malicious_engines":  { "type": "integer" },
+                  "suspicious_engines": { "type": "integer" },
+                  "type_description":   { "type": "keyword" },
+                  "meaningful_name":    { "type": "keyword" }
+                }
+              },
+              "raw": { "type": "object", "enabled": false }
+            }
+          }
+        }
+      },
+      "derived": {
+        "properties": {
+          "consensus_malicious":      { "type": "boolean" },
+          "consensus_label":          { "type": "keyword" },
+          "tags":                     { "type": "keyword" },
+          "providers_with_data":      { "type": "integer" },
+          "providers_total":          { "type": "integer" },
+          "external_rarity_score":    { "type": "float" },
+          "override_applied":         { "type": "keyword" },
+          "malicious_provider_count": { "type": "integer" },
+          "clean_provider_count":     { "type": "integer" },
+          "confidence_max":           { "type": "integer" }
+        }
+      }
+    }
+  }
+}

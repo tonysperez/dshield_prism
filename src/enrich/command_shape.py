@@ -275,7 +275,18 @@ _IOC_URL_RE = re.compile(
     re.IGNORECASE,
 )
 _IOC_IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
-_IOC_HASH_RE = re.compile(r"\b[0-9a-fA-F]{32,64}\b")
+# Hash extraction (#2) — mirror the campaign miner's gated shape so bare hex
+# only counts as a hash with tool context. Exact md5/sha1/sha256 lengths.
+_HEX_LEN = r"(?:[0-9a-fA-F]{64}|[0-9a-fA-F]{40}|[0-9a-fA-F]{32})"
+# Always trusted: an explicit `sha256:HEX` / `sha1=HEX` / `md5:HEX` prefix.
+_IOC_HASH_PREFIX_RE = re.compile(rf"\b(?:sha256|sha1|md5)[:=]({_HEX_LEN})\b", re.IGNORECASE)
+# Bare hex only counts when a hash-producing tool appears in the same command.
+_IOC_HASH_TOOL_RE = re.compile(
+    r"\b(?:sha256sum|sha512sum|sha384sum|sha224sum|sha1sum|md5sum|"
+    r"shasum|certutil|openssl\s+dgst|gpg\s+--print-md)\b",
+    re.IGNORECASE,
+)
+_IOC_HEX_RE = re.compile(rf"\b{_HEX_LEN}\b")
 _IOC_PATH_RE = re.compile(r"(?:^|[\s|;&`(])(/[\w./\-]{2,})")
 # A loose domain: 2+ dot-separated labels, last is a TLD-like 2-24 alpha.
 _IOC_DOMAIN_RE = re.compile(
@@ -335,13 +346,21 @@ def extract_iocs_regex(cmd: str) -> dict[str, list[str]]:
             seen.add(("ip", ip))
             ips.append(ip)
 
-    for m in _IOC_HASH_RE.finditer(cmd):
-        h = m.group(0).lower()
-        # Hash lengths 32/40/64 = md5/sha1/sha256. Other lengths in the
-        # 32-64 range are uncommon and noisy; filter to canonical sizes.
-        if len(h) in (32, 40, 64) and ("hash", h) not in seen:
+    # Prefixed hashes (`sha256:HEX`) are always trusted; bare hex only when a
+    # hash-producing tool is in the command (tool-context gate, mirrors the
+    # campaign miner). Avoids treating arbitrary 32/40/64-hex tokens (request
+    # ids, cowrie fakefs hashes, base16 blobs) as file hashes.
+    for m in _IOC_HASH_PREFIX_RE.finditer(cmd):
+        h = m.group(1).lower()
+        if ("hash", h) not in seen:
             seen.add(("hash", h))
             hashes.append(h)
+    if _IOC_HASH_TOOL_RE.search(cmd):
+        for m in _IOC_HEX_RE.finditer(cmd):
+            h = m.group(0).lower()
+            if ("hash", h) not in seen:
+                seen.add(("hash", h))
+                hashes.append(h)
 
     for m in _IOC_PATH_RE.finditer(cmd):
         p = m.group(1)

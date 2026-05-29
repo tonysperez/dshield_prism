@@ -328,6 +328,22 @@ intel:
       request_timeout_seconds: 8.0
       min_inter_call_seconds: 0.5
       ttl_days: 3
+    # #2: hash-kind providers.
+    malwarebazaar:
+      enabled: true
+      base_url: "https://mb-api.abuse.ch/api/v1/"
+      request_timeout_seconds: 8.0
+      min_inter_call_seconds: 0.5
+      ttl_days: 7
+    # VirusTotal public — scaffold, OFF by default. Needs VIRUSTOTAL_API_KEY
+    # and enabled: true to run; free tier 4/min, 500/day.
+    virustotal_public:
+      enabled: false
+      base_url: "https://www.virustotal.com/api/v3"
+      request_timeout_seconds: 10.0
+      daily_budget: 450
+      min_inter_call_seconds: 16.0
+      ttl_days: 7
 
   # Priority-queue weights. `priority = novelty_w * novelty +
   #                                     low_conf_w * (1 - confidence/10) +

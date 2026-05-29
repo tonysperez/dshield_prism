@@ -30,7 +30,7 @@ from typing import Iterable, Iterator, Optional
 
 from ..cache import StateDB
 from ..config import AppConfig, IntelPriorityConfig
-from .artifact import Artifact, canonical_ip, canonical_url, is_in_cidrs
+from .artifact import Artifact, canonical_hash, canonical_ip, canonical_url, is_in_cidrs
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +47,12 @@ class PriorityInputs:
     confidence: Optional[int] = None            # 1–10 LLM self-rating
     centrality_norm: Optional[float] = None     # 0.0–1.0, log-normalised occurrence
     age_hours: Optional[float] = None           # hours since first-observed locally
+    # Additive tier offset, added verbatim to the score (#2). Default 0 leaves
+    # ip/url ordering untouched; the hash scans use it to layer file-event
+    # hashes (tier 1; real drops > content-writes) above regex-from-command
+    # hashes (tier 2). Tiers only order WITHIN a kind (the queue pops per-kind),
+    # so this never perturbs cross-kind behaviour.
+    base_boost: float = 0.0
 
 
 def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -81,6 +87,7 @@ def compute_priority(
         + weights.low_conf_w * low_conf_term
         + weights.centrality_w * centrality_term
         + weights.recency_w * recency_term
+        + inputs.base_boost
     )
 
 
@@ -317,6 +324,121 @@ def _iter_url_artifacts_from_commands(es, cfg: AppConfig) -> Iterator[tuple[Arti
         )
 
 
+# --- Hash artifacts (ROADMAP #2) ----------------------------------------------
+# 3-tier priority via PriorityInputs.base_boost (see project memory
+# `hash-intel-priority`): cowrie file-event hashes are tier 1 (real drops
+# outrank shell content-writes); regex-from-command hashes are tier 2.
+_HASH_TIER1_DROP_BOOST = 2.0    # url-fetched payload or binary/script drop
+_HASH_TIER1_WRITE_BOOST = 1.0   # shell content-write (authorized_keys, etc.)
+# (tier 2 = command-regex hashes use the default base_boost of 0.0)
+
+# Substrings marking a shell *content-write* target rather than a payload drop.
+_CONTENT_WRITE_MARKERS = (
+    "authorized_keys", "hosts.deny", "hosts.allow", "/dev/null",
+    ".ssh", "/etc/", ".bashrc", ".profile", "bash_history", "/root/.",
+)
+# Well-known trivial-content hashes (empty string / newline / "test") — cowrie
+# hashing an `echo`/redirect, never malware. Always content-write tier.
+_TRIVIAL_HASHES = frozenset({
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",  # ""
+    "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",  # "\n"
+    "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",  # "test"
+})
+
+
+def _hash_drop_boost(sha256: str, filename: Optional[str], has_url: bool) -> float:
+    """Within-tier-1 boost: real drops outrank content-writes. A hash is a drop
+    if it was url-fetched OR its filename isn't a shell content-write target and
+    it isn't a known-trivial constant. Pure."""
+    if sha256.lower() in _TRIVIAL_HASHES:
+        return _HASH_TIER1_WRITE_BOOST
+    if has_url:
+        return _HASH_TIER1_DROP_BOOST
+    fn = (filename or "").lower()
+    if fn and any(m in fn for m in _CONTENT_WRITE_MARKERS):
+        return _HASH_TIER1_WRITE_BOOST
+    return _HASH_TIER1_DROP_BOOST
+
+
+def _iter_hash_artifacts_from_sessions(es, cfg: AppConfig) -> Iterator[tuple[Artifact, PriorityInputs]]:
+    """Tier 1: cowrie-computed file hashes from the session-rollup `file_events`
+    (ROADMAP #3 output). Highest-confidence hashes in the corpus. Within tier 1,
+    `base_boost` ranks real drops above shell content-writes."""
+    idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
+    if not es.indices.exists(index=idx):
+        return
+    fe = "dshield.cowrie.enrichment.session.file_events"
+    _OCCURRENCE_DENOM = 100.0
+    try:
+        resp = es.search(
+            index=idx, size=0, query={"match_all": {}},
+            aggs={"fe": {"nested": {"path": fe}, "aggs": {
+                "by_hash": {"terms": {"field": f"{fe}.sha256", "size": cfg.intel.max_per_run},
+                    "aggs": {
+                        "has_url": {"filter": {"exists": {"field": f"{fe}.url"}}},
+                        "top_filename": {"terms": {"field": f"{fe}.filename.keyword", "size": 1}},
+                    }}}}},
+        )
+    except Exception as exc:  # pragma: no cover
+        log.warning("intel: session file_events hash scan failed: %s", exc)
+        return
+    buckets = (resp.get("aggregations", {}).get("fe", {}).get("by_hash", {}).get("buckets", [])) or []
+    for b in buckets:
+        canon = canonical_hash(b.get("key"))
+        if canon is None:
+            continue
+        has_url = int((b.get("has_url") or {}).get("doc_count") or 0) > 0
+        fn_buckets = (b.get("top_filename") or {}).get("buckets") or []
+        filename = fn_buckets[0]["key"] if fn_buckets else None
+        occurrence = int(b.get("doc_count") or 0)
+        centrality_norm = (
+            math.log1p(occurrence) / math.log1p(_OCCURRENCE_DENOM) if occurrence > 0 else 0.0
+        )
+        yield (
+            Artifact("hash", canon),
+            PriorityInputs(
+                centrality_norm=centrality_norm,
+                base_boost=_hash_drop_boost(canon, filename, has_url),
+            ),
+        )
+
+
+def _iter_hash_artifacts_from_commands(es, cfg: AppConfig) -> Iterator[tuple[Artifact, PriorityInputs]]:
+    """Tier 2: file hashes extracted from command text (regex / LLM IOCs), via
+    the command `threat.indicator` file entries. Mirrors the URL scan. Default
+    `base_boost` (0) keeps these below all file-event hashes."""
+    idx = cfg.elasticsearch.indexes.cowrie.commands
+    if not es.indices.exists(index=idx):
+        return
+    _OCCURRENCE_DENOM = 100.0
+    try:
+        resp = es.search(
+            index=idx, size=0, query={"match_all": {}},
+            aggs={"indicators": {"nested": {"path": "threat.indicator"}, "aggs": {
+                "files": {"filter": {"term": {"threat.indicator.type": "file"}}, "aggs": {
+                    "by_hash": {"terms": {
+                        "field": "threat.indicator.file.hash.sha256",
+                        "size": cfg.intel.max_per_run,
+                    }}}}}}},
+        )
+    except Exception as exc:  # pragma: no cover
+        log.warning("intel: in-command hash nested-agg scan failed: %s", exc)
+        return
+    buckets = (
+        resp.get("aggregations", {}).get("indicators", {})
+        .get("files", {}).get("by_hash", {}).get("buckets", [])
+    ) or []
+    for b in buckets:
+        canon = canonical_hash(b.get("key"))
+        if canon is None:
+            continue
+        occurrence = int(b.get("doc_count") or 0)
+        centrality_norm = (
+            math.log1p(occurrence) / math.log1p(_OCCURRENCE_DENOM) if occurrence > 0 else 0.0
+        )
+        yield (Artifact("hash", canon), PriorityInputs(centrality_norm=centrality_norm))
+
+
 def discover_and_enqueue(
     es, db: StateDB, cfg: AppConfig,
 ) -> dict[str, int]:
@@ -339,6 +461,11 @@ def discover_and_enqueue(
         _iter_ip_artifacts_from_rollup(es, cfg),
         _iter_in_command_ip_artifacts_from_commands(es, cfg),
         _iter_url_artifacts_from_commands(es, cfg),
+        # Hash scans (#2): command-regex (tier 2) BEFORE session file-events
+        # (tier 1) so the tier-1 priority wins the per-(kind,value) upsert when
+        # a hash appears in both.
+        _iter_hash_artifacts_from_commands(es, cfg),
+        _iter_hash_artifacts_from_sessions(es, cfg),
     ):
         for artifact, inputs in source_iter:
             prio = compute_priority(inputs, weights)

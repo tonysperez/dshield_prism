@@ -95,11 +95,12 @@ _LAYER_MAPPINGS = {
     },
     # External threat-intel — cross-source per-artifact indices.
     # `init-indexes --source intel` creates these. M1 shipped `ip`,
-    # M4 added `url`; `domain` / `hash` land when corpus produces
-    # extractable values.
+    # M4 added `url`, #2 added `hash` (MalwareBazaar / ThreatFox);
+    # `domain` lands with #7.
     "intel": {
         "ip":     "setup/es-mappings/intel/ip.json",
         "url":    "setup/es-mappings/intel/url.json",
+        "hash":   "setup/es-mappings/intel/hash.json",
     },
     # Persisted findings index — M5. Cross-source: the miner reads
     # IP rollups + intel-{ip,url}, writes one findings index.

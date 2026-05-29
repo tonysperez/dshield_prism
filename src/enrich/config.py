@@ -355,6 +355,36 @@ class ThreatFoxProviderConfig(IntelProviderConfig):
     ttl_days: int = 3
 
 
+class MalwareBazaarProviderConfig(IntelProviderConfig):
+    """abuse.ch MalwareBazaar — per-hash malware-sample DB (#2).
+
+    Same abuse.ch family/auth as ThreatFox (shared ABUSE_CH_AUTH_KEY). A hit
+    means the file is a *known malware sample* — direct evidence, not an
+    aggregate vote. POSTs `get_info` per hash; returns the malware
+    signature/family, file type, tags. Free; auth key recommended.
+    """
+    base_url: str = "https://mb-api.abuse.ch/api/v1/"
+    request_timeout_seconds: float = 8.0
+    min_inter_call_seconds: float = 0.5
+    ttl_days: int = 7
+
+
+class VirusTotalPublicProviderConfig(IntelProviderConfig):
+    """VirusTotal public API v3 — per-hash lookup (#2 scaffold).
+
+    Disabled by default. Even with `VIRUSTOTAL_API_KEY` set, stays off unless
+    `enabled: true`. Free tier is 4 req/min / 500 per day, so the worker
+    gates on `daily_budget` like GreyNoise/AbuseIPDB.
+    """
+    enabled: bool = False
+    base_url: str = "https://www.virustotal.com/api/v3"
+    request_timeout_seconds: float = 10.0
+    # Free public tier: 500/day. Stay under to leave headroom.
+    daily_budget: int = 450
+    min_inter_call_seconds: float = 16.0  # 4 req/min ceiling
+    ttl_days: int = 7
+
+
 class AbuseIPDBProviderConfig(IntelProviderConfig):
     """AbuseIPDB provider — per-IP HTTP lookup. Free tier: 1000/day."""
     base_url: str = "https://api.abuseipdb.com"
@@ -391,6 +421,9 @@ class IntelProvidersConfig(BaseModel):
     # M4: URL-kind providers.
     urlhaus: URLhausProviderConfig = Field(default_factory=URLhausProviderConfig)
     threatfox: ThreatFoxProviderConfig = Field(default_factory=ThreatFoxProviderConfig)
+    # #2: hash-kind providers.
+    malwarebazaar: MalwareBazaarProviderConfig = Field(default_factory=MalwareBazaarProviderConfig)
+    virustotal_public: VirusTotalPublicProviderConfig = Field(default_factory=VirusTotalPublicProviderConfig)
 
 
 class IntelPriorityConfig(BaseModel):
@@ -692,6 +725,11 @@ class Secrets(BaseSettings):
     # to unauthenticated requests and just hope the rate limit
     # holds.
     abuse_ch_auth_key: Optional[str] = None
+    # #2: VirusTotal public API v3 key. Scaffold only — the provider is
+    # disabled by default; even with a key it stays off unless
+    # `intel.providers.virustotal_public.enabled` is set. Free tier is
+    # 4 req/min / 500 per day, so it's budget-gated like GreyNoise.
+    virustotal_api_key: Optional[str] = None
 
 
 def _deep_merge(base: dict, over: dict) -> dict:

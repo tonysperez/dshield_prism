@@ -68,8 +68,10 @@ def _validate_mitre_ids(
     return out
 
 
-# Anchored hex matchers for MD5 / SHA1 / SHA256 hash IOCs.
-_HASH_RE   = re.compile(r"^[A-Fa-f0-9]+$")
+# Anchored hex matcher for MD5 / SHA1 / SHA256 hash IOCs — exact lengths only,
+# so the regex itself rejects arbitrary-length hex the LLM may emit (closes the
+# "_HASH_RE accepts unanchored hex" audit item; #2).
+_HASH_RE   = re.compile(r"^(?:[A-Fa-f0-9]{64}|[A-Fa-f0-9]{40}|[A-Fa-f0-9]{32})$")
 _HASH_LENS = {32, 40, 64}
 # Conservative domain matcher — labels of letters/digits/hyphens separated
 # by dots, with a TLD of >= 2 letters. Rejects bare words like "PING".

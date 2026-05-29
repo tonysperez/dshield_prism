@@ -41,9 +41,11 @@ from .providers.feodotracker import FeodoTrackerProvider
 from .providers.firehol import FireholProvider
 from .providers.greynoise import GreyNoiseProvider
 from .providers.isc import ISCProvider
+from .providers.malwarebazaar import MalwareBazaarProvider
 from .providers.threatfox import ThreatFoxProvider
 from .providers.tor import TorProvider
 from .providers.urlhaus import URLhausProvider
+from .providers.virustotal_public import VirusTotalPublicProvider
 from .queue import discover_and_enqueue
 from .writer import upsert_intel_doc
 
@@ -110,6 +112,14 @@ def _build_providers(cfg: AppConfig, secrets: Optional[Secrets] = None) -> list[
         out.append(URLhausProvider(pc.urlhaus, auth_key=abusech_key))
     if pc.threatfox.enabled:
         out.append(ThreatFoxProvider(pc.threatfox, auth_key=abusech_key))
+    # #2: hash-kind providers. MalwareBazaar is abuse.ch family (shared key,
+    # unauthenticated fallback). VirusTotal is key-gated AND enabled-gated —
+    # skips construction unless both are present (scaffold; off by default).
+    if pc.malwarebazaar.enabled:
+        out.append(MalwareBazaarProvider(pc.malwarebazaar, auth_key=abusech_key))
+    vt_key = (secrets.virustotal_api_key if secrets else None)
+    if pc.virustotal_public.enabled and vt_key:
+        out.append(VirusTotalPublicProvider(pc.virustotal_public, vt_key))
     return out
 
 
