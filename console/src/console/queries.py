@@ -240,6 +240,22 @@ def lookup_command(es: Elasticsearch, cfg: AppConfig, sha256: str) -> dict | Non
         return {"_id": hits[0]["_id"], "_source": hits[0]["_source"]} if hits else None
 
 
+_FE_PATH = "dshield.cowrie.enrichment.session.file_events"
+
+
+def file_hash_exists(es: Elasticsearch, cfg: AppConfig, sha256: str) -> bool:
+    """True if `sha256` is a dropped-file hash (file_events.sha256) in any
+    session rollup. Used to disambiguate a 64-hex query that could be a command
+    process-hash and/or a dropped file."""
+    idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
+    try:
+        r = es.count(index=idx, query={"nested": {"path": _FE_PATH,
+            "query": {"term": {f"{_FE_PATH}.sha256": sha256.lower()}}}})
+        return r.get("count", 0) > 0
+    except Exception:
+        return False
+
+
 def lookup_cluster(
     es: Elasticsearch, cfg: AppConfig, kind: str, cluster_id: str,
     run_cache: RunCache,
@@ -1095,6 +1111,41 @@ def freetext_search(es: Elasticsearch, cfg: AppConfig, q: str, *, size: int = 25
                 "label": label,
                 "score": 0.5,
             })
+
+    # 4. Dropped files by name (ROADMAP #3/#2). Nested file_events on the
+    # session rollup, matched on the attacker-facing filename (match + keyword
+    # wildcard, same pattern as command lines). One candidate per distinct sha,
+    # labelled with a representative filename; anchors the file node directly.
+    try:
+        r = es.search(index=idx.cowrie.sessions_rollup, size=0, query={"match_all": {}}, aggs={
+            "fe": {"nested": {"path": _FE_PATH}, "aggs": {
+                "m": {"filter": {"bool": {"should": [
+                    {"match": {f"{_FE_PATH}.filename": q}},
+                    {"wildcard": {f"{_FE_PATH}.filename.keyword": {
+                        "value": f"*{q_esc}*", "case_insensitive": True}}},
+                ], "minimum_should_match": 1}}, "aggs": {
+                    "by_sha": {"terms": {"field": f"{_FE_PATH}.sha256", "size": 15}, "aggs": {
+                        "fn": {"terms": {"field": f"{_FE_PATH}.filename.keyword", "size": 1}},
+                    }},
+                }},
+            }},
+        })
+        file_buckets = (
+            r.get("aggregations", {}).get("fe", {}).get("m", {})
+            .get("by_sha", {}).get("buckets", [])
+        ) or []
+    except Exception:
+        file_buckets = []
+    for b in file_buckets:
+        sha = b.get("key")
+        if not sha:
+            continue
+        fn_b = b.get("fn", {}).get("buckets", [])
+        fn = fn_b[0]["key"] if fn_b else sha[:12]
+        candidates.append({
+            "type": "file", "id": sha,
+            "label": f"file: {fn}", "score": 1.5,
+        })
 
     candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
     return candidates[:size]

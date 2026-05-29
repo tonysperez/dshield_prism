@@ -19,6 +19,8 @@
     ip_cluster: "ipcl",
     playbook: "pb",
     campaign: "camp",
+    file: "file",
+    hash: "file",
     asn: "asn",
     country: "cc",
     mitre_technique: "tt",
@@ -31,6 +33,7 @@
     cmdcl: "command_cluster",
     sescl: "session_cluster",
     ipcl: "ip_cluster",
+    file: "file",
     pb: "playbook",
     camp: "campaign",
     asn: "asn",
@@ -284,6 +287,13 @@
     // sidecar. Clicking the same node again clears the filter.
     _toggleNodeSetHighlight(node);
     const { type, id } = parseNodeId(node.id);
+    // File nodes open the dedicated hash artifact pane (full page, like the
+    // URL/IP panes) rather than the inline detail panel — double-click still
+    // expands the file's droppers in-graph.
+    if (type === "file") {
+      window.open(`/artifact/hash?value=${encodeURIComponent(id)}`, "_blank");
+      return;
+    }
     try {
       const d = await api(`/api/ioc/${encodeURIComponent(type)}/${encodeURIComponent(id)}`);
       renderDetail(d);

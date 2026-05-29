@@ -150,6 +150,122 @@ def _emit_command_cluster_mitre(nodes: list, edges: list, sha: str, cenr: dict, 
 
 
 # ----------------------------------------------------------------------------
+# File-drop lane (ROADMAP #3/#2): cowrie file-event hashes linked to the
+# command that dropped/used them (`file_events[].command_hash`), flagged with
+# the intel verdict from prism.intel.hash.
+# ----------------------------------------------------------------------------
+
+_FE = "dshield.cowrie.enrichment.session.file_events"
+
+
+def _fetch_hash_verdicts(es: Elasticsearch, cfg: AppConfig, shas: list[str]) -> dict[str, dict]:
+    """`{sha256: {malicious, family}}` from prism.intel.hash (mget). Missing
+    docs / index → empty. `family` = consensus_label or a provider signature."""
+    out: dict[str, dict] = {}
+    if not shas:
+        return out
+    idx = cfg.intel.indexes.hash
+    try:
+        if not es.indices.exists(index=idx):
+            return out
+        resp = es.mget(index=idx, ids=shas)
+    except Exception:  # noqa: BLE001 — verdict is best-effort decoration
+        return out
+    for doc in resp.get("docs", []):
+        if not doc.get("found"):
+            continue
+        src = doc.get("_source") or {}
+        derived = src.get("derived") or {}
+        prov = src.get("providers") or {}
+        family = (
+            (prov.get("malwarebazaar") or {}).get("structured", {}).get("signature")
+            or (prov.get("threatfox") or {}).get("structured", {}).get("malware")
+            or derived.get("consensus_label")
+        )
+        out[doc["_id"]] = {
+            "malicious": bool(derived.get("consensus_malicious")),
+            "family": family,
+        }
+    return out
+
+
+def _file_node(sha: str, filename: str | None, action: str | None, verdict: dict | None) -> dict:
+    """Cytoscape file node. Label prefers the attacker-facing filename."""
+    v = verdict or {}
+    return {"data": {
+        "id": _nid("file", sha), "type": "file",
+        "label": (filename or sha[:12]),
+        "sha256": sha, "filename": filename, "action": action,
+        "malicious": v.get("malicious"), "family": v.get("family"),
+    }}
+
+
+def _emit_command_files(
+    es: Elasticsearch, cfg: AppConfig, nodes: list, edges: list, command_shas: list[str],
+) -> None:
+    """For each command sha in `command_shas`, attach the files it dropped/ran
+    (`file_events.command_hash == sha`) as `file` nodes + `cmd→file` edges. One
+    batched nested agg over the session rollup; intel verdicts batch-fetched.
+
+    Command graph nodes are keyed by the full `process.hash.sha256` (64 hex),
+    but `file_events.command_hash` stores the command doc `_id`, which is that
+    sha truncated to 16 hex. We query on the 16-hex form and map matches back
+    to the full node id so the emitted edges attach to the existing node."""
+    shas = [s for s in dict.fromkeys(command_shas) if s]
+    if not shas:
+        return
+    # 16-hex command_hash (file_events) -> full node sha (graph command node id)
+    short_to_full = {s[:16]: s for s in shas}
+    short_shas = list(short_to_full)
+    idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
+    try:
+        resp = es.search(index=idx, size=0, query={"match_all": {}}, aggs={
+            "fe": {"nested": {"path": _FE}, "aggs": {
+                "match": {"filter": {"terms": {f"{_FE}.command_hash": short_shas}}, "aggs": {
+                    "by_cmd": {"terms": {"field": f"{_FE}.command_hash", "size": len(short_shas)}, "aggs": {
+                        "by_file": {"terms": {"field": f"{_FE}.sha256", "size": 50}, "aggs": {
+                            "fn": {"terms": {"field": f"{_FE}.filename.keyword", "size": 1}},
+                            "act": {"terms": {"field": f"{_FE}.action", "size": 1}},
+                        }},
+                    }},
+                }},
+            }},
+        })
+    except Exception:  # noqa: BLE001
+        return
+    cmd_buckets = (
+        resp.get("aggregations", {}).get("fe", {}).get("match", {})
+        .get("by_cmd", {}).get("buckets", [])
+    ) or []
+    # Collect (cmd_sha, file_sha, filename, action) and the distinct file shas.
+    pairs: list[tuple[str, str, str | None, str | None]] = []
+    file_shas: list[str] = []
+    for cb in cmd_buckets:
+        # bucket key is the 16-hex file_events.command_hash; map back to the
+        # full node sha so edges attach to the command node already in-graph.
+        cmd_sha = short_to_full.get(cb.get("key"), cb.get("key"))
+        for fb in (cb.get("by_file", {}).get("buckets", []) or []):
+            fsha = fb.get("key")
+            if not fsha:
+                continue
+            fn_b = fb.get("fn", {}).get("buckets", [])
+            act_b = fb.get("act", {}).get("buckets", [])
+            pairs.append((cmd_sha, fsha,
+                          fn_b[0]["key"] if fn_b else None,
+                          act_b[0]["key"] if act_b else None))
+            file_shas.append(fsha)
+    verdicts = _fetch_hash_verdicts(es, cfg, file_shas)
+    seen_files: set[str] = set()
+    for cmd_sha, fsha, fn, act in pairs:
+        if fsha not in seen_files:
+            seen_files.add(fsha)
+            nodes.append(_file_node(fsha, fn, act, verdicts.get(fsha)))
+        edges.append({"data": {"id": f"{_nid('cmd', cmd_sha)}->{_nid('file', fsha)}",
+                               "source": _nid("cmd", cmd_sha), "target": _nid("file", fsha),
+                               "label": "dropped", "kind": "dropped"}})
+
+
+# ----------------------------------------------------------------------------
 # Per-anchor neighborhood builders
 # ----------------------------------------------------------------------------
 
@@ -773,6 +889,111 @@ def _mitre_anchor(es: Elasticsearch, cfg: AppConfig, mitre_id: str, kind: str, *
     return _dedup({"nodes": nodes, "edges": edges})
 
 
+def _file_anchor(es: Elasticsearch, cfg: AppConfig, sha256: str, *, limit: int, sf: "queries.SessionFilter | None" = None) -> dict:
+    """Anchor on a dropped file: emit the file node (+ intel verdict) and its
+    droppers — the sessions that dropped it and, where attributable, the
+    commands (`file_events.command_hash`). Files with no in-session command
+    (SFTP uploads) attach via a direct session→file edge."""
+    sha = sha256.lower()
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
+    try:
+        resp = es.search(index=idx, size=limit,
+            query={"nested": {"path": _FE, "query": {"term": {f"{_FE}.sha256": sha}},
+                              "inner_hits": {"size": 20, "_source": [
+                                  f"{_FE}.command_hash", f"{_FE}.filename", f"{_FE}.action"]}}},
+            _source=["cowrie.session_id"])
+        hits = resp.get("hits", {}).get("hits", []) or []
+    except Exception:  # noqa: BLE001
+        hits = []
+
+    filename = None
+    action = None
+    # session_id -> list of (command_hash|None); also gather distinct cmd hashes.
+    per_session: list[tuple[str, list[str | None]]] = []
+    cmd_hashes: list[str] = []
+    for h in hits:
+        sid = (h.get("_source", {}).get("cowrie") or {}).get("session_id")
+        if not sid:
+            continue
+        inner = (((h.get("inner_hits") or {}).get(_FE) or {}).get("hits") or {}).get("hits", [])
+        ch_list: list[str | None] = []
+        for ih in inner:
+            fe = ih.get("_source", {})
+            # inner_hit _source is the nested object's fields
+            fe = fe.get("dshield", {}).get("cowrie", {}).get("enrichment", {}).get("session", {}).get("file_events", fe) if "dshield" in fe else fe
+            filename = filename or fe.get("filename")
+            action = action or fe.get("action")
+            ch = fe.get("command_hash")
+            ch_list.append(ch)
+            if ch:
+                cmd_hashes.append(ch)
+        per_session.append((sid, ch_list))
+
+    verdicts = _fetch_hash_verdicts(es, cfg, [sha])
+    nodes.append(_file_node(sha, filename, action, verdicts.get(sha)))
+
+    # Session nodes (+ cluster/playbook + ip) for the droppers.
+    sids = [s for s, _ in per_session]
+    senr_map = queries.bulk_session_enrichment(es, cfg, sids)
+    src_ips = [v["src_ip"] for v in senr_map.values() if isinstance(v, dict) and v.get("src_ip")]
+    ienr_map = queries.bulk_ip_enrichment(es, cfg, src_ips)
+    # Command labels for the attributing commands. file_events.command_hash is
+    # the 16-hex command doc _id; every other anchor keys command nodes by the
+    # full process.hash.sha256, so resolve to the full sha to keep one node id.
+    cmd_labels: dict[str, str] = {}
+    cmd_full: dict[str, str] = {}
+    for ch in dict.fromkeys(cmd_hashes):
+        cdoc = queries.lookup_command(es, cfg, ch)
+        if cdoc:
+            proc = cdoc["_source"].get("process") or {}
+            cmd_labels[ch] = (proc.get("command_line") or ch)[:80]
+            cmd_full[ch] = (proc.get("hash") or {}).get("sha256") or ch
+
+    for sid, ch_list in per_session:
+        info = senr_map.get(sid, {})
+        senr = info.get("enrichment", {}) if isinstance(info, dict) else {}
+        nodes.append({"data": {
+            "id": _nid("session", sid), "type": "session", "label": sid,
+            "size": _log_size(senr.get("command_count")),
+            "playbook_id": senr.get("playbook_id"), "playbook_name": senr.get("playbook_name"),
+            "cluster_id": (senr.get("cluster") or {}).get("id"),
+            "is_outlier": (senr.get("cluster") or {}).get("is_outlier"),
+        }})
+        _emit_session_cluster_playbook(nodes, edges, sid, senr)
+        ip = info.get("src_ip") if isinstance(info, dict) else None
+        if ip:
+            ienr = (ienr_map.get(ip) or {}).get("enrichment") or {}
+            nodes.append({"data": {"id": _nid("ip", ip), "type": "ip", "label": ip,
+                                   "cluster_id": (ienr.get("cluster") or {}).get("id"),
+                                   "is_outlier": (ienr.get("cluster") or {}).get("is_outlier")}})
+            edges.append({"data": {"id": f"{_nid('ip',ip)}->{_nid('session',sid)}",
+                                   "source": _nid("ip", ip), "target": _nid("session", sid),
+                                   "label": "saw", "kind": "saw"}})
+            _emit_ip_cluster(nodes, edges, ip, ienr)
+        linked = False
+        for ch in ch_list:
+            if not ch:
+                continue
+            linked = True
+            cnode = cmd_full.get(ch, ch)
+            nodes.append({"data": {"id": _nid("cmd", cnode), "type": "command",
+                                   "label": cmd_labels.get(ch, ch[:12]), "sha256": cnode}})
+            edges.append({"data": {"id": f"{_nid('session',sid)}->{_nid('cmd',cnode)}",
+                                   "source": _nid("session", sid), "target": _nid("cmd", cnode),
+                                   "label": "ran", "kind": "ran"}})
+            edges.append({"data": {"id": f"{_nid('cmd',cnode)}->{_nid('file',sha)}",
+                                   "source": _nid("cmd", cnode), "target": _nid("file", sha),
+                                   "label": "dropped", "kind": "dropped"}})
+        if not linked:
+            # SFTP / no in-session command — connect the session straight to the file.
+            edges.append({"data": {"id": f"{_nid('session',sid)}->{_nid('file',sha)}",
+                                   "source": _nid("session", sid), "target": _nid("file", sha),
+                                   "label": "dropped", "kind": "dropped"}})
+    return _dedup({"nodes": nodes, "edges": edges})
+
+
 # ----------------------------------------------------------------------------
 # Public dispatch
 # ----------------------------------------------------------------------------
@@ -782,31 +1003,46 @@ def neighbors(
     limit: int = 50, run_cache: queries.RunCache,
     sf: queries.SessionFilter | None = None,
 ) -> dict:
+    if ioc_type in ("file", "hash"):
+        return _file_anchor(es, cfg, ident, limit=limit, sf=sf)
     if ioc_type == "ip":
-        return _ip_anchor(es, cfg, ident, limit=limit, sf=sf)
-    if ioc_type == "session":
-        return _session_anchor(es, cfg, ident, limit=limit, sf=sf)
-    if ioc_type in ("command", "command_hash"):
-        return _command_anchor(es, cfg, ident.lower(), limit=limit, sf=sf)
-    if ioc_type == "command_cluster":
-        return _cluster_anchor(es, cfg, "command", ident, limit=limit, run_cache=run_cache, sf=sf)
-    if ioc_type == "session_cluster":
-        return _cluster_anchor(es, cfg, "session", ident, limit=limit, run_cache=run_cache, sf=sf)
-    if ioc_type == "ip_cluster":
-        return _cluster_anchor(es, cfg, "ip", ident, limit=limit, run_cache=run_cache, sf=sf)
-    if ioc_type == "playbook":
-        return _playbook_anchor(es, cfg, ident, limit=limit, sf=sf)
-    if ioc_type == "campaign":
-        return _campaign_anchor(es, cfg, ident, limit=limit, sf=sf)
-    if ioc_type == "asn":
-        return _asn_anchor(es, cfg, ident, limit=limit)
-    if ioc_type == "country":
-        return _country_anchor(es, cfg, ident.upper(), limit=limit)
-    if ioc_type == "mitre_technique":
-        return _mitre_anchor(es, cfg, ident.upper(), "technique", limit=limit)
-    if ioc_type == "mitre_tactic":
-        return _mitre_anchor(es, cfg, ident.upper(), "tactic", limit=limit)
-    raise ValueError(f"unsupported ioc_type: {ioc_type}")
+        result = _ip_anchor(es, cfg, ident, limit=limit, sf=sf)
+    elif ioc_type == "session":
+        result = _session_anchor(es, cfg, ident, limit=limit, sf=sf)
+    elif ioc_type in ("command", "command_hash"):
+        result = _command_anchor(es, cfg, ident.lower(), limit=limit, sf=sf)
+    elif ioc_type == "command_cluster":
+        result = _cluster_anchor(es, cfg, "command", ident, limit=limit, run_cache=run_cache, sf=sf)
+    elif ioc_type == "session_cluster":
+        result = _cluster_anchor(es, cfg, "session", ident, limit=limit, run_cache=run_cache, sf=sf)
+    elif ioc_type == "ip_cluster":
+        result = _cluster_anchor(es, cfg, "ip", ident, limit=limit, run_cache=run_cache, sf=sf)
+    elif ioc_type == "playbook":
+        result = _playbook_anchor(es, cfg, ident, limit=limit, sf=sf)
+    elif ioc_type == "campaign":
+        result = _campaign_anchor(es, cfg, ident, limit=limit, sf=sf)
+    elif ioc_type == "asn":
+        result = _asn_anchor(es, cfg, ident, limit=limit)
+    elif ioc_type == "country":
+        result = _country_anchor(es, cfg, ident.upper(), limit=limit)
+    elif ioc_type == "mitre_technique":
+        result = _mitre_anchor(es, cfg, ident.upper(), "technique", limit=limit)
+    elif ioc_type == "mitre_tactic":
+        result = _mitre_anchor(es, cfg, ident.upper(), "tactic", limit=limit)
+    else:
+        raise ValueError(f"unsupported ioc_type: {ioc_type}")
+
+    # File-drop lane: attach the files dropped/run by any command this anchor
+    # surfaced, so the flow extends Command→File for every entry point. Batched
+    # (one query); no-op when the anchor produced no command nodes.
+    command_shas = [
+        n["data"].get("sha256") for n in result["nodes"]
+        if n["data"].get("type") == "command" and n["data"].get("sha256")
+    ]
+    if command_shas:
+        _emit_command_files(es, cfg, result["nodes"], result["edges"], command_shas)
+        result = _dedup(result)
+    return result
 
 
 # ----------------------------------------------------------------------------

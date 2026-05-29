@@ -63,10 +63,11 @@
   // (LLM-named session cluster) each get their own columns; both are
   // auto-shown only when nodes of that type are present. Neither has a
   // lane checkbox.
-  const COLUMNS = ["campaign", "playbook", "geo", "ip", "session", "command", "mitre"];
+  const COLUMNS = ["campaign", "playbook", "geo", "ip", "session", "command", "file", "mitre"];
   const COL_LABEL = {
     campaign: "Campaign", playbook: "Playbook",
-    geo: "ASN / Country", ip: "IP", session: "Session", command: "Command", mitre: "MITRE",
+    geo: "ASN / Country", ip: "IP", session: "Session", command: "Command",
+    file: "File", mitre: "MITRE",
   };
 
   const TYPE_TO_COLUMN = {
@@ -76,6 +77,7 @@
     ip: "ip", ip_cluster: "ip",
     session: "session", session_cluster: "session",
     command: "command", command_cluster: "command",
+    file: "file",               // cowrie-dropped file (hash), linked via command_hash
     mitre_technique: "mitre", mitre_tactic: "mitre",
   };
 
@@ -90,9 +92,13 @@
     campaign: "#fb923c",
     asn: "#94a3b8",
     country: "#cbd5e1",
+    file: "#f472b6",            // benign/unknown file; malicious files flagged red at render
     mitre_technique: "#2dd4bf",
     mitre_tactic: "#14b8a6",
   };
+  // A file flagged malicious by intel (consensus_malicious) renders in this
+  // alarm color regardless of the base file hue.
+  const FILE_MALICIOUS_COLOR = "#dc2626";
 
   // Hash a string to a stable hue (used for playbook bubble tints
   // so two different clusters can be told apart even when they overlap).
@@ -153,7 +159,7 @@
   // "campaign" is intentionally omitted from laneVisibility — the campaign
   // column is auto-shown when campaign nodes exist and can't be hidden via the
   // lane checkboxes (its visibility is purely data-driven, not user-controlled).
-  let laneVisibility = new Set(["geo", "ip", "session", "command", "mitre"]);
+  let laneVisibility = new Set(["geo", "ip", "session", "command", "file", "mitre"]);
 
   // ===================================================================
   // Init / sizing
@@ -390,7 +396,7 @@
     //    column node so the user sees what they pivoted to).
     const anchorNode = anchorId && nodesById.get(anchorId);
     const anchorIsBadgeKind = anchorNode && _isBadgeKind(anchorNode.type);
-    const buckets = { campaign: [], playbook: [], geo: [], ip: [], session: [], command: [], mitre: [] };
+    const buckets = { campaign: [], playbook: [], geo: [], ip: [], session: [], command: [], file: [], mitre: [] };
     for (const n of nodesById.values()) {
       // Clear any stale layout coords so a node demoted to a badge has
       // !isFinite(x) and edge-draw will skip it.
@@ -857,6 +863,11 @@
       if (typeof n.novelty === "number") {
         rows.push(`<div class="tt-row"><span class="tt-k">novelty</span><span class="tt-v">${n.novelty.toFixed(2)}</span></div>`);
       }
+    } else if (n.type === "file") {
+      if (n.sha256) rows.push(`<div class="tt-row"><span class="tt-k">sha256</span><span class="tt-v tt-mono">${_escapeTT(String(n.sha256).slice(0, 16))}…</span></div>`);
+      if (n.action) rows.push(`<div class="tt-row"><span class="tt-k">action</span><span class="tt-v">${_escapeTT(n.action)}</span></div>`);
+      rows.push(`<div class="tt-row"><span class="tt-k">verdict</span><span class="tt-v">${n.malicious ? "malicious" : "unknown"}</span></div>`);
+      if (n.family) rows.push(`<div class="tt-row"><span class="tt-k">family</span><span class="tt-v">${_escapeTT(n.family)}</span></div>`);
     } else if (n.type && n.type.endsWith("_cluster")) {
       if (n.playbook_name) rows.push(`<div class="tt-row"><span class="tt-k">playbook</span><span class="tt-v">${_escapeTT(n.playbook_name)}</span></div>`);
       if (typeof n.member_count === "number") rows.push(`<div class="tt-row"><span class="tt-k">members</span><span class="tt-v">${n.member_count}</span></div>`);
@@ -1615,7 +1626,9 @@
       }
 
       // Body
-      const color = TYPE_COLOR[n.type] || "#9aa3b3";
+      let color = TYPE_COLOR[n.type] || "#9aa3b3";
+      // A file flagged malicious by intel burns red, so a known dropper pops.
+      if (n.type === "file" && n.malicious) color = FILE_MALICIOUS_COLOR;
       const left = n.x - n.w / 2;
       const top = n.y - n.h / 2;
       ctx.fillStyle = isCluster

@@ -13,10 +13,14 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import re
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
 log = logging.getLogger(__name__)
+
+_HASH_RE = re.compile(r"^(?:[0-9a-f]{64}|[0-9a-f]{40}|[0-9a-f]{32})$")
+_FE = "dshield.cowrie.enrichment.session.file_events"
 
 
 def _canonical_ip(raw: str) -> Optional[str]:
@@ -264,4 +268,79 @@ def fetch_intel_url(es, cfg, value: str) -> dict[str, Any]:
 
     # Local observations: which enrichment-command docs reference this URL.
     out["command_docs"] = _enrichment_docs_for_url(es, cfg, canon)
+    return out
+
+
+def _canonical_hash(raw: str) -> Optional[str]:
+    """Local copy of `enrich.intel.artifact.canonical_hash` — md5/sha1/sha256
+    hex, lowercased. Console must not import the enrich package."""
+    s = (raw or "").strip().lower()
+    return s if _HASH_RE.match(s) else None
+
+
+def _droppers_for_hash(es, cfg, sha: str, *, size: int = 50) -> list[dict[str, Any]]:
+    """Sessions (+ attributing command + filename) that dropped this hash, from
+    the session-rollup `file_events`. One nested query with inner_hits."""
+    idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
+    out: list[dict[str, Any]] = []
+    try:
+        if not es.indices.exists(index=idx):
+            return out
+        resp = es.search(index=idx, size=size,
+            query={"nested": {"path": _FE, "query": {"term": {f"{_FE}.sha256": sha}},
+                              "inner_hits": {"size": 10, "_source": [
+                                  f"{_FE}.command_hash", f"{_FE}.filename", f"{_FE}.action"]}}},
+            _source=["cowrie.session_id"])
+    except Exception as exc:  # pragma: no cover
+        log.warning("console.intel: droppers query for %s failed: %s", sha, exc)
+        return out
+    for h in resp.get("hits", {}).get("hits", []) or []:
+        sid = (h.get("_source", {}).get("cowrie") or {}).get("session_id")
+        inner = (((h.get("inner_hits") or {}).get(_FE) or {}).get("hits") or {}).get("hits", [])
+        for ih in inner:
+            fe = ih.get("_source", {})
+            if "dshield" in fe:  # some ES versions return the full path
+                fe = (fe.get("dshield", {}).get("cowrie", {}).get("enrichment", {})
+                      .get("session", {}).get("file_events", {}))
+            out.append({
+                "session_id": sid,
+                "command_hash": fe.get("command_hash"),
+                "filename": fe.get("filename"),
+                "action": fe.get("action"),
+            })
+    return out
+
+
+def fetch_intel_hash(es, cfg, value: str) -> dict[str, Any]:
+    """Joined view for a file-hash artifact (ROADMAP #2/#3).
+
+    Shape:
+    {
+      "artifact": {"kind": "hash", "value": "<sha>"},
+      "intel":              <intel-hash doc body or None>,   # MB / ThreatFox / VT
+      "intel_index_exists": bool,
+      "droppers":           [{session_id, command_hash, filename, action}],
+    }
+    """
+    canon = _canonical_hash(value)
+    if canon is None:
+        return {
+            "artifact": {"kind": "hash", "value": value},
+            "intel": None, "intel_index_exists": False, "droppers": [],
+            "rejected_reason": "value not a md5/sha1/sha256 hash",
+        }
+    out: dict[str, Any] = {
+        "artifact": {"kind": "hash", "value": canon},
+        "intel": None, "intel_index_exists": False, "droppers": [],
+    }
+    intel_idx = cfg.intel.indexes.hash
+    try:
+        if es.indices.exists(index=intel_idx):
+            out["intel_index_exists"] = True
+            resp = es.get(index=intel_idx, id=canon, ignore=[404])
+            if resp.get("found"):
+                out["intel"] = resp.get("_source")
+    except Exception as exc:  # pragma: no cover
+        log.warning("console.intel: hash intel GET %s failed: %s", canon, exc)
+    out["droppers"] = _droppers_for_hash(es, cfg, canon)
     return out

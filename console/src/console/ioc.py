@@ -28,6 +28,8 @@ TYPES = (
     "command_cluster",
     "session_cluster",
     "ip_cluster",
+    "file",             # cowrie-dropped file, anchored by hash (#2/#3)
+    "hash",             # alias for file
     "mitre_tactic",
     "mitre_technique",
     "asn",
@@ -91,7 +93,14 @@ def detect(query: str) -> list[IOCRef]:
         return [IOCRef(type="ip", id=q, label=q)]
 
     if _SHA256.match(q):
-        return [IOCRef(type="command_hash", id=q.lower(), label=q[:12] + "…")]
+        # A 64-hex sha is ambiguous: a command process-hash and/or a dropped
+        # file hash. Offer both; the server prunes whichever doesn't exist so
+        # the dropdown auto-navigates when there's a single real target.
+        h = q.lower()
+        return [
+            IOCRef(type="command_hash", id=h, label="command " + q[:12] + "…"),
+            IOCRef(type="file", id=h, label="file " + q[:12] + "…"),
+        ]
 
     if _MITRE_TECHNIQUE.match(q):
         return [IOCRef(type="mitre_technique", id=q.upper(), label=q.upper())]

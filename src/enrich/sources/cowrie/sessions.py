@@ -637,9 +637,13 @@ def _record_file_event(
     if last_command is not None:
         cmd_hash, cmd_line = last_command
         rec["command_hash"] = cmd_hash
+        # Match the basename (incl extension), not the full destination path —
+        # cowrie's destfile is an absolute path (`/root/x.sh`) while the command
+        # references the bare name (`wget …/x.sh`), so the paths rarely match.
+        base = (filename or "").rsplit("/", 1)[-1]
         if url and url in cmd_line:
             rec["command_attribution"] = "url_match"
-        elif filename and filename in cmd_line:
+        elif base and base in cmd_line:
             rec["command_attribution"] = "destfile_match"
         else:
             rec["command_attribution"] = "preceding_command"

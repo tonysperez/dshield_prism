@@ -131,6 +131,15 @@ def build_app(config_path: str | None = None) -> FastAPI:
             raise HTTPException(500, "web/artifact_url.html missing")
         return FileResponse(page)
 
+    @app.get("/artifact/hash")
+    def artifact_hash_page() -> FileResponse:
+        # File-hash artifact pane (#2). Hash rides as `?value=<sha>` for
+        # consistency with the URL pane.
+        page = WEB_DIR / "artifact_hash.html"
+        if not page.exists():
+            raise HTTPException(500, "web/artifact_hash.html missing")
+        return FileResponse(page)
+
     # ------------------------------------------------------------------
     # API
     # ------------------------------------------------------------------
@@ -375,6 +384,15 @@ def build_app(config_path: str | None = None) -> FastAPI:
             raise HTTPException(500, f"artifact lookup failed: {exc}")
         return JSONResponse(data)
 
+    @app.get("/api/artifact/hash")
+    def artifact_hash_api(value: str = Query(..., description="file hash (md5/sha1/sha256)")) -> JSONResponse:
+        try:
+            data = intel_mod.fetch_intel_hash(es, cfg, value)
+        except Exception as exc:                       # pragma: no cover
+            log.exception("artifact_hash_api failed")
+            raise HTTPException(500, f"artifact lookup failed: {exc}")
+        return JSONResponse(data)
+
     # ------------------------------------------------------------------
     # Compare clusters (interactive: "why didn't these two playbooks merge?")
     # ------------------------------------------------------------------
@@ -471,6 +489,14 @@ def build_app(config_path: str | None = None) -> FastAPI:
         for ref in refs:
             if ref.type == "freetext":
                 candidates.extend(SearchCandidate(**c) for c in queries.freetext_search(es, cfg, ref.id))
+            elif ref.type == "command_hash":
+                # A 64-hex sha is also offered as a `file` candidate; only keep
+                # the command one if a command with that hash actually exists.
+                if queries.lookup_command(es, cfg, ref.id) is not None:
+                    candidates.append(SearchCandidate(type=ref.type, id=ref.id, label=ref.label or ref.id))
+            elif ref.type == "file":
+                if queries.file_hash_exists(es, cfg, ref.id):
+                    candidates.append(SearchCandidate(type=ref.type, id=ref.id, label=ref.label or ref.id))
             else:
                 candidates.append(SearchCandidate(
                     type=ref.type, id=ref.id, label=ref.label or ref.id,
@@ -629,6 +655,30 @@ def build_app(config_path: str | None = None) -> FastAPI:
         if ioc_type in ("mitre_technique", "mitre_tactic"):
             return IOCDetail(type=ioc_type, id=ident.upper(),
                              title=ident.upper(), summary={"id": ident.upper()}, raw=None)
+        if ioc_type in ("file", "hash"):
+            data = intel_mod.fetch_intel_hash(es, cfg, ident)
+            sha = data["artifact"]["value"]
+            intel = data.get("intel")
+            derived = (intel or {}).get("derived") or {}
+            if derived.get("consensus_malicious"):
+                verdict = "malicious"
+            elif intel is None:
+                verdict = "no intel yet"
+            else:
+                verdict = "no provider flag"
+            return IOCDetail(
+                type="file", id=sha, title=f"file {sha[:12]}… ({verdict})",
+                summary={
+                    "sha256": sha,
+                    "verdict": verdict,
+                    "consensus_label": derived.get("consensus_label"),
+                    "dropper_count": len(data.get("droppers") or []),
+                    "droppers": data.get("droppers") or [],
+                    "intel": intel,
+                    "artifact_page": f"/artifact/hash?value={sha}",
+                },
+                raw=None,
+            )
         raise HTTPException(400, f"detail not implemented for {ioc_type}")
 
     # ------------------------------------------------------------------
