@@ -30,6 +30,9 @@ elasticsearch:
       # session_clusters (each centroid there is a "playbook"). See
       # docs/PLAYBOOKS_AND_CAMPAIGNS.md.
       campaigns:         "prism.campaign.cowrie"
+      # Write-once playbook-identity anchors (ROADMAP #1): one doc per
+      # stable_playbook_id pinning its first-mint centroid.
+      playbook_anchors:  "prism.identity.cowrie.playbook_anchor"
 
 llm:
   # provider: "ollama" (Ollama API) or "openai_compat" (LM Studio, vLLM, llama.cpp server)

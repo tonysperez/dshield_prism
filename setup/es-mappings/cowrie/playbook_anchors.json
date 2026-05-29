@@ -1,0 +1,21 @@
+{
+  "_comment": "Churn-resistant playbook identity anchors (ROADMAP #1). One write-once doc per `stable_playbook_id` (`spb-<16hex>`), the document `_id`. `anchor_centroid` is the size-weighted, L2-normalised group centroid captured the first time the id was minted during the `name playbooks` pass — it is NEVER updated, so the snap-to-prior match in src/enrich/sources/cowrie/sessions.py:_assign_stable_playbook_id pins against a fixed reference rather than a walking latest-centroid. This prevents transitive id chaining (A~B>=thr, B~C>=thr, A~C<thr collapsing under one id). Created by `init-indexes --source cowrie`; populated as playbooks are named. Independent of the session_clusters index, so cluster-doc replacement across backward cycles can't move the anchor.",
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "5s"
+  },
+  "mappings": {
+    "properties": {
+      "stable_playbook_id": { "type": "keyword" },
+      "anchor_centroid": {
+        "type": "dense_vector",
+        "dims": 768,
+        "index": false
+      },
+      "seed_playbook_id": { "type": "keyword" },
+      "first_run_id":     { "type": "keyword" },
+      "first_seen":       { "type": "date" }
+    }
+  }
+}

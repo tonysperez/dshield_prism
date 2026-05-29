@@ -38,6 +38,10 @@ class CowrieIndexes(BaseModel):
     # groupings of sessions that span multiple connections. Distinct from
     # session_clusters (those are playbooks). See docs/PLAYBOOKS_AND_CAMPAIGNS.md.
     campaigns: str = "prism.campaign.cowrie"
+    # Write-once churn-resistant playbook-identity anchors (ROADMAP #1).
+    # One doc per stable_playbook_id pinning its first-mint centroid. See
+    # setup/es-mappings/cowrie/playbook_anchors.json.
+    playbook_anchors: str = "prism.identity.cowrie.playbook_anchor"
 
 
 class SourceIndexes(BaseModel):

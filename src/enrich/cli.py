@@ -92,6 +92,7 @@ _LAYER_MAPPINGS = {
         "ips":              "setup/es-mappings/cowrie/ips.json",
         "ip_clusters":      "setup/es-mappings/cowrie/ip_clusters.json",
         "campaigns":        "setup/es-mappings/cowrie/campaigns.json",
+        "playbook_anchors": "setup/es-mappings/cowrie/playbook_anchors.json",
     },
     # External threat-intel — cross-source per-artifact indices.
     # `init-indexes --source intel` creates these. M1 shipped `ip`,
@@ -416,6 +417,7 @@ def _resolve_index_for_layer(cfg, source: str, layer: str) -> str:
             "ips":              c.ips_rollup,
             "ip_clusters":      c.ip_clusters,
             "campaigns":        c.campaigns,
+            "playbook_anchors": c.playbook_anchors,
         }[layer]
     if source == "intel":
         i = cfg.intel.indexes
