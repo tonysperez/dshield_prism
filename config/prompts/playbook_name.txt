@@ -6,8 +6,10 @@ Cluster: <<<CLUSTER_ID>>>
 Cluster size: <<<SIZE>>> sessions
 Sample session IDs: <<<SAMPLE_IDS>>>
 
-Commands executed by these sessions (sampled, deduplicated):
+Commands run by these sessions, ranked by session coverage (how many of the cluster's sessions ran each one):
 <<<COMMANDS>>>
+
+A command in most of the cluster's sessions is the playbook's defining behavior; a command in only a few is incidental. Anchor the name on the high-coverage, defining commands — not on a one-off that happens to look interesting.
 
 Produce a concise 3-5 word playbook name that characterizes this routine. Focus on what makes it distinctive — payload, tooling, target, or technique. The name should help an analyst recognize this playbook at a glance in a dashboard.
 

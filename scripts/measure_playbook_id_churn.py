@@ -18,6 +18,12 @@ distinct playbooks. The tool reports both fragmentation (ids per true
 playbook — over-splitting) and collision (true playbooks per id —
 over-merging) at each quantisation level so the trade-off is explicit.
 
+Once the dual-write phase is deployed (`session.stable_identity_dual_write`),
+it also scores the *live* `stable_playbook_id` field on the subset of
+cluster docs that carry it — apples-to-apples against the membership hash
+and the simulated snap on that same subset. Re-run it each cycle to watch
+the shipped id's stability as coverage grows.
+
 "True playbook" = a lineage: the connected component over all centroid
 docs (every run) linked by L2-normalised cosine >= --threshold, the same
 similarity used by `merge_clusters_into_playbooks`. Read-only.
@@ -97,12 +103,13 @@ def snap_assign(docs: list["Doc"], threshold: float) -> list[str]:
 
 
 class Doc:
-    __slots__ = ("run_id", "ts", "playbook_id", "name", "unit")
+    __slots__ = ("run_id", "ts", "playbook_id", "stable_id", "name", "unit")
 
-    def __init__(self, run_id, ts, playbook_id, name, unit):
+    def __init__(self, run_id, ts, playbook_id, stable_id, name, unit):
         self.run_id = run_id
         self.ts = ts
         self.playbook_id = playbook_id
+        self.stable_id = stable_id        # live spb-<hex>, or "" if not dual-written
         self.name = name
         self.unit = unit
 
@@ -114,7 +121,8 @@ def load_cluster_docs(es, index: str) -> list[Doc]:
             {"exists": {"field": "playbook_id"}},
             {"exists": {"field": "centroid"}},
         ]}},
-        "_source": ["run_id", "@timestamp", "playbook_id", "playbook_name", "centroid"],
+        "_source": ["run_id", "@timestamp", "playbook_id", "stable_playbook_id",
+                    "playbook_name", "centroid"],
     }
     docs: list[Doc] = []
     resp = es.search(index=index, size=5000, **body)
@@ -125,7 +133,8 @@ def load_cluster_docs(es, index: str) -> list[Doc]:
             continue
         docs.append(Doc(
             s.get("run_id"), s.get("@timestamp"),
-            s.get("playbook_id"), s.get("playbook_name") or "",
+            s.get("playbook_id"), s.get("stable_playbook_id") or "",
+            s.get("playbook_name") or "",
             _unit(np.asarray(cen, dtype=np.float32)),
         ))
     return docs
@@ -221,16 +230,17 @@ def main() -> int:
     n_lin = len(lineages)
     print(f"\n'true playbooks' (centroid lineages @ cos>={threshold}): {n_lin}")
 
-    def stats(ids: list[str]) -> tuple[float, int, int]:
-        """Per-lineage fragmentation + global collision for an id-list."""
+    def stats(ids: list[str], lins: list[list[int]]) -> tuple[float, int, int]:
+        """Per-lineage fragmentation + global collision for an id-list,
+        scored against the supplied lineage partition."""
         ids_per_lineage = []
         id_to_lineages: dict[str, set[int]] = defaultdict(set)
-        for li, group in enumerate(lineages):
+        for li, group in enumerate(lins):
             uniq = {ids[i] for i in group}
             ids_per_lineage.append(len(uniq))
             for _id in uniq:
                 id_to_lineages[_id].add(li)
-        frag = float(np.mean(ids_per_lineage))            # ideal 1.0 (no split)
+        frag = float(np.mean(ids_per_lineage)) if ids_per_lineage else 0.0
         collided = sum(1 for v in id_to_lineages.values() if len(v) > 1)
         return frag, collided, len(id_to_lineages)
 
@@ -251,7 +261,7 @@ def main() -> int:
     print("\n=== A/B over schemes (ideal: frag 1.0, merged 0, low flip) ===")
     print(f"  {'scheme':<24} {'frag':>6} {'merged':>7} {'ids':>5} {'flip_rate':>11}")
     for name, ids in schemes:
-        frag, coll, nids = stats(ids)
+        frag, coll, nids = stats(ids, lineages)
         flips, matched = consecutive_flip_rate(docs, ids, threshold)
         fr = f"{flips}/{matched}={flips / matched:.1%}" if matched else "n/a"
         print(f"  {name:<24} {frag:>6.2f} {coll:>7} {nids:>5} {fr:>11}")
@@ -265,6 +275,40 @@ def main() -> int:
     print("  at 0. Hash-of-fingerprint schemes (quant/LSH) trade frag vs")
     print("  merged; snap-to-prior *matches* instead of hashing, so it is")
     print("  the realistic shape of a fix if the numbers bear it out.")
+
+    # --- LIVE observation: the shipped stable_playbook_id field ---------
+    # The dual-write phase writes a real `spb-` id on cluster docs. Score
+    # it on the subset of docs that actually carry it (coverage grows as
+    # the pipeline runs), apples-to-apples against the membership hash and
+    # the simulated snap on that *same* subset and its own lineages.
+    sub = [d for d in docs if d.stable_id]
+    print("\n=== LIVE stable_playbook_id (dual-write observation) ===")
+    cov = len(sub) / len(docs) if docs else 0.0
+    sub_runs = len({d.run_id for d in sub})
+    print(f"  coverage: {len(sub)}/{len(docs)} cluster docs "
+          f"({cov:.0%}) across {sub_runs} run(s)")
+    if not sub:
+        print("  No docs carry stable_playbook_id yet. Deploy the dual-write"
+              " (session.stable_identity_dual_write) and run `name playbooks`,")
+        print("  then re-run this script to track the shipped id over cycles.")
+    elif sub_runs < 2:
+        print("  Only one run has the field — need >= 2 dual-written runs to"
+              " measure flip rate. Re-run after the next backward cycle.")
+    else:
+        sub_lin = union_find_lineages(sub, threshold)
+        live_rows = [
+            ("LIVE stable_playbook_id", [d.stable_id for d in sub]),
+            ("membership-hash (subset)", [d.playbook_id for d in sub]),
+            ("simulated snap (subset)", snap_assign(sub, threshold)),
+        ]
+        print(f"  {'scheme':<26} {'frag':>6} {'merged':>7} {'ids':>5} {'flip_rate':>11}")
+        for name, ids in live_rows:
+            frag, coll, nids = stats(ids, sub_lin)
+            flips, matched = consecutive_flip_rate(sub, ids, threshold)
+            fr = f"{flips}/{matched}={flips / matched:.1%}" if matched else "n/a"
+            print(f"  {name:<26} {frag:>6.2f} {coll:>7} {nids:>5} {fr:>11}")
+        print("  As coverage grows, LIVE should track the simulated snap"
+              " (frag→1) and beat the membership hash.")
 
     # --- Cross-check: observed flips already captured by name co-id ----
     pb_lc = cfg.findings.indexes.playbook_lifecycle

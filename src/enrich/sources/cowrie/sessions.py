@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import random
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Iterator, Optional
@@ -104,6 +105,111 @@ def _make_playbook_id(member_session_ids: Iterable[str]) -> str:
         raise ValueError("_make_playbook_id requires at least one session id")
     digest = hashlib.sha256("\n".join(sids).encode("utf-8")).hexdigest()
     return f"sescl-{digest[:_PLAYBOOK_ID_HASH_LEN]}"
+
+
+# ===========================================================================
+# Churn-resistant playbook identity (ROADMAP #1)
+#
+# `playbook_id` (above) is content-hashed over member session ids, so adding
+# the Nth session mints a brand-new id and resets all longitudinal state.
+# `stable_playbook_id` instead *matches* each run's playbook centroid to the
+# nearest prior anchor and reuses its id — the snap-to-prior approach that
+# beat both the membership hash and the quantised-centroid hash in the A/B
+# (scripts/measure_playbook_id_churn.py). Computed during the naming pass and
+# written alongside `playbook_id` for observation; no reader keys on it yet.
+# ===========================================================================
+
+_STABLE_PLAYBOOK_ID_PREFIX = "spb-"
+
+
+def _mint_stable_playbook_id(seed_playbook_id: str) -> str:
+    """A fresh stable id for a playbook with no prior anchor match. Seeded
+    from the membership-hash `playbook_id` so first appearances are
+    reproducible (re-running the same run yields the same id)."""
+    digest = hashlib.sha256(seed_playbook_id.encode("utf-8")).hexdigest()
+    return f"{_STABLE_PLAYBOOK_ID_PREFIX}{digest[:_PLAYBOOK_ID_HASH_LEN]}"
+
+
+def _unit_vector(vec) -> "np.ndarray":
+    import numpy as np
+    arr = np.asarray(vec, dtype=np.float32)
+    norm = float(np.linalg.norm(arr))
+    return arr if norm == 0.0 else arr / norm
+
+
+def _playbook_group_centroid(member_docs: list[dict]) -> Optional["np.ndarray"]:
+    """Size-weighted mean of the member clusters' centroids, L2-normalised.
+    Returns None when no member carries a usable centroid."""
+    import numpy as np
+    vecs, weights = [], []
+    for c in member_docs:
+        cen = c.get("centroid")
+        if isinstance(cen, list) and cen:
+            vecs.append(np.asarray(cen, dtype=np.float32))
+            weights.append(float(c.get("size") or 1))
+    if not vecs:
+        return None
+    mean = np.average(np.vstack(vecs), axis=0, weights=weights)
+    return _unit_vector(mean)
+
+
+def _load_stable_anchors(
+    es: Elasticsearch, session_clusters_idx: str, exclude_run_id: str,
+) -> list[tuple["np.ndarray", str]]:
+    """Most-recent centroid per existing `stable_playbook_id`, across all
+    prior runs (the current run is excluded so we match against history,
+    not ourselves). Bounded by the number of distinct stable ids."""
+    try:
+        resp = es.search(
+            index=session_clusters_idx,
+            size=0,
+            query={"bool": {
+                "must": [
+                    {"term": {"doc_type": "cluster"}},
+                    {"exists": {"field": "stable_playbook_id"}},
+                ],
+                "must_not": [{"term": {"run_id": exclude_run_id}}],
+            }},
+            aggs={"by_id": {
+                "terms": {"field": "stable_playbook_id", "size": 10000},
+                "aggs": {"latest": {"top_hits": {
+                    "size": 1,
+                    "sort": [{"@timestamp": {"order": "desc"}}],
+                    "_source": ["centroid"],
+                }}},
+            }},
+        )
+    except Exception as exc:  # noqa: BLE001 — anchors are best-effort
+        log.warning("Could not load stable-id anchors: %s", exc)
+        return []
+    anchors: list[tuple["np.ndarray", str]] = []
+    buckets = resp.get("aggregations", {}).get("by_id", {}).get("buckets", [])
+    for b in buckets:
+        hits = b["latest"]["hits"]["hits"]
+        if not hits:
+            continue
+        cen = hits[0]["_source"].get("centroid")
+        if isinstance(cen, list) and cen:
+            anchors.append((_unit_vector(cen), b["key"]))
+    return anchors
+
+
+def _assign_stable_playbook_id(
+    group_unit: "np.ndarray",
+    anchors: list[tuple["np.ndarray", str]],
+    threshold: float,
+    seed_playbook_id: str,
+) -> str:
+    """Reuse the nearest anchor's id when cosine >= threshold; otherwise
+    mint a fresh id. `group_unit` and anchor vectors are unit-normalised,
+    so the dot product is cosine similarity."""
+    import numpy as np
+    if anchors:
+        sims = np.array([float(a @ group_unit) for a, _ in anchors])
+        j = int(np.argmax(sims))
+        if float(sims[j]) >= threshold:
+            return anchors[j][1]
+    return _mint_stable_playbook_id(seed_playbook_id)
 
 
 def merge_clusters_into_playbooks(
@@ -1148,6 +1254,41 @@ def _format_cluster_block(pb: dict, commands: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _format_renamable_block(
+    pb: dict,
+    distinctive_feats: list[tuple[str, float]],
+    floor: float,
+) -> str:
+    """Rich pass-2 context for one renamable cluster (ROADMAP #11): commands
+    and IOCs ranked by session coverage, IOCs prevalence-gated at `floor` so a
+    one-off C2 IP can't be anchored on, and the explicit distinctive set
+    (features present here but absent in every sibling)."""
+    total = pb.get("coverage_total") or 0
+    cmd_cov = pb.get("cmd_coverage") or []
+    ioc_cov = [
+        (i, n) for i, n in (pb.get("ioc_coverage") or [])
+        if total and (n / total) >= floor
+    ]
+    lines = [
+        f"  Playbook id: {pb.get('playbook_id', '?')}",
+        f"  Cluster ids: {', '.join(pb.get('member_cids') or []) or '(unknown)'}",
+        f"  Sessions sampled: {total}",
+        "  Commands by session coverage:",
+        _format_coverage_lines(cmd_cov, total, indent="    "),
+        f"  Prevalent IOCs (>= {floor:.0%} of sessions):",
+        _format_coverage_lines(ioc_cov, total, indent="    "),
+    ]
+    d_cmds = [(f[len("cmd:"):], c) for f, c in distinctive_feats if f.startswith("cmd:")]
+    d_iocs = [(f, c) for f, c in distinctive_feats if not f.startswith("cmd:")]
+    lines.append("  DISTINCTIVE to this cluster (present here, absent in the others) — anchor the name here:")
+    if d_cmds or d_iocs:
+        lines.extend(f"    - command: {f}   ({c:.0%} of sessions)" for f, c in d_cmds)
+        lines.extend(f"    - ioc: {f}   ({c:.0%} of sessions)" for f, c in d_iocs)
+    else:
+        lines.append("    (none — no prevalent feature separates this cluster from its siblings)")
+    return "\n".join(lines)
+
+
 def _apply_playbook_name(
     es: Elasticsearch,
     session_clusters_idx: str,
@@ -1159,11 +1300,24 @@ def _apply_playbook_name(
     stats: dict,
     *,
     log_prefix: str = "playbook",
+    stable_playbook_id: Optional[str] = None,
 ) -> None:
     """Write playbook_id + playbook_name onto the centroid docs and onto
     every member session via update_by_query. Shared by pass-1 initial
     naming and pass-2 disambiguation rename.
+
+    When `stable_playbook_id` is given (pass-1 only) it is dual-written onto
+    the centroid docs (ROADMAP #1). Pass-2 rename passes None so the
+    churn-resistant id, set at pass-1, is left untouched by a name change.
     """
+    script = (
+        "ctx._source.playbook_id = params.playbook_id;"
+        "ctx._source.playbook_name = params.name;"
+    )
+    params = {"playbook_id": playbook_id, "name": name}
+    if stable_playbook_id:
+        script += "ctx._source.stable_playbook_id = params.stable_playbook_id;"
+        params["stable_playbook_id"] = stable_playbook_id
     try:
         es.update_by_query(
             index=session_clusters_idx,
@@ -1173,13 +1327,7 @@ def _apply_playbook_name(
                     {"term": {"doc_type": "cluster"}},
                     {"terms": {"cluster_id": member_cids}},
                 ]}},
-                "script": {
-                    "source": (
-                        "ctx._source.playbook_id = params.playbook_id;"
-                        "ctx._source.playbook_name = params.name;"
-                    ),
-                    "params": {"playbook_id": playbook_id, "name": name},
-                },
+                "script": {"source": script, "params": params},
             },
         )
     except Exception as exc:
@@ -1225,17 +1373,34 @@ def _run_disambiguation_pass(
     `_apply_playbook_name`.
 
     Soft-fails on any LLM error / invalid JSON / collision in the
-    response — original pass-1 names stay. ROADMAP issue #10.
+    response — original pass-1 names stay. ROADMAP #11 (was #10): each
+    renamable block now carries cluster-wide command/IOC coverage and the
+    *distinctive* feature set (present here, absent in siblings) so the LLM
+    anchors the new name on a genuinely separating, prevalent signal rather
+    than eyeballing independent samples.
     """
     name = group["name"]
     renamable = group["renamable"]
     frozen = group["frozen"]
+    floor = cfg.session.playbook_merge_distinctiveness_floor
 
-    # Build context blocks. For frozen colliders we fetch sample commands
-    # from the events index using their stored sample_session_ids.
+    # Compute what actually separates each renamable cluster from its
+    # siblings, so the prompt can hand the LLM the distinctive set instead of
+    # asking it to spot the difference unaided.
+    cov_by_pid = {
+        pb["playbook_id"]: _combined_coverage_map(
+            pb.get("cmd_coverage") or [], pb.get("ioc_coverage") or [],
+            pb.get("coverage_total") or 0,
+        )
+        for pb in renamable
+    }
+    distinctive = _distinctive_features(cov_by_pid, floor)
+
     renamable_blocks: list[str] = []
     for pb in renamable:
-        renamable_blocks.append(_format_cluster_block(pb, pb.get("unique_commands") or []))
+        renamable_blocks.append(
+            _format_renamable_block(pb, distinctive.get(pb["playbook_id"], []), floor)
+        )
 
     frozen_blocks: list[str] = []
     for pb in frozen:
@@ -1335,6 +1500,121 @@ def _run_disambiguation_pass(
         stats["clusters_renamed"] += 1
 
 
+def _merge_collision_subgroups(
+    *,
+    es: Elasticsearch,
+    group: dict,
+    members_by_cid: dict[str, set[str]],
+    docs_by_group: dict[str, list[dict]],
+    run_id: str,
+    session_clusters_idx: str,
+    sessions_idx: str,
+    events_idx: str,
+    cfg: AppConfig,
+    stats: dict,
+    stable_anchors: list,
+    dual_write_stable_id: bool,
+) -> list[dict]:
+    """Merge mutually-indistinguishable renamable playbooks within one
+    collision group into single playbooks (ROADMAP #11). Returns the
+    post-merge renamable list (same dict shape as a named_in_run entry) for the
+    caller to feed into the rename pass. Pure-distinctiveness gated — the LLM
+    never decides a merge.
+
+    When two (or more) colliding playbooks share every prevalent feature and
+    differ on none (at `playbook_merge_distinctiveness_floor`), forcing distinct
+    names fabricates a difference. Instead we collapse them: recompute the
+    content-addressed `playbook_id` over the union membership, reassign every
+    member cluster + session to it, and keep the shared pass-1 name.
+    """
+    renamable = group["renamable"]
+    if len(renamable) < 2:
+        return renamable
+
+    floor = cfg.session.playbook_merge_distinctiveness_floor
+    pb_by_pid = {pb["playbook_id"]: pb for pb in renamable}
+    cov_by_pid = {
+        pid: _combined_coverage_map(
+            pb.get("cmd_coverage") or [], pb.get("ioc_coverage") or [],
+            pb.get("coverage_total") or 0,
+        )
+        for pid, pb in pb_by_pid.items()
+    }
+    subgroups = _partition_mergeable(cov_by_pid, floor)
+
+    out: list[dict] = []
+    for sub in subgroups:
+        if len(sub) < 2:
+            out.append(pb_by_pid[sub[0]])
+            continue
+
+        merged_pbs = [pb_by_pid[pid] for pid in sub]
+        merged_cids = sorted({cid for pb in merged_pbs for cid in pb["member_cids"]})
+        merged_sids: set[str] = set()
+        for pb in merged_pbs:
+            merged_sids |= set(pb.get("member_sids_union") or set())
+            for cid in pb["member_cids"]:
+                merged_sids |= members_by_cid.get(cid, set())
+        if not merged_sids:
+            out.extend(merged_pbs)  # defensive — shouldn't happen
+            continue
+
+        new_pid = _make_playbook_id(merged_sids)
+        name = group["name"]  # the shared pass-1 name survives the merge
+
+        stable_pid: Optional[str] = None
+        if dual_write_stable_id:
+            member_docs: list[dict] = []
+            for pb in merged_pbs:
+                member_docs.extend(docs_by_group.get(pb.get("group_id"), []))
+            unit = _playbook_group_centroid(member_docs)
+            if unit is not None:
+                stable_pid = _assign_stable_playbook_id(
+                    unit, stable_anchors, cfg.session.playbook_merge_threshold, new_pid,
+                )
+                stable_anchors.append((unit, stable_pid))
+            else:
+                stable_pid = _mint_stable_playbook_id(new_pid)
+
+        log.info(
+            "Pass-2 merge: %d playbooks %s → %s '%s' (no distinguishing feature "
+            "at floor %.2f)", len(sub), sub, new_pid, name, floor,
+        )
+        _apply_playbook_name(
+            es, session_clusters_idx, sessions_idx, run_id,
+            merged_cids, new_pid, name, stats,
+            log_prefix="merge", stable_playbook_id=stable_pid,
+        )
+        stats["collisions_merged"] += 1
+        stats["playbooks_merged_away"] += len(sub) - 1
+
+        # Refresh coverage over the merged membership for any later rename step
+        # (the merged playbook may still collide with a frozen prior-run name).
+        cov_sids = _subsample_sids(merged_sids, cfg.session.playbook_naming_session_cap)
+        cov_total = len(cov_sids)
+        cmd_cov = _fetch_command_coverage(
+            es, events_idx, cov_sids, cfg.session.playbook_sample_commands,
+        )
+        ioc_cov = _fetch_ioc_coverage(
+            es, sessions_idx, cov_sids, cfg.session.playbook_sample_commands,
+        )
+        out.append({
+            "playbook_id": new_pid,
+            "name": name,
+            "member_cids": merged_cids,
+            "sample_session_ids": merged_pbs[0].get("sample_session_ids") or [],
+            "unique_commands": [c for c, _ in cmd_cov],
+            "cmd_coverage": cmd_cov,
+            "ioc_coverage": ioc_cov,
+            "coverage_total": cov_total,
+            "member_sids_union": merged_sids,
+            "group_id": merged_pbs[0].get("group_id"),
+            "size": sum(int(pb.get("size") or 0) for pb in merged_pbs),
+        })
+
+    return out
+
+
 def _fetch_session_sample_commands(
     es: Elasticsearch,
     events_index: str,
@@ -1357,6 +1637,203 @@ def _fetch_session_sample_commands(
     except Exception as exc:
         log.warning("Could not fetch session commands: %s", exc)
         return []
+
+
+# ===========================================================================
+# Cluster-wide coverage sampling + distinctiveness (ROADMAP #11)
+#
+# A playbook name is only as good as the commands/IOCs the LLM sees. The old
+# path sampled the first 5 session ids off the centroid doc, so the cluster's
+# defining behaviour could be missing from the sample. These helpers instead
+# rank features by *session coverage* (fraction of the cluster's sessions
+# carrying the feature) over a representative random subsample of the full
+# membership, and compute which features actually separate colliding clusters.
+# ===========================================================================
+
+
+def _subsample_sids(session_ids: Iterable[str], cap: int) -> list[str]:
+    """De-duplicated session ids, randomly down-sampled to `cap` for a bounded,
+    representative coverage aggregation. Deterministic only up to RNG state —
+    coverage fractions are stable in expectation, which is what naming needs."""
+    sids = list(dict.fromkeys(s for s in session_ids if s))
+    if cap > 0 and len(sids) > cap:
+        sids = random.sample(sids, cap)
+    return sids
+
+
+def _fetch_command_coverage(
+    es: Elasticsearch,
+    events_index: str,
+    session_ids: list[str],
+    max_commands: int = 15,
+) -> list[tuple[str, int]]:
+    """Cluster-wide command coverage: [(command, sessions_running_it)] sorted by
+    coverage desc, capped at `max_commands`. Ranks by *distinct sessions* (the
+    behaviour most sessions share), not raw occurrence (which one chatty
+    session can dominate). Over-fetches the terms agg, then re-ranks by the
+    per-command session cardinality. Caller supplies an already-subsampled id
+    list so the denominator (`len(session_ids)`) is shared with IOC coverage."""
+    if not session_ids:
+        return []
+    try:
+        resp = es.search(
+            index=events_index,
+            size=0,
+            query={"bool": {"must": [
+                {"terms": {"cowrie.session_id": session_ids}},
+                {"term": {"event.action": "cowrie.command.input"}},
+            ]}},
+            aggs={"by_cmd": {
+                "terms": {"field": "process.command_line", "size": max(max_commands * 5, 50)},
+                "aggs": {"sessions": {"cardinality": {"field": "cowrie.session_id"}}},
+            }},
+        )
+    except Exception as exc:
+        log.warning("Could not fetch command coverage: %s", exc)
+        return []
+    buckets = resp.get("aggregations", {}).get("by_cmd", {}).get("buckets", [])
+    ranked = [
+        (b["key"], int((b.get("sessions") or {}).get("value") or 0))
+        for b in buckets if b.get("key")
+    ]
+    ranked.sort(key=lambda x: (-x[1], x[0]))
+    return ranked[:max_commands]
+
+
+def _fetch_ioc_coverage(
+    es: Elasticsearch,
+    sessions_index: str,
+    session_ids: list[str],
+    max_iocs: int = 15,
+) -> list[tuple[str, int]]:
+    """Cluster-wide IOC coverage from the session-rollup `artifact_set`:
+    [(artifact, sessions_carrying_it)] sorted by coverage desc, capped at
+    `max_iocs`. The rollup is one doc per session keyed by session id, so a
+    terms-agg bucket's `doc_count` over `artifact_set.keyword` is exactly the
+    number of sampled sessions carrying that artifact. Artifacts are already
+    kind-prefixed (`ip:` / `domain:` / `url:` / `hash:` / `file:`)."""
+    if not session_ids:
+        return []
+    field = "dshield.cowrie.enrichment.session.artifact_set.keyword"
+    try:
+        resp = es.search(
+            index=sessions_index,
+            size=0,
+            query={"ids": {"values": session_ids}},
+            aggs={"by_ioc": {"terms": {"field": field, "size": max(max_iocs * 5, 50)}}},
+        )
+    except Exception as exc:
+        log.warning("Could not fetch IOC coverage: %s", exc)
+        return []
+    buckets = resp.get("aggregations", {}).get("by_ioc", {}).get("buckets", [])
+    ranked = [(b["key"], int(b.get("doc_count") or 0)) for b in buckets if b.get("key")]
+    ranked.sort(key=lambda x: (-x[1], x[0]))
+    return ranked[:max_iocs]
+
+
+def _format_coverage_lines(
+    ranked: list[tuple[str, int]],
+    total: int,
+    *,
+    strip_cmd_prefix: bool = False,
+    indent: str = "  ",
+) -> str:
+    """Render coverage-ranked features as prompt lines with explicit session
+    coverage, so the LLM can tell a defining behaviour (high coverage) from a
+    one-off (low coverage). ROADMAP #11."""
+    lines: list[str] = []
+    for feat, n in ranked:
+        if strip_cmd_prefix and feat.startswith("cmd:"):
+            feat = feat[len("cmd:"):]
+        pct = f"{(100 * n / total):.0f}%" if total else "?"
+        lines.append(f"{indent}- {feat}   (in {n}/{total} sessions, {pct})")
+    return "\n".join(lines) if lines else f"{indent}(none)"
+
+
+def _combined_coverage_map(
+    cmd_ranked: list[tuple[str, int]],
+    ioc_ranked: list[tuple[str, int]],
+    total_sessions: int,
+) -> dict[str, float]:
+    """Merge command + IOC coverage into one `{feature: fraction}` map for the
+    distinctiveness/merge logic. Commands are prefixed `cmd:`; IOCs keep their
+    native kind prefix. Fractions are coverage / total sampled sessions."""
+    if total_sessions <= 0:
+        return {}
+    out: dict[str, float] = {}
+    for cmd, n in cmd_ranked:
+        out[f"cmd:{cmd}"] = n / total_sessions
+    for ioc, n in ioc_ranked:
+        out[ioc] = n / total_sessions
+    return out
+
+
+def _distinctive_features(
+    coverage_by_key: dict[str, dict[str, float]],
+    floor: float,
+) -> dict[str, list[tuple[str, float]]]:
+    """For each cluster key, the features distinctive to it: coverage >= floor
+    in this cluster AND < floor in every sibling. Sorted by coverage desc.
+    Pure — no I/O. ROADMAP #11."""
+    keys = list(coverage_by_key.keys())
+    out: dict[str, list[tuple[str, float]]] = {k: [] for k in keys}
+    for k in keys:
+        for feat, cov in coverage_by_key[k].items():
+            if cov < floor:
+                continue
+            if all(coverage_by_key[o].get(feat, 0.0) < floor for o in keys if o != k):
+                out[k].append((feat, cov))
+        out[k].sort(key=lambda x: (-x[1], x[0]))
+    return out
+
+
+def _indistinguishable(a: dict[str, float], b: dict[str, float], floor: float) -> bool:
+    """Two clusters are indistinguishable at `floor` when no feature is present
+    (coverage >= floor) in one and absent (< floor) in the other — i.e. they
+    share every prevalent feature and differ on none. Pure."""
+    for feat in set(a) | set(b):
+        if (a.get(feat, 0.0) >= floor) != (b.get(feat, 0.0) >= floor):
+            return False
+    return True
+
+
+def _partition_mergeable(
+    coverage_by_key: dict[str, dict[str, float]],
+    floor: float,
+) -> list[list[str]]:
+    """Union-find over the mutually-indistinguishable relation. Returns groups
+    of cluster keys (singletons as 1-element lists), each group's members
+    sorted lexicographically, groups ordered by their lex-smallest member.
+    A group of size >= 2 is a merge candidate. Pure. ROADMAP #11.
+
+    Note the relation is not transitive in general (A~B and B~C does not force
+    A~C); single-linkage union-find still groups a chain, which is the
+    intended conservative behaviour here — if A merges with B and B with C
+    they collapse to one playbook only when each pairwise step found no
+    separating feature."""
+    keys = sorted(coverage_by_key.keys())
+    parent = {k: k for k in keys}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i in range(len(keys)):
+        for j in range(i + 1, len(keys)):
+            a, b = keys[i], keys[j]
+            if _indistinguishable(coverage_by_key[a], coverage_by_key[b], floor):
+                ra, rb = find(a), find(b)
+                if ra != rb:
+                    parent[ra] = rb
+
+    groups: dict[str, list[str]] = defaultdict(list)
+    for k in keys:
+        groups[find(k)].append(k)
+    out = [sorted(members) for members in groups.values()]
+    out.sort(key=lambda members: members[0])
+    return out
 
 
 def run_name_playbooks(
@@ -1460,6 +1937,15 @@ def run_name_playbooks(
     # ROADMAP issue #10.
     named_in_run: list[dict] = []
 
+    # Churn-resistant identity (ROADMAP #1). Load prior-run anchors once;
+    # ids minted this run are appended so two same-run groups that match the
+    # same lineage stay consistent. Readers don't key on this yet.
+    dual_write_stable_id = cfg.session.stable_identity_dual_write
+    stable_anchors = (
+        _load_stable_anchors(es, session_clusters_idx, run_id)
+        if dual_write_stable_id else []
+    )
+
     try:
         for group_id in sorted(docs_by_group.keys()):
             members = docs_by_group[group_id]
@@ -1473,8 +1959,9 @@ def run_name_playbooks(
                 stats["skipped_already_named"] += 1
                 continue
 
-            # Pool sample session ids across all member clusters, preserving
-            # order and de-duplicating. Cap at 5 for LLM context.
+            # A handful of illustrative session ids for the prompt's
+            # SAMPLE_IDS slot (display only — naming evidence comes from
+            # cluster-wide coverage below, not these).
             sample_sids: list[str] = []
             seen_sids: set[str] = set()
             for c in members:
@@ -1482,42 +1969,13 @@ def run_name_playbooks(
                     if sid and sid not in seen_sids:
                         seen_sids.add(sid)
                         sample_sids.append(sid)
-            if not sample_sids:
-                stats["skipped_no_sample_sessions"] += 1
-                continue
-
             sample_sids = sample_sids[:5]
-            unique_commands = _fetch_session_sample_commands(
-                es, events_idx, sample_sids, cfg.session.playbook_sample_commands,
-            )
 
-            if not unique_commands:
-                stats["skipped_no_commands"] += 1
-                log.debug("No commands found for playbook group %s (clusters %s)",
-                          group_id, member_cids)
-                continue
-
-            stats["clusters_processed"] += len(members)
-            stats["groups_processed"] += 1
-
-            if dry_run:
-                log.info(
-                    "[dry-run] playbook %s (clusters=%s, %d sessions): would name from %d commands",
-                    group_id, member_cids, total_size, len(unique_commands),
-                )
-                continue
-
-            # The prompt's CLUSTER_ID slot now identifies the playbook group;
-            # if it merged multiple HDBSCAN clusters we hand the LLM the
-            # group's playbook_id plus the constituent cluster ids so any
-            # explanation it produces matches reality.
-            #
-            # Playbook id = SHA-256 over the union of member session ids
-            # across every constituent cluster. Stable across cluster runs
-            # when membership doesn't change. Empty membership is
-            # impossible here: `nameable` filtered outliers, and clusters
-            # with zero member docs would have nothing to anchor the
-            # centroid on — but be defensive anyway.
+            # Full membership across every constituent cluster. Drives both the
+            # content-addressed playbook id and the coverage sampling below.
+            # Empty membership is impossible here (`nameable` filtered outliers,
+            # and clusters with zero member docs couldn't anchor a centroid) —
+            # but be defensive anyway.
             member_sids_union: set[str] = set()
             for cid in member_cids:
                 member_sids_union.update(members_by_cid.get(cid, set()))
@@ -1529,7 +1987,67 @@ def run_name_playbooks(
                     group_id, member_cids,
                 )
                 continue
+
+            # ROADMAP #11: rank commands + IOCs by session coverage (fraction of
+            # the cluster's sessions carrying them) over a representative random
+            # subsample of the *full* membership — not the first 5 sample
+            # sessions. The cluster's defining behaviour is what most of its
+            # sessions share. Coverage is stashed on the named_in_run entry so
+            # pass-2 distinctiveness reuses it without re-querying.
+            cov_sids = _subsample_sids(
+                member_sids_union, cfg.session.playbook_naming_session_cap,
+            )
+            cov_total = len(cov_sids)
+            cmd_coverage = _fetch_command_coverage(
+                es, events_idx, cov_sids, cfg.session.playbook_sample_commands,
+            )
+            ioc_coverage = _fetch_ioc_coverage(
+                es, sessions_idx, cov_sids, cfg.session.playbook_sample_commands,
+            )
+
+            if not cmd_coverage:
+                stats["skipped_no_commands"] += 1
+                log.debug("No commands found for playbook group %s (clusters %s)",
+                          group_id, member_cids)
+                continue
+
+            stats["clusters_processed"] += len(members)
+            stats["groups_processed"] += 1
+
+            if dry_run:
+                log.info(
+                    "[dry-run] playbook %s (clusters=%s, %d sessions): would name from "
+                    "%d commands over %d sampled sessions",
+                    group_id, member_cids, total_size, len(cmd_coverage), cov_total,
+                )
+                continue
+
+            # The prompt's CLUSTER_ID slot now identifies the playbook group;
+            # if it merged multiple HDBSCAN clusters we hand the LLM the
+            # group's playbook_id plus the constituent cluster ids so any
+            # explanation it produces matches reality.
+            #
+            # Playbook id = SHA-256 over the union of member session ids
+            # across every constituent cluster. Stable across cluster runs
+            # when membership doesn't change.
             playbook_id = _make_playbook_id(member_sids_union)
+
+            # Churn-resistant identity (ROADMAP #1): snap this playbook's
+            # centroid to the nearest prior anchor, else mint. Best-effort —
+            # a missing centroid just falls back to a freshly-minted id.
+            stable_playbook_id: Optional[str] = None
+            if dual_write_stable_id:
+                group_unit = _playbook_group_centroid(members)
+                if group_unit is not None:
+                    stable_playbook_id = _assign_stable_playbook_id(
+                        group_unit, stable_anchors,
+                        cfg.session.playbook_merge_threshold, playbook_id,
+                    )
+                    stable_anchors.append((group_unit, stable_playbook_id))
+                else:
+                    stable_playbook_id = _mint_stable_playbook_id(playbook_id)
+                stats["stable_id_assigned"] += 1
+
             cluster_id_for_prompt = (
                 member_cids[0] if len(member_cids) == 1
                 else f"{playbook_id} (clusters: {', '.join(member_cids)})"
@@ -1539,7 +2057,7 @@ def run_name_playbooks(
                 .replace("<<<CLUSTER_ID>>>", cluster_id_for_prompt)
                 .replace("<<<SIZE>>>", str(total_size))
                 .replace("<<<SAMPLE_IDS>>>", ", ".join(sample_sids))
-                .replace("<<<COMMANDS>>>", "\n".join(f"  {c}" for c in unique_commands))
+                .replace("<<<COMMANDS>>>", _format_coverage_lines(cmd_coverage, cov_total))
             )
 
             try:
@@ -1569,7 +2087,12 @@ def run_name_playbooks(
                 "name": name,
                 "member_cids": member_cids,
                 "sample_session_ids": sample_sids,
-                "unique_commands": unique_commands,
+                "unique_commands": [c for c, _ in cmd_coverage],
+                # ROADMAP #11: coverage stashed for pass-2 distinctiveness.
+                "cmd_coverage": cmd_coverage,
+                "ioc_coverage": ioc_coverage,
+                "coverage_total": cov_total,
+                "member_sids_union": member_sids_union,
                 "group_id": group_id,
                 "size": total_size,
             })
@@ -1578,10 +2101,15 @@ def run_name_playbooks(
                 es, session_clusters_idx, sessions_idx,
                 run_id, member_cids, playbook_id, name, stats,
                 log_prefix="playbook",
+                stable_playbook_id=stable_playbook_id,
             )
 
         # -------------------------------------------------------------------
-        # Pass 2 — disambiguate any naming collisions (ROADMAP issue #10).
+        # Pass 2 — resolve naming collisions (ROADMAP #11). For each collision
+        # group: first merge any mutually-indistinguishable playbooks into one
+        # (deterministic, distinctiveness-gated), then ask the LLM to rename
+        # whatever genuinely-distinct playbooks remain — anchoring on the
+        # computed distinctive feature set.
         # -------------------------------------------------------------------
         if cfg.prompts.playbook_disambiguate and named_in_run:
             existing = _load_other_playbook_names(
@@ -1599,11 +2127,33 @@ def run_name_playbooks(
                     sum(len(g["frozen"]) for g in collisions),
                 )
                 for group in collisions:
+                    # Merge step: collapse playbooks with no distinguishing
+                    # feature; returns the post-merge renamable set.
+                    post_merge = _merge_collision_subgroups(
+                        es=es,
+                        group=group,
+                        members_by_cid=members_by_cid,
+                        docs_by_group=docs_by_group,
+                        run_id=run_id,
+                        session_clusters_idx=session_clusters_idx,
+                        sessions_idx=sessions_idx,
+                        events_idx=events_idx,
+                        cfg=cfg,
+                        stats=stats,
+                        stable_anchors=stable_anchors,
+                        dual_write_stable_id=dual_write_stable_id,
+                    )
+                    # Rename step only when a real collision survives the merge
+                    # (more than one distinct name-holder for this name).
+                    if len(post_merge) + len(group["frozen"]) < 2 or not post_merge:
+                        continue
+                    stats["collisions_renamed"] += 1
                     _run_disambiguation_pass(
                         es=es,
                         llm=llm,
                         prompt_template=disamb_prompt_template,
-                        group=group,
+                        group={"name": group["name"], "renamable": post_merge,
+                               "frozen": group["frozen"]},
                         run_id=run_id,
                         session_clusters_idx=session_clusters_idx,
                         sessions_idx=sessions_idx,

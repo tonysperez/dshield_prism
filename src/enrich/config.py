@@ -175,12 +175,39 @@ class SessionConfig(BaseModel):
     # Max unique commands sampled per playbook (session cluster) for LLM
     # name generation.
     playbook_sample_commands: int = 15
+    # ROADMAP #11 — naming accuracy. Cap on how many of a cluster's member
+    # sessions are sampled when computing cluster-wide command/IOC coverage
+    # for naming. Random-subsampled when the cluster is larger; bounds the
+    # per-playbook aggregation cost while keeping the sample representative.
+    playbook_naming_session_cap: int = 500
+    # ROADMAP #11 — merge-on-no-distinction. In pass-2 disambiguation, a
+    # feature (command or IOC) is "distinctive" to a colliding cluster when
+    # its session coverage is >= this floor while every sibling's coverage is
+    # below it. Two colliding playbooks with NO distinctive feature between
+    # them are merged into one playbook instead of being given fabricated
+    # distinct names. Conservative low default: even a weakly-prevalent
+    # separating feature (>=25% of one cluster's sessions, absent in the
+    # other) blocks the merge, so only genuinely-indistinguishable clusters
+    # collapse. This is a behavioral-feature merge authority operating below
+    # the embedding-geometry merge (`playbook_merge_threshold`). Raise to
+    # merge more aggressively; 1.0 effectively disables merging.
+    playbook_merge_distinctiveness_floor: float = 0.25
     # Cosine-similarity threshold for merging HDBSCAN clusters into a single
     # playbook. A playbook is a *group* of one or more clusters whose
     # centroids are pairwise (single-linkage) at least this similar. 1.0
     # disables merging (1 cluster = 1 playbook, legacy behaviour). 0.96 is
     # the empirically-tuned default — see scripts/diagnose_centroid_similarity.py.
     playbook_merge_threshold: float = 0.96
+    # ROADMAP #1 — churn-resistant playbook identity. When on, the naming
+    # pass also computes a `stable_playbook_id` (`spb-<16hex>`) by
+    # cosine-matching each playbook centroid to the nearest prior-run
+    # anchor (>= playbook_merge_threshold) and reusing its id, minting a
+    # fresh one only on no-match. Written alongside `playbook_id` on the
+    # cluster docs for observation; no reader keys on it yet. Additive and
+    # safe to leave on. See scripts/measure_playbook_id_churn.py for the
+    # A/B that validated the snap-to-prior approach over the rejected
+    # quantised-centroid hash.
+    stable_identity_dual_write: bool = True
     # ROADMAP P1: see CommandClusterConfig.reference_max_age_days.
     reference_max_age_days: int = 45
 
@@ -756,13 +783,25 @@ _LLM_COOC_FIELDS = ("enabled", "top_k", "session_sample_size", "min_sessions")
 _EMBED_COOC_FIELDS = ("embed_cooccurrence",)
 _CONFIG_HASH_LEN = 16
 
+# Prompt files that feed the *command-enrichment* LLM path and therefore
+# belong in `llm_config_hash`: the local enrichment prompt and the cloud
+# escalation prompt (`command_deep_dive`, used by `escalate`). The remaining
+# prompts — `playbook_name`, `playbook_disambiguate`, `cluster_pair_explanation`
+# — run over already-enriched clusters; editing them must NOT invalidate
+# cached command enrichments (which would force a needless full
+# re-enrich-stale). Pinned so adding a new unrelated prompt later doesn't
+# silently re-couple it to the enrichment cache.
+_LLM_PROMPT_FIELDS = ("command_enrichment", "command_deep_dive")
+
 
 def _hash_prompt_files(cfg: AppConfig) -> str:
-    """SHA-256 each configured prompt file's content; combine deterministically."""
+    """SHA-256 each enrichment-affecting prompt file's content; combine
+    deterministically. Only `_LLM_PROMPT_FIELDS` are hashed — see that
+    constant for why the naming/console prompts are excluded."""
     parts: list[str] = []
     prompts_dict = cfg.prompts.model_dump()
-    for name in sorted(prompts_dict):
-        path = prompts_dict[name]
+    for name in sorted(_LLM_PROMPT_FIELDS):
+        path = prompts_dict.get(name)
         if not path:
             continue
         try:
@@ -812,7 +851,10 @@ def compute_llm_config_hash(cfg: AppConfig) -> str:
 
     Returns a 16-hex prefix of SHA-256 over:
       - LLM-affecting cooccurrence fields (sibling-context inputs).
-      - SHA-256 of each configured prompt file's content.
+      - SHA-256 of the enrichment-path prompt files' content
+        (`_LLM_PROMPT_FIELDS`: local enrichment + cloud `command_deep_dive`).
+        Naming/console prompts are excluded so editing them doesn't churn
+        the command-enrichment cache.
       - SHA-256 of the command-grounding data directory's content
         (ROADMAP #11) — edits to curated descriptions or a refreshed
         tldr.json bundle change the ground-truth block injected into

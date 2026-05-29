@@ -192,6 +192,19 @@ session:
   batch_size: 200
   # Max unique commands sampled per playbook (session cluster) for LLM name generation.
   playbook_sample_commands: 15
+  # ROADMAP #11 — naming accuracy. Max member sessions sampled per cluster
+  # when computing cluster-wide command/IOC coverage for naming (random
+  # subsample when larger). Bounds per-playbook aggregation cost.
+  playbook_naming_session_cap: 500
+  # ROADMAP #11 — merge-on-no-distinction. In pass-2 disambiguation a feature
+  # (command or IOC) is "distinctive" to a colliding cluster when its session
+  # coverage is >= this floor while every sibling's is below it. Two colliding
+  # playbooks with no distinctive feature between them are merged rather than
+  # given fabricated distinct names. Conservative low default — a separating
+  # feature in >=25% of one cluster's sessions (absent in the other) blocks
+  # the merge. Behavioral-feature merge below the embedding-geometry merge.
+  # Raise to merge more aggressively; 1.0 effectively disables merging.
+  playbook_merge_distinctiveness_floor: 0.25
   # Cosine-similarity threshold for merging HDBSCAN clusters into a single
   # playbook. Two clusters whose centroids are at least this similar (single-
   # linkage union-find) collapse into one playbook before LLM naming. Fixes
