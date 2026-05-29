@@ -21,3 +21,4 @@ dist/
 .claude
 
 docs
+.ruff_cache

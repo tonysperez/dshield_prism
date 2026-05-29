@@ -41,6 +41,7 @@
       "total_docs":      { "type": "long" },
       "n_clusters":      { "type": "long" },
       "n_outliers":      { "type": "long" },
+      "n_rescued":       { "type": "long" },
       "runtime_seconds": { "type": "float" }
     }
   }

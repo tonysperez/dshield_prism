@@ -1074,6 +1074,12 @@ def run_cluster(
         refresh_reference=refresh_reference,
         use_reference=use_reference,
         reference_max_age_days=scfg.reference_max_age_days,
+        # Rescue HDBSCAN noise sessions that are within the same cosine
+        # threshold the centroid-level merge uses — closes the merge's blind
+        # spot for loose periphery sessions. Session layer only; command/IP
+        # clusterers omit this and are unaffected. Set
+        # playbook_merge_threshold=1.0 to disable (also disables centroid merge).
+        rescue_threshold=scfg.playbook_merge_threshold,
     )
 
 

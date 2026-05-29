@@ -68,6 +68,46 @@ def compute_centroids(
     return centroids
 
 
+def rescue_noise_points(
+    normalized: "np.ndarray",
+    labels: "np.ndarray",
+    threshold: float,
+) -> tuple["np.ndarray", int]:
+    """Reassign HDBSCAN noise points (-1) to their nearest cluster centroid when
+    pure-embedding cosine similarity >= `threshold`. Returns (new_labels,
+    n_rescued). Pure — no I/O.
+
+    HDBSCAN's density model drops sessions in low-density periphery as noise
+    even when they are behaviourally near-identical to a cluster (cosine ~1.0
+    to its centroid). The existing centroid-level merge (`playbook_merge_
+    threshold`) can't see them — they never become a centroid. This closes
+    that gap by extending the same cosine-merge rule down to the loose noise
+    points: an outlier within `threshold` cosine of a cluster centroid joins
+    that cluster. Centroids here are means of the L2-normalised member
+    embeddings, normalised for the cosine comparison — the same pure-embedding
+    geometry the centroid merge uses. Points below `threshold` stay noise.
+    """
+    new_labels = labels.copy()
+    noise_idx = np.where(labels == -1)[0]
+    if len(noise_idx) == 0 or threshold > 1.0:
+        return new_labels, 0
+    centroids = compute_centroids(normalized, labels)
+    if not centroids:
+        return new_labels, 0
+    cluster_lbls = sorted(centroids)
+    C = np.array([centroids[l] for l in cluster_lbls], dtype=np.float32)
+    C = C / (np.linalg.norm(C, axis=1, keepdims=True) + 1e-12)
+    sims = normalized[noise_idx] @ C.T            # (m, k) — rows already unit-norm
+    best = sims.argmax(axis=1)
+    best_sim = sims.max(axis=1)
+    rescued = 0
+    for r, i in enumerate(noise_idx):
+        if best_sim[r] >= threshold:
+            new_labels[i] = cluster_lbls[best[r]]
+            rescued += 1
+    return new_labels, rescued
+
+
 def novelty_score(vec: "np.ndarray", centroids: dict[int, "np.ndarray"]) -> float:
     """1 - max cosine_sim to any centroid. Vec need not be unit-norm.
 
@@ -323,6 +363,7 @@ def run_layer_clustering(
     refresh_reference: bool = False,
     use_reference: bool = True,
     reference_max_age_days: int = 45,
+    rescue_threshold: float | None = None,
 ) -> dict:
     """Generic HDBSCAN pipeline for one layer (commands / sessions / IPs / future).
 
@@ -415,6 +456,22 @@ def run_layer_clustering(
         metric="euclidean",
     )
     cluster_labels_arr = clusterer.fit_predict(cluster_matrix)
+
+    # Optional noise rescue (session layer): reassign outliers within
+    # `rescue_threshold` pure-embedding cosine of a cluster centroid. Closes the
+    # blind spot in the centroid-level merge, which never sees noise points.
+    # Runs before centroid/size/novelty computation so all downstream data
+    # reflects the rescued membership. Default off → command/IP layers unchanged.
+    n_rescued = 0
+    if rescue_threshold is not None and rescue_threshold > 0.0:
+        cluster_labels_arr, n_rescued = rescue_noise_points(
+            normalized, cluster_labels_arr, rescue_threshold,
+        )
+        if n_rescued:
+            log.info(
+                "[%s] noise rescue: reassigned %d outlier(s) to nearest centroid "
+                "(cosine >= %.3f)", layer_label, n_rescued, rescue_threshold,
+            )
 
     unique_labels = [int(l) for l in np.unique(cluster_labels_arr)]
     valid_cluster_ids = [l for l in unique_labels if l >= 0]
@@ -560,6 +617,7 @@ def run_layer_clustering(
             "total_docs": n_docs,
             "n_clusters": n_clusters,
             "n_outliers": n_outliers,
+            "n_rescued": n_rescued,
             "runtime_seconds": round(time.monotonic() - t_start, 2),
         },
     })
@@ -620,6 +678,7 @@ def run_layer_clustering(
         "docs_fetched": n_docs,
         "n_clusters": n_clusters,
         "n_outliers": n_outliers,
+        "n_rescued": n_rescued,
         "dry_run": dry_run,
         "reference_status": reference_status,
         "reference_generation": reference_generation,
