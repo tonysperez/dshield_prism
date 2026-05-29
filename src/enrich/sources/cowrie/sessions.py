@@ -380,6 +380,12 @@ def _fetch_session_events(
             "user.name", "user_agent.original",
             "cowrie.session_id", "cowrie.password", "cowrie.hassh_algorithms",
             "process.command_line",
+            # File-event hashes (ROADMAP #3). The ingest pipeline already
+            # structures the cowrie shasum at `file.hash.sha256`; `destfile`
+            # (download dest) / `filename` (upload name) give the attacker-
+            # facing name; `url.original` is present only for wget-style fetches.
+            "file.hash.sha256", "url.original",
+            "cowrie.destfile", "cowrie.filename",
         ],
         "query": {"terms": {"cowrie.session_id": session_ids}},
         "sort": [{"@timestamp": "asc"}, {"_doc": "asc"}],
@@ -531,6 +537,10 @@ _MAX_CREDENTIALS_PER_SESSION = 200
 # 200 artifacts covers even the most prolific dropper chains.
 _MAX_BIGRAMS_PER_SESSION = 64
 _MAX_ARTIFACTS_PER_SESSION = 200
+# Cap on per-session cowrie file-event records (ROADMAP #3). A single session
+# rarely drops/uploads more than a handful of files; 50 bounds the rollup doc
+# against a pathological dropper loop while keeping every real chain intact.
+_MAX_FILE_EVENTS_PER_SESSION = 50
 # P1a follow-up: literal unique-command hash list per session, so the
 # playbook-level union (terms agg across member sessions) can be Jaccard'd
 # against an anchor's command_set for drift detection. 128 covers the
@@ -549,6 +559,56 @@ def _record_credential(credentials_set: set[str], ev: dict) -> None:
     password = ((ev.get("cowrie") or {}).get("password") or "")
     if user or password:
         credentials_set.add(f"{user}:{password}")
+
+
+def _record_file_event(
+    file_events: list[dict],
+    ev: dict,
+    action: str,
+    last_command: Optional[tuple[str, str]] = None,
+) -> None:
+    """Append a cowrie file-event record (ROADMAP #3) when it carries a hash.
+
+    The ingest pipeline structures cowrie's `shasum` at `file.hash.sha256`. The
+    attacker-facing name is `cowrie.destfile` (download destination) or
+    `cowrie.filename` (upload name); `url.original` is present only for
+    wget-style fetches. Events without a hash (e.g. failed downloads) are
+    skipped — there's nothing to pivot on. Capped by the caller's check so the
+    rollup doc stays bounded.
+
+    `last_command` is the nearest-preceding `(command_hash, command_line)` in
+    the session (events are @timestamp-ordered). When present, the record links
+    file→command (`command_hash`) so the console can trace IP→Session→Command→
+    File. `command_attribution` records the confidence basis: `url_match` /
+    `destfile_match` when the file's url/destfile appears in that command line,
+    else `preceding_command`. No prior command (e.g. SFTP upload) → no link.
+    """
+    if len(file_events) >= _MAX_FILE_EVENTS_PER_SESSION:
+        return
+    sha256 = ((ev.get("file") or {}).get("hash") or {}).get("sha256")
+    if not sha256:
+        return
+    cowrie = ev.get("cowrie") or {}
+    filename = cowrie.get("destfile") if action == "download" else cowrie.get("filename")
+    url = (ev.get("url") or {}).get("original")
+    rec: dict = {"action": action, "sha256": sha256}
+    if filename:
+        rec["filename"] = filename
+    if url:
+        rec["url"] = url
+    ts = ev.get("@timestamp")
+    if ts:
+        rec["ts"] = ts
+    if last_command is not None:
+        cmd_hash, cmd_line = last_command
+        rec["command_hash"] = cmd_hash
+        if url and url in cmd_line:
+            rec["command_attribution"] = "url_match"
+        elif filename and filename in cmd_line:
+            rec["command_attribution"] = "destfile_match"
+        else:
+            rec["command_attribution"] = "preceding_command"
+    file_events.append(rec)
 
 
 def _attach_source_ip_intel(doc: dict, summary) -> None:
@@ -598,6 +658,14 @@ def _build_session_doc(
     login_fail_count = 0
     file_download_count = 0
     file_upload_count = 0
+    # ROADMAP #3: cowrie-computed file hashes (structured at `file.hash.sha256`
+    # by the ingest pipeline). One record per download/upload that carries a
+    # hash; capped at `_MAX_FILE_EVENTS_PER_SESSION`.
+    file_events: list[dict] = []
+    # Nearest-preceding command for file→command attribution (ROADMAP #3). Events
+    # arrive @timestamp-ordered, so when a file event fires this holds the
+    # command that triggered the drop. `(hash, command_line)` or None.
+    last_command: Optional[tuple[str, str]] = None
     command_hashes: list[str] = []
     unique_hashes: set[str] = set()
     # Every (user, password) pair attempted in this session, deduped. The
@@ -621,8 +689,10 @@ def _build_session_doc(
             _record_credential(credentials_set, ev)
         elif action == "cowrie.session.file_download":
             file_download_count += 1
+            _record_file_event(file_events, ev, "download", last_command)
         elif action == "cowrie.session.file_upload":
             file_upload_count += 1
+            _record_file_event(file_events, ev, "upload", last_command)
         elif action == "cowrie.command.input":
             cmd = (ev.get("process") or {}).get("command_line")
             if cmd:
@@ -631,6 +701,7 @@ def _build_session_doc(
                     h = hash_command(norm)
                     command_hashes.append(h)
                     unique_hashes.add(h)
+                    last_command = (h, cmd)
 
     start_ts = (connect_event or {}).get("@timestamp") or (events[0].get("@timestamp") if events else None)
     end_ts = (closed_event or {}).get("@timestamp")
@@ -739,6 +810,12 @@ def _build_session_doc(
                 elif f_obj.get("name"):
                     artifact_values.add(f"file:{f_obj['name']}")
 
+    # ROADMAP #3: promote cowrie-computed file hashes into the same artifact_set
+    # (`hash:` prefix) so campaign infra-mining, playbook_artifact_drift, and
+    # discovery shared-artifact findings pick them up with no extra plumbing.
+    for fe in file_events:
+        artifact_values.add(f"hash:{fe['sha256']}")
+
     session_block: dict = {
         "command_count": len(command_hashes),
         "unique_commands": len(unique_hashes),
@@ -760,6 +837,8 @@ def _build_session_doc(
         session_block["command_bigram_signature"] = command_bigram_signature
     if artifact_values:
         session_block["artifact_set"] = sorted(artifact_values)[:_MAX_ARTIFACTS_PER_SESSION]
+    if file_events:
+        session_block["file_events"] = file_events
     if dominant_intent:
         session_block["dominant_intent"] = dominant_intent
     if intent_distribution:
@@ -775,6 +854,21 @@ def _build_session_doc(
         session_block["mean_confidence"] = round(sum(confidences) / len(confidences), 2)
     if embedding:
         session_block["embedding"] = embedding
+
+    # ROADMAP #3: session-level ECS file indicators, one per distinct hash,
+    # so the rollup is threat.indicator-queryable and feeds #2's intel queue.
+    # First filename seen for a hash wins (display only).
+    file_indicators: list[dict] = []
+    seen_hashes: set[str] = set()
+    for fe in file_events:
+        sha = fe["sha256"]
+        if sha in seen_hashes:
+            continue
+        seen_hashes.add(sha)
+        ind: dict = {"type": "file", "file": {"hash": {"sha256": sha}}}
+        if fe.get("filename"):
+            ind["file"]["name"] = fe["filename"]
+        file_indicators.append(ind)
 
     doc: dict = {
         "@timestamp": anchor_ts,
@@ -808,6 +902,8 @@ def _build_session_doc(
         doc["user"] = user_info
     if ua_info:
         doc["user_agent"] = ua_info
+    if file_indicators:
+        doc["threat"] = {"indicator": file_indicators}
 
     return doc
 

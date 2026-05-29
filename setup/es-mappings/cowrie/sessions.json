@@ -73,6 +73,26 @@
         }
       },
 
+      "threat": {
+        "properties": {
+          "indicator": {
+            "type": "nested",
+            "properties": {
+              "type":   { "type": "keyword" },
+              "ip":     { "type": "ip" },
+              "domain": { "type": "keyword" },
+              "url":    { "properties": { "full": { "type": "keyword" } } },
+              "file": {
+                "properties": {
+                  "name": { "type": "keyword" },
+                  "hash": { "properties": { "sha256": { "type": "keyword" } } }
+                }
+              }
+            }
+          }
+        }
+      },
+
       "dshield": {
         "properties": {
           "cowrie": {
@@ -140,6 +160,24 @@
                         "type": "text",
                         "fields": {
                           "keyword": { "type": "keyword", "ignore_above": 512 }
+                        }
+                      },
+                      "file_events": {
+                        "type": "nested",
+                        "properties": {
+                          "action":   { "type": "keyword" },
+                          "sha256":   { "type": "keyword" },
+                          "filename": {
+                            "type": "text",
+                            "fields": { "keyword": { "type": "keyword", "ignore_above": 512 } }
+                          },
+                          "url": {
+                            "type": "text",
+                            "fields": { "keyword": { "type": "keyword", "ignore_above": 1024 } }
+                          },
+                          "ts":                  { "type": "date" },
+                          "command_hash":        { "type": "keyword" },
+                          "command_attribution": { "type": "keyword" }
                         }
                       },
                       "embedding": {
