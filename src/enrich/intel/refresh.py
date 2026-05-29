@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from ..cache import StateDB
@@ -131,8 +131,50 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _fresh_within_ttl(
+    es, cfg: AppConfig, kind: str, values: list[str], ttl_days: float,
+    *, now: datetime,
+) -> set[str]:
+    """Return the subset of `values` whose intel doc was `last_refreshed`
+    within `ttl_days` — i.e. still fresh, so the refresh can skip re-querying
+    providers for them. Batched via `_mget`; missing docs (never looked up) and
+    parse failures are treated as stale so they always get queried."""
+    if ttl_days <= 0 or not values:
+        return set()
+    from .writer import index_for_kind  # local import: avoid import cycle
+    idx = index_for_kind(cfg, kind)
+    try:
+        if not es.indices.exists(index=idx):
+            return set()
+    except Exception:  # noqa: BLE001 — freshness skip is best-effort
+        return set()
+    cutoff = now - timedelta(days=ttl_days)
+    fresh: set[str] = set()
+    for i in range(0, len(values), 1000):
+        chunk = values[i:i + 1000]
+        try:
+            resp = es.mget(index=idx, ids=chunk, _source=["last_refreshed"])
+        except Exception:  # noqa: BLE001
+            continue
+        for doc in resp.get("docs", []):
+            if not doc.get("found"):
+                continue
+            lr = (doc.get("_source") or {}).get("last_refreshed")
+            if not lr:
+                continue
+            try:
+                ts = datetime.fromisoformat(str(lr).replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if ts >= cutoff:
+                fresh.add(doc["_id"])
+    return fresh
+
+
 def run_refresh(
-    cfg: AppConfig, secrets: Secrets, *, dry_run: bool = False,
+    cfg: AppConfig, secrets: Secrets, *, dry_run: bool = False, force: bool = False,
 ) -> dict[str, Any]:
     """Single refresh pass. Returns a stats dict suitable for `print(json.dumps(…))`.
 
@@ -140,16 +182,22 @@ def run_refresh(
       1. Build the provider set from config.
       2. Run discovery to repopulate the SQLite priority queue from
          the current IP rollup state.
-      3. For each artifact kind, pop top-N from the queue and
-         dispatch each artifact through every applicable provider.
+      3. For each artifact kind, pop top-N from the queue, skip any
+         artifact still fresh within its per-kind cache TTL
+         (`cfg.intel.refresh_ttl_days`; bypassed when `force`), and
+         dispatch the rest through every applicable provider.
       4. Group ProviderResults per artifact, write the merged doc to
          the intel-* index.
       5. Mark the artifact done in the queue when at least one
          provider returned data (others can retry next pass).
+
+    `force=True` ignores the per-kind cache TTL and re-queries everything —
+    used by `intel backfill` (e.g. after wiring a new provider).
     """
     if not cfg.intel.enabled:
         return {"enabled": False, "skipped": True}
 
+    run_started = datetime.now(timezone.utc)
     es = make_client(cfg.elasticsearch, secrets)
     db = StateDB(cfg.worker.state_db)
     providers = _build_providers(cfg, secrets)
@@ -164,6 +212,9 @@ def run_refresh(
         "providers": [p.name for p in providers],
         "discovered": {},
         "processed": {},
+        # Artifacts skipped this run because their intel doc is still fresh
+        # within the per-kind cache TTL (cfg.intel.refresh_ttl_days). {kind: n}.
+        "skipped_fresh": {},
         "writes": 0,
         "errors": [],
         "provider_calls": {p.name: 0 for p in providers},
@@ -223,7 +274,25 @@ def run_refresh(
             except ValueError:
                 continue
 
+        # Cache age-out: drop artifacts whose intel doc is still fresh within
+        # this kind's TTL so a steady-state run re-queries only new/aged-out
+        # ones. `force` (intel backfill) bypasses the skip. Marking the fresh
+        # ones done drains them from the queue; discovery re-enqueues them next
+        # run, where they're re-checked and skipped again until the TTL lapses.
+        fresh: set[str] = set()
+        if not force:
+            fresh = _fresh_within_ttl(
+                es, cfg, kind, [a.value for a in artifacts],
+                cfg.intel.refresh_ttl_days.for_kind(kind), now=run_started,
+            )
+        if fresh:
+            for value in fresh:
+                db.intel_queue_mark_done(kind, value)
+            stats["skipped_fresh"][kind] = len(fresh)
+
         for artifact in artifacts:
+            if artifact.value in fresh:
+                continue
             results: list[ProviderResult] = []
             any_success = False
             for prov in kind_providers:
@@ -312,11 +381,11 @@ def run_backfill(
 ) -> dict[str, Any]:
     """Force discovery to re-queue every artifact, then refresh.
 
-    Same as `run_refresh` but bypasses the priority filter — useful
-    after wiring up a new provider so existing artifacts get the new
-    provider's coverage. Currently identical to `run_refresh` because
-    discovery already upserts everything in the rollup unconditionally;
-    kept as a separate verb so future scoping (e.g. age-based) has a
-    home that won't break call sites.
+    Same as `run_refresh` but bypasses the per-kind cache TTL
+    (`force=True`) so every artifact is re-queried regardless of how
+    recently it was last refreshed — useful after wiring up a new
+    provider so existing artifacts get the new provider's coverage.
+    Discovery already upserts everything in the rollup unconditionally;
+    the `force` flag is what makes this a true re-query of the whole set.
     """
-    return run_refresh(cfg, secrets, dry_run=dry_run)
+    return run_refresh(cfg, secrets, dry_run=dry_run, force=True)

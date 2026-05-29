@@ -260,6 +260,21 @@ intel:
     domain: "prism.intel.domain"
     hash:   "prism.intel.hash"
 
+  # Per-artifact-kind cache age-out for `intel refresh`, in DAYS. A refresh
+  # skips re-querying any artifact whose intel doc was `last_refreshed` within
+  # this many days, so a steady-state run only looks up new/aged-out artifacts
+  # instead of re-hitting every provider for every known artifact each pass
+  # (which also conserves the rate-limited VirusTotal budget). `0` = always
+  # re-query that kind. `intel refresh --force` and `intel backfill` ignore
+  # these. Tune by verdict volatility: a known-malware hash effectively never
+  # changes, so a long TTL is safe; an IP's reputation can flip, so keep it
+  # shorter.
+  refresh_ttl_days:
+    ip:     7
+    url:    14
+    domain: 14
+    hash:   30
+
   providers:
     tor:
       enabled: true
@@ -304,7 +319,6 @@ intel:
       request_timeout_seconds: 8.0
       daily_budget: 6
       min_inter_call_seconds: 1.0
-      ttl_days: 7
     # AbuseIPDB — abuse-confidence score + report count + ISP. Free
     # tier 1000 checks/day. Requires ABUSEIPDB_API_KEY in .env;
     # auto-skipped when unset.
@@ -315,7 +329,6 @@ intel:
       daily_budget: 900
       min_inter_call_seconds: 0.0
       max_age_days: 90
-      ttl_days: 3
     # M4: URL providers (abuse.ch family — no key, unmetered).
     urlhaus:
       enabled: true
@@ -327,14 +340,12 @@ intel:
       base_url: "https://threatfox-api.abuse.ch/api/v1/"
       request_timeout_seconds: 8.0
       min_inter_call_seconds: 0.5
-      ttl_days: 3
     # #2: hash-kind providers.
     malwarebazaar:
       enabled: true
       base_url: "https://mb-api.abuse.ch/api/v1/"
       request_timeout_seconds: 8.0
       min_inter_call_seconds: 0.5
-      ttl_days: 7
     # VirusTotal public — scaffold, OFF by default. Needs VIRUSTOTAL_API_KEY
     # and enabled: true to run; free tier 4/min, 500/day.
     virustotal_public:
@@ -343,7 +354,6 @@ intel:
       request_timeout_seconds: 10.0
       daily_budget: 450
       min_inter_call_seconds: 16.0
-      ttl_days: 7
 
   # Priority-queue weights. `priority = novelty_w * novelty +
   #                                     low_conf_w * (1 - confidence/10) +

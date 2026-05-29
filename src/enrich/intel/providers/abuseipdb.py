@@ -128,7 +128,9 @@ class AbuseIPDBProvider(Provider):
     def __init__(self, provider_cfg, api_key: str) -> None:
         super().__init__(provider_cfg)
         self.api_key = api_key
-        self.ttl = timedelta(days=int(provider_cfg.ttl_days))
+        # Nominal stamp for the provider block's ttl_expires_at; actual
+        # re-query cadence is governed per-kind by intel.refresh_ttl_days.
+        self.ttl = timedelta(days=1)
         self.rate_limit = RateLimit(
             capacity=10, refill_per_second=10.0,
             daily_budget=int(provider_cfg.daily_budget),

@@ -306,10 +306,12 @@ class GreyNoiseProviderConfig(IntelProviderConfig):
     "10k/month" suggests. Daily ceiling of 6 here gives ~42/week,
     leaving headroom for healthcheck probes plus any retries.
 
-    The 7-day cache TTL is the other half of the throughput model:
-    every artifact resolved by GreyNoise stays resolved for a week,
-    so we can keep growing the corpus and the budget covers it as
-    long as we resolve the 6 highest-novelty new artifacts each day.
+    Re-query cadence is the other half of the throughput model: an
+    artifact already resolved stays resolved until it ages out, so we
+    can keep growing the corpus and the budget covers it as long as we
+    resolve the 6 highest-novelty new artifacts each day. That age-out
+    is now governed centrally by `intel.refresh_ttl_days.ip` (default
+    7d, matching this weekly budget) rather than a per-provider TTL.
 
     A separate constraint: GreyNoise rate-limits short bursts. The
     provider sleeps `min_inter_call_seconds` between calls to stay
@@ -320,10 +322,6 @@ class GreyNoiseProviderConfig(IntelProviderConfig):
     request_timeout_seconds: float = 8.0
     daily_budget: int = 6
     min_inter_call_seconds: float = 1.0
-    # Cache TTL — Community endpoint data changes slowly; 7d matches
-    # the weekly budget cycle. Adjust if you have a paid plan with a
-    # different cadence.
-    ttl_days: int = 7
 
 
 class URLhausProviderConfig(IntelProviderConfig):
@@ -352,7 +350,6 @@ class ThreatFoxProviderConfig(IntelProviderConfig):
     request_timeout_seconds: float = 8.0
     # Gentle throttle — abuse.ch politely accepts steady traffic.
     min_inter_call_seconds: float = 0.5
-    ttl_days: int = 3
 
 
 class MalwareBazaarProviderConfig(IntelProviderConfig):
@@ -366,7 +363,6 @@ class MalwareBazaarProviderConfig(IntelProviderConfig):
     base_url: str = "https://mb-api.abuse.ch/api/v1/"
     request_timeout_seconds: float = 8.0
     min_inter_call_seconds: float = 0.5
-    ttl_days: int = 7
 
 
 class VirusTotalPublicProviderConfig(IntelProviderConfig):
@@ -382,7 +378,6 @@ class VirusTotalPublicProviderConfig(IntelProviderConfig):
     # Free public tier: 500/day. Stay under to leave headroom.
     daily_budget: int = 450
     min_inter_call_seconds: float = 16.0  # 4 req/min ceiling
-    ttl_days: int = 7
 
 
 class AbuseIPDBProviderConfig(IntelProviderConfig):
@@ -394,7 +389,6 @@ class AbuseIPDBProviderConfig(IntelProviderConfig):
     # AbuseIPDB lets you ask "how far back in reports to look" — 90
     # days is their max for the free tier and matches the default UI.
     max_age_days: int = 90
-    ttl_days: int = 3
 
 
 class ISCProviderConfig(IntelProviderConfig):
@@ -460,6 +454,33 @@ class IntelIndexes(BaseModel):
     hash:   str = "prism.intel.hash"
 
 
+class IntelRefreshTTLConfig(BaseModel):
+    """Per-artifact-kind cache age-out for `intel refresh`, in DAYS.
+
+    A refresh skips re-querying any artifact whose intel doc was
+    `last_refreshed` within this many days — so a steady-state refresh only
+    looks up artifacts that are new or have aged out, instead of re-hitting
+    every provider for every known artifact on every run (which also burns the
+    rate-limited VirusTotal budget). `0` disables the skip for that kind
+    (always re-query). `intel backfill` ignores these entirely.
+
+    Tune per kind by how volatile the verdict is: a known-malware hash
+    effectively never changes verdict, so a long TTL is safe; an IP's
+    reputation can flip benign↔malicious, so keep it shorter.
+    """
+    ip:     float = 7.0
+    url:    float = 14.0
+    domain: float = 14.0
+    hash:   float = 30.0
+
+    def for_kind(self, kind: str) -> float:
+        """TTL in days for `kind`; 0.0 (always re-query) for unknown kinds."""
+        return {
+            "ip": self.ip, "url": self.url,
+            "domain": self.domain, "hash": self.hash,
+        }.get(kind, 0.0)
+
+
 class IntelConfig(BaseModel):
     """External threat-intel subsystem.
 
@@ -471,6 +492,8 @@ class IntelConfig(BaseModel):
     indexes: IntelIndexes = Field(default_factory=IntelIndexes)
     providers: IntelProvidersConfig = Field(default_factory=IntelProvidersConfig)
     priority: IntelPriorityConfig = Field(default_factory=IntelPriorityConfig)
+    # Per-kind cache age-out (days). See IntelRefreshTTLConfig.
+    refresh_ttl_days: IntelRefreshTTLConfig = Field(default_factory=IntelRefreshTTLConfig)
     # CIDRs the worker MUST NOT look up against external feeds. RFC1918
     # is already filtered at canonicalisation time (artifact.py); list
     # the operator's egress + research peer CIDRs here.

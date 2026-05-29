@@ -44,8 +44,9 @@ def reclassify_greynoise(block: dict[str, Any]) -> dict[str, Any]:
     `riot`, `name` — everything the classifier needs. We run the
     current `classify_greynoise` over it and overwrite the derived
     fields. `structured` and `raw` are unchanged; `fetched_at` and
-    `ttl_expires_at` are preserved so the worker's freshness logic
-    still treats the doc correctly.
+    `ttl_expires_at` are preserved as provenance (re-query freshness is
+    governed per-kind by `intel.refresh_ttl_days`, keyed on the doc's
+    `last_refreshed` — not these per-provider stamps).
 
     Idempotent — running reclassify twice gives the same result.
     Returns the updated block (does not mutate the input).

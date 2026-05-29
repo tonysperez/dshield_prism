@@ -114,7 +114,9 @@ class ThreatFoxProvider(Provider):
 
     def __init__(self, provider_cfg, auth_key: Optional[str] = None) -> None:
         super().__init__(provider_cfg)
-        self.ttl = timedelta(days=int(provider_cfg.ttl_days))
+        # Nominal stamp for the provider block's ttl_expires_at; actual
+        # re-query cadence is governed per-kind by intel.refresh_ttl_days.
+        self.ttl = timedelta(days=1)
         self.rate_limit = RateLimit(
             capacity=10, refill_per_second=2.0, daily_budget=None,
         )

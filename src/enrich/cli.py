@@ -757,9 +757,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true",
         help="Discover + queue without calling providers or writing intel docs",
     )
+    p_intel_refresh.add_argument(
+        "--force", action="store_true",
+        help="Ignore the per-kind cache TTL (intel.refresh_ttl_days) and "
+             "re-query every artifact, not just new/aged-out ones",
+    )
     p_intel_backfill = intel_sub.add_parser(
         "backfill",
-        help="Force a full re-scan over the corpus (same as refresh for milestone 1)",
+        help="Re-query every artifact, ignoring the per-kind cache TTL "
+             "(use after wiring a new provider)",
     )
     p_intel_backfill.add_argument("--dry-run", action="store_true")
     # intel reapply-rules — re-derive each intel doc's verdicts from its
@@ -1152,7 +1158,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.verb == "intel":
         from .intel.refresh import run_backfill, run_refresh
         if args.subject == "refresh":
-            stats = run_refresh(cfg, secrets, dry_run=args.dry_run)
+            stats = run_refresh(cfg, secrets, dry_run=args.dry_run, force=args.force)
         elif args.subject == "backfill":
             stats = run_backfill(cfg, secrets, dry_run=args.dry_run)
         elif args.subject == "reapply-rules":
