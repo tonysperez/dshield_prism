@@ -735,6 +735,35 @@ class ShapeDedupConfig(BaseModel):
     require_known_intent: bool = True
 
 
+class AnalystIndexes(BaseModel):
+    artifact_rules: str = "prism.analyst.artifact_rules"
+
+
+class AnalystRuleConfig(BaseModel):
+    """Analyst-authored artifact extraction rules (ROADMAP #5).
+
+    Runtime tunables for the rule subsystem. Index name lives under
+    `indexes.artifact_rules`. The forward-application path consults active
+    rules once at the start of each worker run (CLI verbs are one-shot, so
+    no live cache-invalidation is needed); the console POST handler reads
+    rules per request.
+    """
+    enabled: bool = True
+    indexes: AnalystIndexes = Field(default_factory=AnalystIndexes)
+    scan_batch_size: int = 100
+    # Cap matches per command doc to bound the analyst_artifacts nested array.
+    max_match_per_doc: int = 50
+    # POST scans inline when affected_estimate < threshold; else queues for
+    # the next backward cycle's `apply-artifact-rules` run.
+    sync_scan_doc_threshold: int = 5000
+    # Pattern compile guard (regex match_type only).
+    regex_compile_timeout_ms: int = 50
+    # Dry-run sample size for catastrophic-pattern probe.
+    regex_sample_size: int = 500
+    # Hard ceiling on retroactive scan output per rule.
+    max_match_count_per_rule: int = 50000
+
+
 class AppConfig(BaseModel):
     elasticsearch: ESConfig
     llm: LLMConfig
@@ -748,6 +777,7 @@ class AppConfig(BaseModel):
     intel: IntelConfig = Field(default_factory=IntelConfig)
     findings: FindingsConfig = Field(default_factory=FindingsConfig)
     command_shape_dedup: ShapeDedupConfig = Field(default_factory=ShapeDedupConfig)
+    analyst: AnalystRuleConfig = Field(default_factory=AnalystRuleConfig)
 
 
 class Secrets(BaseSettings):

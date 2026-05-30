@@ -478,6 +478,20 @@ main {
   color: var(--accent);
 }
 
+/* ROADMAP #5 — analyst-authored artifact chips. Distinguished colour so a
+   flagged command/session is obvious at a glance vs. auto-extracted IOCs. */
+.analyst-chip {
+  background: rgba(255, 196, 0, 0.10);
+  color: #ffd86b;
+  border: 1px solid rgba(255, 196, 0, 0.30);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: ui-mono, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.analyst-chip strong { color: #ffe9a3; font-weight: 600; }
+.analyst-artifacts-section .section-head { color: #ffd86b; }
+
 /* Graph node hover tooltip — small DOM overlay positioned at the cursor. */
 .graph-hover-tooltip {
   position: absolute;
@@ -662,6 +676,23 @@ main {
   color: var(--accent);
 }
 .modal-footer button.modal-save:hover { background: #1e3a8a88; }
+
+/* ROADMAP #5 — floating "Create artifact rule" button. Surfaces only when
+   the analyst has text selected inside #detail-pane; positioned in JS. */
+.rule-floater {
+  position: fixed;
+  z-index: 250;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: #1e3a8a;
+  border: 1px solid #4cc1ff77;
+  border-radius: 4px;
+  color: var(--accent);
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+}
+.rule-floater:hover { background: #2a4ca8; }
+.rule-floater.hidden { display: none; }
 
 .suggestions {
   position: absolute;

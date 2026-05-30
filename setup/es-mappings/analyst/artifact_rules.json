@@ -1,0 +1,24 @@
+{
+  "_comment": "Analyst-authored artifact extraction rules (ROADMAP #5). One doc per rule, keyed on rule_id (arule-<16hex>). Soft-delete via active=false; the doc survives so historical match attribution stays valid. `match_count_estimate` is set by the create-time dry-run and refreshed by each retroactive scan. `refresh_interval: 1s` so a freshly created rule shows up on the management page without a long wait.",
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "1s"
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "rule_id":              { "type": "keyword" },
+      "kind":                 { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 64 } } },
+      "match_type":           { "type": "keyword" },
+      "pattern":              { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 1024 } } },
+      "case_sensitive":       { "type": "boolean" },
+      "created_by":           { "type": "keyword" },
+      "created_at":           { "type": "date" },
+      "notes":                { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 1024 } } },
+      "active":               { "type": "boolean" },
+      "match_count_estimate": { "type": "long" },
+      "last_scanned_at":      { "type": "date" }
+    }
+  }
+}

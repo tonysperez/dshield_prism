@@ -74,6 +74,7 @@ _REENRICH_SCRIPT = (
     "en.llm_config_hash = params.llm_config_hash;"
     "en.embed_config_hash = params.embed_config_hash;"
     "en.embedding = params.embedding;"
+    "en.analyst_artifacts = params.analyst_artifacts;"
     "if (ctx._source.threat == null) { ctx._source.threat = [:]; }"
     "if (ctx._source.threat.tactic == null) { ctx._source.threat.tactic = [:]; }"
     "if (ctx._source.threat.technique == null) { ctx._source.threat.technique = [:]; }"
@@ -98,6 +99,7 @@ _ESCALATE_SCRIPT = (
     "en.triage_reasons = params.triage_reasons;"
     "en.notes = params.notes;"
     "en.local_fallback = params.local_fallback;"
+    "en.analyst_artifacts = params.analyst_artifacts;"
     "if (ctx._source.threat == null) { ctx._source.threat = [:]; }"
     "if (ctx._source.threat.tactic == null) { ctx._source.threat.tactic = [:]; }"
     "if (ctx._source.threat.technique == null) { ctx._source.threat.technique = [:]; }"
@@ -158,6 +160,7 @@ _REENRICH_INHERIT_SCRIPT = (
     "en.llm_config_hash = params.llm_config_hash;"
     "en.embed_config_hash = params.embed_config_hash;"
     "en.embedding = params.embedding;"
+    "en.analyst_artifacts = params.analyst_artifacts;"
     "if (en.shape == null) { en.shape = [:]; }"
     "en.shape.hash = params.shape_hash;"
     "en.shape.role = 'child';"
@@ -323,6 +326,7 @@ def _build_ecs_doc(
     notes: str = "",
     local_fallback: Optional[dict] = None,
     shape: Optional[dict] = None,
+    analyst_artifacts: Optional[list[dict]] = None,
 ) -> dict:
     enrichment_block = {
         "intent": intent,
@@ -344,6 +348,11 @@ def _build_ecs_doc(
         enrichment_block["local_fallback"] = local_fallback
     if shape:
         enrichment_block["shape"] = shape
+    if analyst_artifacts:
+        # Analyst-authored rule matches (ROADMAP #5). Empty list omitted so
+        # docs without rule hits stay terse; the field is dynamic-strict
+        # nested so re-stamping is additive.
+        enrichment_block["analyst_artifacts"] = analyst_artifacts
     return {
         "@timestamp": now,
         "event": {
@@ -837,6 +846,13 @@ def run_enrich(cfg: AppConfig, secrets: Secrets, dry_run: bool = False, no_cloud
     commands_idx = cfg.elasticsearch.indexes.cowrie.commands
     events_idx = cfg.elasticsearch.indexes.cowrie.sessions_raw
 
+    # Analyst-authored artifact rules (ROADMAP #5). Loaded once per run;
+    # cleanly empty when the subsystem is disabled or no rules exist.
+    from ...analyst.artifact_rules import apply_rules as _apply_rules
+    from ...analyst.artifact_rules import load_active_rules as _load_rules
+    analyst_rules = _load_rules(es, cfg)
+    analyst_cap = cfg.analyst.max_match_per_doc
+
     # Auto-invalidating cache key components. Empty strings when the
     # toggle is off — the cache then behaves like the pre-#7 key for
     # this run. ROADMAP issue #7.
@@ -1098,6 +1114,7 @@ def run_enrich(cfg: AppConfig, secrets: Secrets, dry_run: bool = False, no_cloud
                 # Inherit structural fields, but pull IOCs from THIS
                 # command's literals via the regex extractor.
                 indicators = _build_indicators(extract_iocs_regex(g["command"]))
+                analyst_artifacts = _apply_rules(g["command"], analyst_rules, cap=analyst_cap)
 
                 shape_block = {
                     "hash": sh,
@@ -1130,6 +1147,7 @@ def run_enrich(cfg: AppConfig, secrets: Secrets, dry_run: bool = False, no_cloud
                     indicators=indicators,
                     embedding=embedding,
                     shape=shape_block,
+                    analyst_artifacts=analyst_artifacts,
                 )
                 actions.append({"_op_type": "index", "_id": h, "_source": doc})
                 # Stamp the child cache row with the parent's llm hash so
@@ -1305,6 +1323,7 @@ def run_enrich(cfg: AppConfig, secrets: Secrets, dry_run: bool = False, no_cloud
                     "confidence_at_link": int(confidence),
                 }
 
+            analyst_artifacts = _apply_rules(g["command"], analyst_rules, cap=analyst_cap)
             doc = _build_ecs_doc(
                 now=now,
                 short_hash=h,
@@ -1331,6 +1350,7 @@ def run_enrich(cfg: AppConfig, secrets: Secrets, dry_run: bool = False, no_cloud
                 notes=notes,
                 local_fallback=local_fallback_doc,
                 shape=shape_block_canon,
+                analyst_artifacts=analyst_artifacts,
             )
             actions.append({"_op_type": "index", "_id": h, "_source": doc})
             if doc_provider in ("local", "claude"):
@@ -1496,6 +1516,13 @@ def run_escalate(
     commands_idx = cfg.elasticsearch.indexes.cowrie.commands
     events_idx = cfg.elasticsearch.indexes.cowrie.sessions_raw
 
+    # Analyst rules — re-applied here so a cloud-escalated doc carries the
+    # same `analyst_artifacts` block the local pass would have written.
+    from ...analyst.artifact_rules import apply_rules as _apply_rules
+    from ...analyst.artifact_rules import load_active_rules as _load_rules
+    analyst_rules = _load_rules(es, cfg)
+    analyst_cap = cfg.analyst.max_match_per_doc
+
     cooc_cfg = cfg.cooccurrence
     total_sessions = (
         _fetch_total_session_count(es, events_idx) if cooc_cfg.enabled else 0
@@ -1589,6 +1616,7 @@ def run_escalate(
             continue
 
         stats["cloud_ok"] += 1
+        analyst_artifacts = _apply_rules(command, analyst_rules, cap=analyst_cap)
         actions.append({
             "_op_type": "update",
             "_id": doc_id,
@@ -1606,6 +1634,7 @@ def run_escalate(
                     "tactics": cloud_parsed.tactics,
                     "techniques": cloud_parsed.techniques,
                     "indicators": _build_indicators(cloud_parsed.iocs.model_dump()),
+                    "analyst_artifacts": analyst_artifacts,
                 },
             },
         })
@@ -2032,6 +2061,13 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
     commands_idx = cfg.elasticsearch.indexes.cowrie.commands
     events_idx = cfg.elasticsearch.indexes.cowrie.sessions_raw
 
+    # Analyst rules — re-stamped on every touched doc so the historical
+    # corpus picks up rules that landed after enrichment.
+    from ...analyst.artifact_rules import apply_rules as _apply_rules
+    from ...analyst.artifact_rules import load_active_rules as _load_rules
+    analyst_rules = _load_rules(es, cfg)
+    analyst_cap = cfg.analyst.max_match_per_doc
+
     live_llm_hash = compute_llm_config_hash(cfg)
     live_embed_hash = compute_embed_config_hash(cfg)
     cached_llm_hashes: dict[str, str] = db.get_cached_llm_hashes()
@@ -2143,6 +2179,7 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
                     stats["embed_failed"] += 1
                     continue
                 indicators = _build_indicators(extract_iocs_regex(doc["command_line"]))
+                analyst_artifacts = _apply_rules(doc["command_line"], analyst_rules, cap=analyst_cap)
                 actions.append({
                     "_op_type": "update",
                     "_id": doc["doc_id"],
@@ -2159,6 +2196,7 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
                             "tactics": parent_parsed.tactics,
                             "techniques": parent_parsed.techniques,
                             "indicators": indicators,
+                            "analyst_artifacts": analyst_artifacts,
                             "shape_hash": sh,
                             "functional_parent": parent["_id"],
                             "linked_at": now,
@@ -2220,6 +2258,7 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
                 continue
 
             indicators = _build_indicators(parsed.iocs.model_dump())
+            analyst_artifacts = _apply_rules(doc["command_line"], analyst_rules, cap=analyst_cap)
             actions.append({
                 "_op_type": "update",
                 "_id": doc["doc_id"],
@@ -2237,6 +2276,7 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
                         "tactics": parsed.tactics,
                         "techniques": parsed.techniques,
                         "indicators": indicators,
+                        "analyst_artifacts": analyst_artifacts,
                     },
                 },
             })
@@ -2379,6 +2419,7 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
                 stats["children_embed_failed"] += 1
                 continue
             indicators = _build_indicators(extract_iocs_regex(doc["command_line"]))
+            analyst_artifacts = _apply_rules(doc["command_line"], analyst_rules, cap=analyst_cap)
 
             actions.append({
                 "_op_type": "update",
@@ -2396,6 +2437,7 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
                         "tactics": parent_parsed.tactics,
                         "techniques": parent_parsed.techniques,
                         "indicators": indicators,
+                        "analyst_artifacts": analyst_artifacts,
                         "shape_hash": sh,
                         "functional_parent": parent["_id"],
                         "linked_at": now,

@@ -91,6 +91,12 @@ ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/
 # canonical schedule.
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml mine findings
 
+# --- Step 11: apply analyst-authored artifact rules retroactively.
+# Picks up rules that landed since the last backward pass (POST inline
+# scans the small-corpus case; this catches the queued large-corpus and
+# multi-rule-edit cases). Soft-fail. ROADMAP #5.
+ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml apply-artifact-rules
+
 StandardOutput=journal
 StandardError=journal
 

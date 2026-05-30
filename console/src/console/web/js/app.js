@@ -456,6 +456,95 @@
     const consumed = new Set();
     const s = d.summary || {};
 
+    // -- ROADMAP #5: analyst-authored artifact hits on this command -------
+    // Rendered first so a flagged command is obvious at a glance. Each chip
+    // shows `kind: value` and is pivotable to a (future) artifact-rule
+    // detail page; for now the chip surfaces the rule_id in the title.
+    if (Array.isArray(s.analyst_artifacts) && s.analyst_artifacts.length > 0) {
+      consumed.add("analyst_artifacts");
+      const section = document.createElement("div");
+      section.className = "detail-section analyst-artifacts-section";
+      const head = document.createElement("div");
+      head.className = "section-head";
+      head.textContent = `Analyst artifacts (${s.analyst_artifacts.length})`;
+      section.appendChild(head);
+      const row = document.createElement("div");
+      row.className = "chip-row";
+      for (const a of s.analyst_artifacts) {
+        const chip = document.createElement("span");
+        chip.className = "chip analyst-chip";
+        chip.title = `rule ${a.rule_id || "?"} (${a.match_type || "?"})`;
+        const k = escapeHtml(String(a.kind || "?"));
+        const v = escapeHtml(String(a.value || ""));
+        const vTrunc = v.length > 60 ? v.slice(0, 57) + "…" : v;
+        chip.innerHTML = `<strong>${k}</strong>: ${vTrunc}`;
+        row.appendChild(chip);
+      }
+      section.appendChild(row);
+      container.appendChild(section);
+    } else if (Array.isArray(s.analyst_artifacts)) {
+      // empty array — still consume so the kv loop doesn't print `[]`
+      consumed.add("analyst_artifacts");
+    }
+
+    // -- ROADMAP #5: session-level artifact union (post-rollup) -----------
+    // Shown on session details. `analyst:` entries surface first since
+    // they're the curated signal; the rest are the auto-extracted IOC
+    // namespace strings (ip:, domain:, url:, file:, hash:).
+    if (Array.isArray(s.artifact_set) && s.artifact_set.length > 0) {
+      consumed.add("artifact_set");
+      const analyst = s.artifact_set.filter(x => x.startsWith("analyst:"));
+      const other = s.artifact_set.filter(x => !x.startsWith("analyst:"));
+      if (analyst.length > 0) {
+        const section = document.createElement("div");
+        section.className = "detail-section analyst-artifacts-section";
+        const head = document.createElement("div");
+        head.className = "section-head";
+        head.textContent = `Analyst artifacts (${analyst.length})`;
+        section.appendChild(head);
+        const row = document.createElement("div");
+        row.className = "chip-row";
+        for (const a of analyst) {
+          // Format: `analyst:<kind>:<value>` — split on the first two `:`s
+          // so values containing `:` stay intact.
+          const rest = a.slice("analyst:".length);
+          const colonIdx = rest.indexOf(":");
+          const kind = colonIdx >= 0 ? rest.slice(0, colonIdx) : rest;
+          const value = colonIdx >= 0 ? rest.slice(colonIdx + 1) : "";
+          const chip = document.createElement("span");
+          chip.className = "chip analyst-chip";
+          chip.title = a;
+          const vTrunc = value.length > 60 ? value.slice(0, 57) + "…" : value;
+          chip.innerHTML = `<strong>${escapeHtml(kind)}</strong>: ${escapeHtml(vTrunc)}`;
+          row.appendChild(chip);
+        }
+        section.appendChild(row);
+        container.appendChild(section);
+      }
+      if (other.length > 0) {
+        const section = document.createElement("div");
+        section.className = "detail-section";
+        const head = document.createElement("div");
+        head.className = "section-head";
+        head.textContent = `Other artifacts (${other.length})`;
+        section.appendChild(head);
+        const row = document.createElement("div");
+        row.className = "chip-row";
+        for (const a of other.slice(0, 40)) {
+          const chip = document.createElement("span");
+          chip.className = "chip";
+          chip.title = a;
+          const trunc = a.length > 60 ? a.slice(0, 57) + "…" : a;
+          chip.textContent = trunc;
+          row.appendChild(chip);
+        }
+        section.appendChild(row);
+        container.appendChild(section);
+      }
+    } else if (Array.isArray(s.artifact_set)) {
+      consumed.add("artifact_set");
+    }
+
     // -- Feature 1+2: list of playbooks this IP ran ------------------------
     if (Array.isArray(s.playbooks) && s.playbooks.length > 0) {
       consumed.add("playbooks");

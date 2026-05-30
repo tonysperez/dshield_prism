@@ -125,6 +125,15 @@
                       "inherited_from_model":  { "type": "keyword" },
                       "confidence_at_link":    { "type": "byte" }
                     }
+                  },
+                  "analyst_artifacts": {
+                    "type": "nested",
+                    "properties": {
+                      "rule_id":    { "type": "keyword" },
+                      "kind":       { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 64 } } },
+                      "value":      { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 1024 } } },
+                      "match_type": { "type": "keyword" }
+                    }
                   }
                 }
               }

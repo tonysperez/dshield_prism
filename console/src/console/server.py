@@ -51,6 +51,15 @@ class FindingStatusRequest(BaseModel):
     note: str = ""
 
 
+class ArtifactRuleRequest(BaseModel):
+    """POST body for /api/artifact-rule (ROADMAP #5)."""
+    kind: str
+    match_type: str           # literal | substring | regex
+    pattern: str
+    case_sensitive: bool = False
+    notes: str = ""
+
+
 def build_app(config_path: str | None = None) -> FastAPI:
     cfg = load_config(config_path)
     secrets = load_secrets(config_path)
@@ -138,6 +147,14 @@ def build_app(config_path: str | None = None) -> FastAPI:
         page = WEB_DIR / "artifact_hash.html"
         if not page.exists():
             raise HTTPException(500, "web/artifact_hash.html missing")
+        return FileResponse(page)
+
+    @app.get("/artifact-rules")
+    def artifact_rules_page() -> FileResponse:
+        # Analyst-authored artifact-rule management page (ROADMAP #5).
+        page = WEB_DIR / "artifact_rules.html"
+        if not page.exists():
+            raise HTTPException(500, "web/artifact_rules.html missing")
         return FileResponse(page)
 
     # ------------------------------------------------------------------
@@ -392,6 +409,146 @@ def build_app(config_path: str | None = None) -> FastAPI:
             log.exception("artifact_hash_api failed")
             raise HTTPException(500, f"artifact lookup failed: {exc}")
         return JSONResponse(data)
+
+    # ------------------------------------------------------------------
+    # Analyst-authored artifact rules (ROADMAP #5)
+    # ------------------------------------------------------------------
+    # Pipeline cfg cached so the rule subsystem's threshold knobs read from
+    # the same config object the worker uses. Re-uses the lazy loader
+    # established for /api/compare.
+    #
+    # POST scans synchronously when affected_estimate < threshold; otherwise
+    # returns scan_status=queued and the next backward cycle finishes the
+    # work (the systemd unit runs `apply-artifact-rules` after `mine
+    # findings`).
+
+    @app.post("/api/artifact-rule", status_code=201)
+    def create_artifact_rule_api(body: ArtifactRuleRequest) -> JSONResponse:
+        from enrich.analyst import artifact_rules as ar
+        from enrich.analyst.scan import run_apply_artifact_rules
+        pipeline_cfg = _get_pipeline_cfg()
+        # Compile + sample probe BEFORE writing the doc so a catastrophic
+        # regex (e.g. `.*`) is rejected without polluting the index.
+        try:
+            sample_size, matched = ar.sample_probe(es, pipeline_cfg, rule_dict={
+                "kind": body.kind, "match_type": body.match_type,
+                "pattern": body.pattern, "case_sensitive": body.case_sensitive,
+            })
+        except ValueError as exc:
+            raise HTTPException(400, f"pattern rejected: {exc}")
+        if ar.is_catastrophic(sample_size, matched):
+            raise HTTPException(400, (
+                f"pattern matches {matched}/{sample_size} sample commands "
+                f"(>50%) — likely catastrophic, refusing to store."
+            ))
+        try:
+            rule = ar.create_rule(
+                es, pipeline_cfg,
+                kind=body.kind, match_type=body.match_type,
+                pattern=body.pattern, case_sensitive=body.case_sensitive,
+                notes=body.notes, created_by="console",
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except Exception as exc:                          # pragma: no cover
+            log.exception("create_artifact_rule failed")
+            raise HTTPException(500, f"rule store failed: {exc}")
+
+        # Sync-cap-then-queue scan.
+        affected = ar.estimate_affected(es, pipeline_cfg, rule_dict=rule)
+        threshold = int(pipeline_cfg.analyst.sync_scan_doc_threshold)
+        scan_payload: dict[str, Any] = {
+            "rule": rule, "affected_estimate": affected,
+        }
+        if affected < threshold:
+            try:
+                from enrich.config import load_secrets as _load_secrets
+                pipeline_secrets = _load_secrets(config_path)
+            except Exception:
+                pipeline_secrets = None
+            if pipeline_secrets is not None:
+                try:
+                    stats = run_apply_artifact_rules(
+                        pipeline_cfg, pipeline_secrets,
+                        rule_ids=[rule["rule_id"]], dry_run=False,
+                    )
+                    if stats.get("error"):
+                        # Iteration aborted (e.g. an ES query rejection). Don't
+                        # advertise a "matched 0" result that's actually a
+                        # silent failure.
+                        scan_payload["scan_status"] = "failed"
+                        scan_payload["scan_error"] = stats["error"]
+                        scan_payload["scan_stats"] = stats
+                    else:
+                        scan_payload["scan_status"] = "complete"
+                        scan_payload["scan_stats"] = stats
+                except Exception as exc:                  # pragma: no cover
+                    log.exception("inline scan failed")
+                    scan_payload["scan_status"] = "failed"
+                    scan_payload["scan_error"] = str(exc)
+            else:
+                scan_payload["scan_status"] = "queued"
+        else:
+            scan_payload["scan_status"] = "queued"
+        return JSONResponse(scan_payload, status_code=201)
+
+    @app.get("/api/artifact-rules")
+    def list_artifact_rules_api(
+        active: Optional[bool] = Query(None),
+        kind: Optional[str] = Query(None),
+        created_by: Optional[str] = Query(None),
+        size: int = Query(100, ge=1, le=500),
+        frm: int = Query(0, ge=0),
+    ) -> JSONResponse:
+        from enrich.analyst import artifact_rules as ar
+        data = ar.list_rules(
+            es, _get_pipeline_cfg(),
+            active=active, kind=kind, created_by=created_by,
+            size=size, frm=frm,
+        )
+        return JSONResponse(data)
+
+    @app.get("/api/artifact-rule/{rule_id}")
+    def get_artifact_rule_api(rule_id: str) -> JSONResponse:
+        from enrich.analyst import artifact_rules as ar
+        rule = ar.get_rule(es, _get_pipeline_cfg(), rule_id)
+        if rule is None:
+            raise HTTPException(404, f"rule not found: {rule_id}")
+        return JSONResponse(rule)
+
+    @app.delete("/api/artifact-rule/{rule_id}")
+    def soft_delete_artifact_rule_api(rule_id: str) -> JSONResponse:
+        from enrich.analyst import artifact_rules as ar
+        try:
+            updated = ar.set_active(es, _get_pipeline_cfg(), rule_id, False)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc))
+        return JSONResponse(updated)
+
+    @app.post("/api/artifact-rule/{rule_id}/reactivate")
+    def reactivate_artifact_rule_api(rule_id: str) -> JSONResponse:
+        from enrich.analyst import artifact_rules as ar
+        try:
+            updated = ar.set_active(es, _get_pipeline_cfg(), rule_id, True)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc))
+        return JSONResponse(updated)
+
+    @app.get("/api/artifact-kinds")
+    def list_artifact_kinds_api() -> JSONResponse:
+        """Terms agg on `kind.keyword` for the modal's kind selector
+        (kind-sprawl pressure: existing kinds show as suggestions)."""
+        idx = _get_pipeline_cfg().analyst.indexes.artifact_rules
+        try:
+            r = es.search(
+                index=idx, size=0,
+                aggs={"kinds": {"terms": {"field": "kind.keyword", "size": 50}}},
+            )
+            buckets = (r.get("aggregations") or {}).get("kinds", {}).get("buckets") or []
+            kinds = [{"kind": b["key"], "count": int(b["doc_count"])} for b in buckets]
+        except Exception:
+            kinds = []
+        return JSONResponse({"kinds": kinds})
 
     # ------------------------------------------------------------------
     # Compare clusters (interactive: "why didn't these two playbooks merge?")
@@ -927,6 +1084,11 @@ def _detail_session(sid: str, doc: dict) -> IOCDetail:
         "playbook_name": senr.get("playbook_name"),
         "cluster_id": (senr.get("cluster") or {}).get("id"),
         "is_outlier": (senr.get("cluster") or {}).get("is_outlier"),
+        # Session-level artifact union. Rendered as a chip section in the
+        # drawer with `analyst:` entries grouped first. Populated by
+        # `rollup sessions`; until next rollup pass, analyst stamps on
+        # member commands aren't reflected here.
+        "artifact_set": senr.get("artifact_set") or [],
     }
     return IOCDetail(type="session", id=sid, title=f"session {sid}", summary=summary, raw=src)
 
@@ -962,6 +1124,9 @@ def _detail_command(sha: str, doc: dict) -> IOCDetail:
         "functional_parent": shape.get("functional_parent"),
         "inherited_from_model": shape.get("inherited_from_model"),
         "confidence_at_link": shape.get("confidence_at_link"),
+        # Analyst-authored artifact hits (ROADMAP #5). Rendered as a chip
+        # section above the kv table; the kv loop skips this key.
+        "analyst_artifacts": enr.get("analyst_artifacts") or [],
     }
     return IOCDetail(type="command", id=sha, title=f"command {sha[:12]}…", summary=summary, raw=src)
 

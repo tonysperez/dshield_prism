@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>DShield Artifact Rules</title>
+  <link rel="stylesheet" href="/static/css/app.css" />
+  <style>
+    /* ROADMAP #5 — analyst-authored artifact-rule management page.
+       Mirrors findings.html shape. */
+    #rules-main {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 16px 20px 60px;
+    }
+    .rules-header {
+      display: flex; align-items: baseline; justify-content: space-between;
+      gap: 12px; margin-bottom: 16px; flex-wrap: wrap;
+    }
+    .rules-title { font-size: 14px; font-weight: 600; }
+    .rules-title small {
+      color: #6b7494; font-weight: 400; font-size: 11px; margin-left: 8px;
+    }
+    .rules-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .rules-toolbar a, .rules-toolbar button {
+      font-size: 11px; padding: 4px 10px; border-radius: 4px;
+      border: 1px solid #25324c; background: #0e1e35; color: #b9c2db;
+      cursor: pointer; text-decoration: none;
+    }
+    .rules-toolbar a:hover, .rules-toolbar button:hover { background: #1a2d4e; }
+    .rules-filters {
+      display: flex; gap: 8px; flex-wrap: wrap;
+      margin-bottom: 8px; align-items: center;
+    }
+    .rules-chip {
+      font-size: 11px; font-weight: 600; color: #b9c2db;
+      background: #0e1e35; border: 1px solid #25324c;
+      border-radius: 999px; padding: 3px 11px;
+      cursor: pointer; user-select: none;
+    }
+    .rules-chip.active { color: #4cc1ff; border-color: #4cc1ff80; background: #0a1929; }
+    table.rules-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    table.rules-table th, table.rules-table td {
+      padding: 6px 10px; text-align: left;
+      border-bottom: 1px solid #1a2440;
+    }
+    table.rules-table th {
+      color: #6b7494; font-weight: 600; text-transform: uppercase;
+      font-size: 10px; letter-spacing: 0.5px;
+    }
+    table.rules-table td.pattern { font-family: ui-monospace, monospace; word-break: break-all; }
+    table.rules-table td.num { text-align: right; }
+    table.rules-table td.actions button {
+      font-size: 10px; padding: 2px 8px; margin-right: 4px;
+      background: #0e1e35; border: 1px solid #25324c; color: #b9c2db;
+      border-radius: 3px; cursor: pointer;
+    }
+    table.rules-table td.actions button:hover { background: #1a2d4e; }
+    table.rules-table tr.inactive { opacity: 0.5; }
+    .rules-empty { color: #4a5470; font-style: italic; padding: 16px 0; }
+    .ar-badge {
+      display: inline-block; padding: 1px 6px; border-radius: 3px;
+      font-size: 10px; font-weight: 600;
+    }
+    .ar-badge-active { color: #4ade80; background: #064e3b; }
+    .ar-badge-inactive { color: #94a3b8; background: #1a2440; }
+  </style>
+</head>
+<body>
+  <header style="display:flex; align-items:center; padding:8px 16px; border-bottom:1px solid #1a2440; gap:12px;">
+    <h1 style="font-size:14px; margin:0;">DShield Artifact Rules</h1>
+    <small style="color:#6b7494;">analyst-authored extraction (ROADMAP #5)</small>
+    <span style="flex:1;"></span>
+    <a href="/" style="font-size:11px; color:#4cc1ff;">← Findings</a>
+    <a href="/graph" style="font-size:11px; color:#4cc1ff;">Graph</a>
+  </header>
+
+  <main id="rules-main">
+    <div class="rules-header">
+      <div class="rules-title">
+        Rules <small id="rules-count">…</small>
+      </div>
+      <div class="rules-toolbar">
+        <button type="button" id="export-json-btn">Export as JSON</button>
+      </div>
+    </div>
+
+    <div class="rules-filters">
+      <span style="color:#6b7494; font-size:11px;">show:</span>
+      <span class="rules-chip active" data-filter="active">active</span>
+      <span class="rules-chip" data-filter="inactive">inactive</span>
+      <span class="rules-chip" data-filter="all">all</span>
+    </div>
+
+    <div id="rules-table-wrap">
+      <p class="rules-empty">loading…</p>
+    </div>
+  </main>
+
+  <script src="/static/js/artifact_rules.js"></script>
+</body>
+</html>

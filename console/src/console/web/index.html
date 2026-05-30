@@ -208,8 +208,65 @@
     </div>
   </div>
 
+  <!-- Highlight-to-create floating button (ROADMAP #5). Appears when the
+       analyst selects text inside the detail pane; click opens the
+       artifact-rule modal pre-populated with the selection. -->
+  <button type="button" id="create-rule-floater" class="rule-floater hidden">
+    + Create artifact rule
+  </button>
+
+  <!-- Artifact-rule create modal (ROADMAP #5) -->
+  <div id="artifact-rule-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="artifact-rule-title">
+    <div class="modal-card" role="document">
+      <header class="modal-header">
+        <h2 id="artifact-rule-title">Create artifact rule</h2>
+        <button type="button" class="modal-close" id="artifact-rule-close" aria-label="close">×</button>
+      </header>
+      <section class="modal-body">
+        <p class="setting-hint">
+          Declare a value as an artifact so every other session that contains it
+          is tagged automatically. The retroactive scan runs inline for small
+          rule footprints and queues for the next backward cycle otherwise.
+        </p>
+        <label class="setting-row">
+          <span style="min-width:90px;">Kind</span>
+          <input type="text" id="ar-kind" list="ar-kind-options" placeholder="path | useragent | build_tag | …" />
+          <datalist id="ar-kind-options"></datalist>
+        </label>
+        <label class="setting-row">
+          <span style="min-width:90px;">Match type</span>
+          <select id="ar-match-type">
+            <option value="substring" selected>substring (anywhere)</option>
+            <option value="literal">literal (whole token)</option>
+            <option value="regex">regex</option>
+          </select>
+        </label>
+        <label class="setting-row">
+          <span style="min-width:90px;">Pattern</span>
+          <input type="text" id="ar-pattern" style="flex:1; min-width:260px;" />
+        </label>
+        <label class="setting-row">
+          <input type="checkbox" id="ar-case-sensitive" />
+          <span>Case-sensitive</span>
+        </label>
+        <label class="setting-row" style="align-items:flex-start;">
+          <span style="min-width:90px;">Notes</span>
+          <textarea id="ar-notes" rows="2" style="flex:1; min-width:260px;"></textarea>
+        </label>
+        <div class="setting-row">
+          <span id="ar-status" class="setting-status"></span>
+        </div>
+      </section>
+      <footer class="modal-footer">
+        <button type="button" id="ar-cancel" class="modal-cancel">Cancel</button>
+        <button type="button" id="ar-submit" class="modal-save">Create &amp; scan</button>
+      </footer>
+    </div>
+  </div>
+
   <script src="/static/js/graph.js"></script>
   <script src="/static/js/timeline.js"></script>
   <script src="/static/js/app.js"></script>
+  <script src="/static/js/artifact_rule_modal.js"></script>
 </body>
 </html>

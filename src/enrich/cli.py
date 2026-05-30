@@ -116,6 +116,11 @@ _LAYER_MAPPINGS = {
         "campaign":  "setup/es-mappings/lifecycle/campaign.json",
         "source_ip": "setup/es-mappings/lifecycle/source_ip.json",
     },
+    # Analyst-authored artifact extraction rules (ROADMAP #5). One doc
+    # per rule; soft-delete via active=false. CRUD via the console.
+    "analyst": {
+        "artifact_rules": "setup/es-mappings/analyst/artifact_rules.json",
+    },
 }
 
 
@@ -436,6 +441,8 @@ def _resolve_index_for_layer(cfg, source: str, layer: str) -> str:
             "campaign":  f.campaign_lifecycle,
             "source_ip": f.source_ip_lifecycle,
         }[layer]
+    if source == "analyst":
+        return {"artifact_rules": cfg.analyst.indexes.artifact_rules}[layer]
     raise ValueError(f"Unknown source: {source}")
 
 
@@ -596,6 +603,28 @@ def _build_parser() -> argparse.ArgumentParser:
     p_backfill_shape.add_argument(
         "--dry-run", action="store_true",
         help="Count docs that would be stamped without writing.")
+
+    # apply-artifact-rules — retroactive scan for analyst-authored rules
+    # (ROADMAP #5). Walks the commands index, stamps
+    # `dshield.cowrie.enrichment.analyst_artifacts` for every match.
+    # Idempotent. Wired into the backward systemd cycle so a rule created
+    # from the console between cycles converges on the next run.
+    p_apply_rules = sub.add_parser(
+        "apply-artifact-rules",
+        help=(
+            "Apply analyst-authored artifact rules retroactively to the "
+            "commands index. With --rule-id, scans only that rule; "
+            "otherwise scans every active rule. Idempotent. ROADMAP #5."
+        ),
+    )
+    p_apply_rules.add_argument(
+        "--source", default="cowrie", help="Source name (default: cowrie)")
+    p_apply_rules.add_argument(
+        "--rule-id", default=None, action="append",
+        help="Scan only this rule (repeatable). Default: all active rules.")
+    p_apply_rules.add_argument(
+        "--dry-run", action="store_true",
+        help="Count matches without stamping docs.")
 
     # re-triage — re-evaluate stored `triage_reasons` against current rules.
     # No LLM/cloud calls. Closes the gap that `re-enrich-stale` doesn't cover:
@@ -1014,6 +1043,19 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[ERROR] Source {args.source!r} has no commands layer", flush=True)
             return 1
         stats = mod.run_backfill_shape(cfg, secrets, dry_run=args.dry_run)
+        print(json.dumps(stats, indent=2, default=str))
+        return 0
+
+    if args.verb == "apply-artifact-rules":
+        # Source-agnostic — the rule index is cross-source, but today the
+        # only commands layer is cowrie. The scanner module hardcodes that
+        # path; revisit when a second source ships.
+        from .analyst.scan import run_apply_artifact_rules
+        stats = run_apply_artifact_rules(
+            cfg, secrets,
+            rule_ids=list(args.rule_id or []) or None,
+            dry_run=args.dry_run,
+        )
         print(json.dumps(stats, indent=2, default=str))
         return 0
 

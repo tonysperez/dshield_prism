@@ -1039,6 +1039,14 @@ def _build_session_doc(
                     artifact_values.add(f"hash:{sha}")
                 elif f_obj.get("name"):
                     artifact_values.add(f"file:{f_obj['name']}")
+        # ROADMAP #5: analyst-authored rule matches. Namespaced with an
+        # `analyst:` prefix so the existing playbook/campaign artifact
+        # aggregations pick them up without code changes.
+        for hit in ((ed.get("dshield") or {}).get("cowrie", {}).get("enrichment") or {}).get("analyst_artifacts") or []:
+            k = (hit.get("kind") or "").strip()
+            v = (hit.get("value") or "").strip()
+            if k and v:
+                artifact_values.add(f"analyst:{k}:{v}")
 
     # ROADMAP #3: promote cowrie-computed file hashes into the same artifact_set
     # (`hash:` prefix) so campaign infra-mining, playbook_artifact_drift, and
