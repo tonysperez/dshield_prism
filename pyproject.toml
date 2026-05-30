@@ -13,9 +13,12 @@ dependencies = [
 [project.optional-dependencies]
 # HDBSCAN clustering / novelty scoring
 # Uses sklearn.cluster.HDBSCAN (added in scikit-learn 1.3) — no Cython build needed.
+# scipy is pulled in by sklearn already; declared explicitly because the
+# playbook-merge path imports `scipy.cluster.hierarchy` directly.
 cluster = [
     "numpy==2.4.4",
     "scikit-learn==1.8.0",
+    "scipy==1.17.1",
 ]
 
 [project.scripts]
