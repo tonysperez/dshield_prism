@@ -310,6 +310,7 @@ def build_app(config_path: str | None = None) -> FastAPI:
         ip_band:       Optional[str] = Query(None, description="small | medium | large"),
         intent:        Optional[str] = Query(None, description="dominant_intent value"),
         intel_verdict: Optional[str] = Query(None, description="clean | malicious | mixed | no_data"),
+        since:         Optional[str] = Query(None, description="ISO timestamp — filter to findings touched since (ROADMAP #17.17)"),
         size: int = Query(50, ge=1, le=500),
         frm: int = Query(0, ge=0),
         sort: str = Query("score", description="score | last_seen | first_seen"),
@@ -331,7 +332,7 @@ def build_app(config_path: str | None = None) -> FastAPI:
             data = findings_mod.list_findings(
                 es, cfg,
                 status=status_list, kind=kind, stream=stream,
-                facets=facets,
+                facets=facets, since=since,
                 size=size, frm=frm, sort=sort,
             )
         except ValueError as exc:
@@ -353,6 +354,14 @@ def build_app(config_path: str | None = None) -> FastAPI:
             stream=stream, facets=facets,
         )
         return JSONResponse(data)
+
+    @app.get("/api/findings/since-summary")
+    def findings_since_summary_api(
+        ts: str = Query(..., description="ISO timestamp of the analyst's last visit"),
+    ) -> JSONResponse:
+        """Counts of findings touched since `ts`. Drives the inbox
+        "what changed since I last looked" strip (ROADMAP #17.17)."""
+        return JSONResponse(findings_mod.since_summary(es, cfg, ts=ts))
 
     @app.get("/api/finding/{finding_id}")
     def finding_detail_api(finding_id: str) -> JSONResponse:

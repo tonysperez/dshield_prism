@@ -116,6 +116,8 @@ const state = {
   selectedIds: new Set(), // multi-select for bulk status (ROADMAP #17.4)
   lastRows: [],           // most recent render, indexed by selection ops
   focusIdx: -1,           // keyboard-focused row index into lastRows (#16)
+  since: "",              // ISO timestamp filter — "show only what's new since X" (#17)
+  referenceTs: null,      // session-stable anchor for the since-strip
 };
 
 function parseQuery() {
@@ -123,6 +125,7 @@ function parseQuery() {
   if (q.has("status")) state.status = q.get("status");
   if (q.has("stream")) state.stream = q.get("stream");
   if (q.has("sort")) state.sort = q.get("sort");
+  if (q.has("since")) state.since = q.get("since");
   for (const dim of FACET_DIMS) {
     if (q.has(dim)) state.facets[dim] = q.get(dim);
   }
@@ -133,6 +136,7 @@ function pushQuery() {
   q.set("status", state.status);
   if (state.stream) q.set("stream", state.stream);
   if (state.sort !== "last_seen") q.set("sort", state.sort);
+  if (state.since) q.set("since", state.since);
   for (const dim of FACET_DIMS) {
     if (state.facets[dim]) q.set(dim, state.facets[dim]);
   }
@@ -635,6 +639,78 @@ function handleShortcut(ev) {
   }
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// "What changed since I last looked" strip (ROADMAP #17.17).
+// Per-browser localStorage tracks the most recent visit timestamp.
+// Per-session sessionStorage snapshots that value at the start of the
+// session so reloads don't lose the reference. The strip shows counts
+// and a "show only these" filter; "dismiss" resets the reference to
+// now so the strip clears.
+// ────────────────────────────────────────────────────────────────────────────
+const LS_LAST_VISITED   = "inboxLastVisitedAt";
+const SS_REFERENCE_TS   = "inboxReferenceTs";
+
+function initReferenceTs() {
+  if (state.referenceTs) return state.referenceTs;
+  let ref = null;
+  try { ref = sessionStorage.getItem(SS_REFERENCE_TS); } catch (_) {}
+  if (!ref) {
+    try { ref = localStorage.getItem(LS_LAST_VISITED); } catch (_) {}
+    // First-ever visit fallback — assume "24h ago" so the strip can
+    // surface a useful snapshot rather than nothing.
+    if (!ref) ref = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    try { sessionStorage.setItem(SS_REFERENCE_TS, ref); } catch (_) {}
+    try { localStorage.setItem(LS_LAST_VISITED, new Date().toISOString()); } catch (_) {}
+  }
+  state.referenceTs = ref;
+  return ref;
+}
+
+function fmtSinceTime(iso) {
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    const sameDay = d.toDateString() === new Date().toDateString();
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    if (sameDay) return `${hh}:${mm}`;
+    const mon = d.toLocaleDateString(undefined, {month: "short", day: "numeric"});
+    return `${mon} ${hh}:${mm}`;
+  } catch (_) { return iso; }
+}
+
+async function refreshSinceStrip() {
+  const strip = document.getElementById("since-strip");
+  if (!strip) return;
+  const ref = initReferenceTs();
+  let data = {new: 0, changed: 0, total: 0};
+  try {
+    const r = await fetch("/api/findings/since-summary?ts=" + encodeURIComponent(ref));
+    if (r.ok) data = await r.json();
+  } catch (_) {}
+  const textEl    = document.getElementById("since-text");
+  const applyBtn  = document.getElementById("since-apply");
+  const clearBtn  = document.getElementById("since-clear");
+  if (!data.total) {
+    strip.hidden = true;
+    return;
+  }
+  strip.hidden = false;
+  // Render the count summary plus the human-readable reference time.
+  textEl.replaceChildren();
+  const parts = [];
+  if (data.new)     parts.push(`${data.new} new`);
+  if (data.changed) parts.push(`${data.changed} changed`);
+  textEl.appendChild(document.createTextNode(parts.join(" · ")));
+  const tsSpan = document.createElement("span");
+  tsSpan.className = "since-ts";
+  tsSpan.textContent = `since ${fmtSinceTime(ref)}`;
+  textEl.appendChild(tsSpan);
+  // Toggle apply vs clear depending on whether the filter is active.
+  applyBtn.hidden = !!state.since;
+  clearBtn.hidden = !state.since;
+}
+
 // Single fetch — drives both the inbox rows and the rail (status,
 // category, dynamic facet groups). The previous code ran four parallel
 // fetches (one per stream + one facet-only); one query is sufficient
@@ -643,6 +719,7 @@ async function fetchInbox() {
   const params = facetParams();
   params.set("status", state.status);
   if (state.stream) params.set("stream", state.stream);
+  if (state.since)  params.set("since", state.since);
   params.set("size", 500);
   params.set("from", 0);
   params.set("sort", state.sort);
@@ -665,6 +742,7 @@ async function refreshAll() {
   renderStreamChips(data.stream_counts || {});
   renderFacets(data.facet_counts || {});
   renderInbox(data.rows || []);
+  refreshSinceStrip();
 }
 
 // Keep checkboxes, the bulk bar, and the select-all header in sync with
@@ -1360,6 +1438,37 @@ function closeDrawer() {
   document.addEventListener("keydown", handleShortcut);
   const helpBtn = document.getElementById("shortcuts-help-btn");
   if (helpBtn) helpBtn.addEventListener("click", () => toggleShortcutsHelp());
+
+  // "What changed since I last looked" strip (ROADMAP #17.17).
+  const applyBtn = document.getElementById("since-apply");
+  if (applyBtn) applyBtn.addEventListener("click", () => {
+    state.since = initReferenceTs();
+    pushQuery();
+    refreshAll();
+  });
+  const clearBtn2 = document.getElementById("since-clear");
+  if (clearBtn2) clearBtn2.addEventListener("click", () => {
+    state.since = "";
+    pushQuery();
+    refreshAll();
+  });
+  const dismissBtn = document.getElementById("since-dismiss");
+  if (dismissBtn) dismissBtn.addEventListener("click", () => {
+    // Move the reference forward to "now" so the strip falls silent
+    // until the next pipeline run produces something fresh. Also lift
+    // the filter if it was active.
+    const now = new Date().toISOString();
+    try { sessionStorage.setItem(SS_REFERENCE_TS, now); } catch (_) {}
+    try { localStorage.setItem(LS_LAST_VISITED, now); } catch (_) {}
+    state.referenceTs = now;
+    if (state.since) {
+      state.since = "";
+      pushQuery();
+      refreshAll();
+    } else {
+      refreshSinceStrip();
+    }
+  });
   const clearBtn = document.getElementById("bulk-clear");
   if (clearBtn) clearBtn.addEventListener("click", () => {
     state.selectedIds.clear();

@@ -118,6 +118,37 @@
       white-space: nowrap;
     }
 
+    /* "What changed since I last looked" strip (ROADMAP #17.17).
+       Sits above the bulk bar; gentle teal accent so it doesn't
+       compete with the bulk bar's blue. */
+    .since-strip {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 12px; margin-bottom: 8px;
+      background: #0a1f24; border: 1px solid #2dd4bf60;
+      border-radius: 5px;
+      font-size: 12px; color: #c8d0e2;
+    }
+    .since-strip[hidden] { display: none; }
+    .since-text { font-weight: 600; color: #2dd4bf; }
+    .since-text .since-divider { color: #4a5470; margin: 0 6px; }
+    .since-text .since-ts      { color: #6b7494; font-weight: 400; margin-left: 6px; }
+    .since-btn {
+      font-size: 11px; font-weight: 600;
+      padding: 4px 10px; border-radius: 4px;
+      border: 1px solid; background: transparent;
+      color: #2dd4bf; border-color: #2dd4bf80;
+      cursor: pointer;
+    }
+    .since-btn:hover { background: #0a2a30; }
+    .since-btn.since-clear { color: #fbbf24; border-color: #fbbf2480; }
+    .since-btn.since-clear:hover { background: #2a1f0a; }
+    .since-dismiss {
+      margin-left: auto; font-size: 11px;
+      background: transparent; border: 0;
+      color: #6b7494; cursor: pointer; text-decoration: underline;
+    }
+    .since-dismiss:hover { color: #c8d0e2; }
+
     /* Bulk-action bar — slide-in strip above the table when one or
        more rows are selected (ROADMAP #17.4). */
     .bulk-bar {
@@ -405,6 +436,17 @@
         <button type="button" id="shortcuts-help-btn" class="shortcuts-help-btn" title="Keyboard shortcuts">?</button>
       </p>
       <div id="shortcuts-help" class="shortcuts-help" hidden></div>
+      <!-- "What changed since I last looked" strip (ROADMAP #17.17).
+           Per-browser localStorage anchors the reference timestamp;
+           per-session storage keeps it stable across reloads. Hidden
+           when there's nothing to show. -->
+      <div id="since-strip" class="since-strip" hidden>
+        <span id="since-text" class="since-text"></span>
+        <button type="button" id="since-apply"   class="since-btn since-apply">show only these</button>
+        <button type="button" id="since-clear"   class="since-btn since-clear" hidden>clear filter</button>
+        <button type="button" id="since-dismiss" class="since-dismiss">dismiss</button>
+      </div>
+
       <!-- Bulk-action bar (ROADMAP #17.4). Hidden until at least one row
            is selected via the checkbox column; offers same-status-for-
            all over /api/findings/status in one round trip. -->

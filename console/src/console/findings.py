@@ -58,6 +58,7 @@ def list_findings(
     kind: Optional[str] = None,
     stream: Optional[str] = None,
     facets: Optional[dict[str, str]] = None,
+    since: Optional[str] = None,
     size: int = 100,
     frm: int = 0,
     sort: str = "score",
@@ -100,6 +101,14 @@ def list_findings(
         must.append({"terms": {"kind": sorted(kinds_in_stream)}})
     if facets:
         must.extend(_facet_filters(facets))
+    if since:
+        # "Changed since" = a finding either first appeared or got
+        # touched after the reference timestamp. The "what changed
+        # since I last looked" strip uses this filter for click-through.
+        must.append({"bool": {"should": [
+            {"range": {"last_seen_at":  {"gte": since}}},
+            {"range": {"first_seen_at": {"gte": since}}},
+        ], "minimum_should_match": 1}})
 
     sort_clause: list[dict]
     if sort == "last_seen":
@@ -197,6 +206,43 @@ def _attach_inbox_snapshots(
             ]
             for row in by_value.get(doc["_id"], []):
                 row["lifecycle_snapshots"] = trimmed
+
+
+def since_summary(es, cfg, *, ts: str) -> dict[str, int]:
+    """Counts of findings touched since the reference timestamp `ts`,
+    bucketed into `new` (first_seen since), `changed` (last_seen since
+    but first_seen earlier), and `total` (the union). Drives the
+    "what changed since I last looked" strip on the inbox (ROADMAP
+    #17.17). Cheap — a single size:0 search with three filter aggs.
+    """
+    idx = cfg.findings.indexes.default
+    if not es.indices.exists(index=idx):
+        return {"new": 0, "changed": 0, "total": 0}
+    body = {
+        "size": 0,
+        "aggs": {
+            "all_since": {"filter": {"bool": {"should": [
+                {"range": {"last_seen_at":  {"gte": ts}}},
+                {"range": {"first_seen_at": {"gte": ts}}},
+            ], "minimum_should_match": 1}}},
+            "new_since": {"filter": {"range": {"first_seen_at": {"gte": ts}}}},
+            "changed_since": {"filter": {"bool": {
+                "must":     [{"range": {"last_seen_at":  {"gte": ts}}}],
+                "must_not": [{"range": {"first_seen_at": {"gte": ts}}}],
+            }}},
+        },
+    }
+    try:
+        resp = es.search(index=idx, **body)
+    except Exception as exc:
+        log.warning("findings: since_summary failed: %s", exc)
+        return {"new": 0, "changed": 0, "total": 0}
+    aggs = resp.get("aggregations") or {}
+    return {
+        "new":     int((aggs.get("new_since") or {}).get("doc_count") or 0),
+        "changed": int((aggs.get("changed_since") or {}).get("doc_count") or 0),
+        "total":   int((aggs.get("all_since") or {}).get("doc_count") or 0),
+    }
 
 
 def status_counts(es, cfg) -> dict[str, int]:
