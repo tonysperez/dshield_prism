@@ -650,6 +650,38 @@ function handleShortcut(ev) {
 const LS_LAST_VISITED   = "inboxLastVisitedAt";
 const SS_REFERENCE_TS   = "inboxReferenceTs";
 
+// ROADMAP #17.9 — return-to-inbox crumb. The drawer's "Open in graph"
+// stamps a token here; the graph reads it to render a "← Inbox" crumb;
+// the inbox restores scroll on the round-trip back.
+const SS_RETURN_PREFIX  = "inboxReturn:";
+
+function saveInboxReturn() {
+  const token = "r" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  // window.scrollY covers the common case; container scrollTop covers
+  // a future layout that scrolls the inbox column internally.
+  const container = document.getElementById("inbox-rows");
+  const payload = {
+    url: location.pathname + location.search,
+    scrollY: window.scrollY || 0,
+    scrollTop: container ? container.scrollTop : 0,
+    ts: Date.now(),
+  };
+  try {
+    sessionStorage.setItem(SS_RETURN_PREFIX + token, JSON.stringify(payload));
+  } catch (_) { return null; }
+  return token;
+}
+
+function consumeInboxReturn(token) {
+  if (!token) return null;
+  const key = SS_RETURN_PREFIX + token;
+  let raw = null;
+  try { raw = sessionStorage.getItem(key); } catch (_) { return null; }
+  if (!raw) return null;
+  try { sessionStorage.removeItem(key); } catch (_) {}
+  try { return JSON.parse(raw); } catch (_) { return null; }
+}
+
 function initReferenceTs() {
   if (state.referenceTs) return state.referenceTs;
   let ref = null;
@@ -1232,11 +1264,27 @@ function renderDrawer(data) {
     body.appendChild(sec);
   }
 
-  // Open-in-graph link
+  // Open-in-graph link. ROADMAP #17.9: stash the inbox URL + scroll
+  // position under a sessionStorage key so the graph's "← Inbox" crumb
+  // can restore the exact view on return. We don't encode the full
+  // state into the URL because facets+scroll can be long and would
+  // bloat the graph URL for share-links; sessionStorage stays local
+  // to the tab.
   if (a.kind === "playbook" || a.kind === "campaign" || a.kind === "ip") {
     const sec = el("div", {class: "drawer-section"});
-    const url = `/graph?ioc=${encodeURIComponent(a.kind)}:${encodeURIComponent(a.value)}`;
-    sec.appendChild(el("a", {href: url, class: "nav-link"}, ["Open in graph →"]));
+    const link = el("a", {
+      href: `/graph?ioc=${encodeURIComponent(a.kind)}:${encodeURIComponent(a.value)}`,
+      class: "nav-link",
+    }, ["Open in graph →"]);
+    link.addEventListener("click", (ev) => {
+      const token = saveInboxReturn();
+      if (token) {
+        const u = new URL(ev.currentTarget.href, location.origin);
+        u.searchParams.set("return", token);
+        ev.currentTarget.href = u.pathname + "?" + u.searchParams.toString();
+      }
+    });
+    sec.appendChild(link);
     body.appendChild(sec);
   }
 
@@ -1475,5 +1523,25 @@ function closeDrawer() {
     syncSelectionUI();
   });
 
-  refreshAll();
+  // Round-trip from the graph (ROADMAP #17.9). The graph's "← Inbox"
+  // crumb appends ?restore=<token>; consume the matching payload, kick
+  // off the normal refresh, then restore scroll once the rows render.
+  const params = new URLSearchParams(location.search);
+  const restoreToken = params.get("restore");
+  let restorePayload = null;
+  if (restoreToken) {
+    restorePayload = consumeInboxReturn(restoreToken);
+    params.delete("restore");
+    const tail = params.toString();
+    history.replaceState(null, "", location.pathname + (tail ? "?" + tail : ""));
+  }
+
+  refreshAll().then(() => {
+    if (!restorePayload) return;
+    requestAnimationFrame(() => {
+      if (restorePayload.scrollY) window.scrollTo(0, restorePayload.scrollY);
+      const container = document.getElementById("inbox-rows");
+      if (container && restorePayload.scrollTop) container.scrollTop = restorePayload.scrollTop;
+    });
+  });
 })();

@@ -92,6 +92,11 @@
     // so we can undo precisely what was added (clusters that arrived via
     // auto-trace or initial anchor aren't tracked here).
     addedClusters: new Map(),
+    // ROADMAP #17.9 — set when /graph is opened from the inbox drawer.
+    // The token keys into sessionStorage (written by findings.js's
+    // saveInboxReturn) and lets the breadcrumb render a "← Inbox" step
+    // that round-trips the analyst back to the same row + scroll.
+    returnToInbox: null,
   };
 
   // ---------------------------------------------------------------------
@@ -430,6 +435,13 @@
     const overview = $("#tab-overview");
     overview.innerHTML = "";
     renderActions(d, overview);
+    // ROADMAP #17.11 amended — inline compare affordance on every kind
+    // that has a meaningful peer set. Replaces the standalone /compare
+    // page. Resolves the (kind, id) tuple per anchor type.
+    const cmpHandle = _compareHandle(d);
+    if (cmpHandle) {
+      renderComparePanel(d, overview, cmpHandle);
+    }
     // Structured sections are rendered with their own custom widgets; the
     // generic kv table below skips any key we've already consumed.
     const consumed = renderStructuredSections(d, overview);
@@ -961,6 +973,299 @@
   //   removal). Only tracks clusters introduced via this button — clusters
   //   that came in via the anchor's 1-hop or via BFS aren't managed here.
   // - "→ Pivot to cluster": re-anchors the view on the cluster.
+  // ---------------------------------------------------------------------
+  // Inline compare panel (ROADMAP #17.11 amended). Picks the (kind, id)
+  // for the current anchor, offers a top-N peer picker, and renders the
+  // verdict card inline. Replaces the standalone /compare page.
+  //
+  // Five anchor kinds participate:
+  //   session_cluster / ip_cluster / command_cluster — cosine compare
+  //   playbook                                       — mean-centroid cosine
+  //   campaign                                       — jaccard over playbooks
+  //
+  // Verdict mapping is analyst-vocabulary by default; algorithm-side
+  // detail + LLM-explain live behind ?debug=1.
+  // ---------------------------------------------------------------------
+  function _isDebugMode() {
+    return new URLSearchParams(location.search).get("debug") === "1";
+  }
+
+  // Resolve the (kind, id, peerLabel) for a given detail payload, or null
+  // if the anchor type doesn't participate in compare. session/ip/command
+  // cluster anchors get their id from summary.cluster_id (the IOC graph
+  // uses summary keys consistently); playbook/campaign anchor the
+  // top-level id.
+  function _compareHandle(d) {
+    if (!d) return null;
+    if (d.type === "session_cluster" || d.type === "ip_cluster" || d.type === "command_cluster") {
+      const cid = (d.summary || {}).cluster_id;
+      return cid ? { kind: d.type, id: cid, anchorKind: d.type } : null;
+    }
+    if (d.type === "playbook") {
+      const pid = d.id || (d.summary || {}).playbook_id;
+      return pid ? { kind: "playbook", id: pid, anchorKind: "playbook" } : null;
+    }
+    if (d.type === "campaign") {
+      const cid = d.id || (d.summary || {}).campaign_id;
+      return cid ? { kind: "campaign", id: cid, anchorKind: "campaign" } : null;
+    }
+    return null;
+  }
+
+  // Verdict mapping. Cosine-based kinds compare against a merge
+  // threshold; campaigns use jaccard bands. The thresholds aren't
+  // calibrated against a labelled set — they reflect "the strongest
+  // behavioural-equivalence signal we have".
+  function _verdictFor(analysis) {
+    // session_cluster's rich analyzer pre-dates the kind/score contract;
+    // it emits `centroid_similarity` directly. Fall back to it so the
+    // session_cluster path keeps working without changing the shared
+    // analyze contract.
+    const score = analysis.score != null ? analysis.score : analysis.centroid_similarity;
+    const sk = analysis.score_kind || "cosine";
+    if (!isFinite(score)) return {label: "No clear signal", tone: "neutral"};
+    if (sk === "jaccard") {
+      if (score >= 0.50) return {label: "Likely the same campaign",  tone: "yes"};
+      if (score >= 0.10) return {label: "Overlapping campaigns",     tone: "neutral"};
+      return                     {label: "Largely disjoint",          tone: "no"};
+    }
+    // cosine
+    const t = analysis.merge_threshold;
+    if (!isFinite(t)) {
+      // No merge threshold (ip_cluster / command_cluster). Use generic
+      // 0.85/0.65 bands; cosine on raw embeddings reads "very close"
+      // above 0.85 and "unrelated" below 0.65.
+      if (score >= 0.85) return {label: "Very similar",          tone: "yes"};
+      if (score >= 0.65) return {label: "Some similarity",       tone: "neutral"};
+      return                     {label: "Largely unrelated",     tone: "no"};
+    }
+    if (score >= t)        return {label: "Likely the same actor",         tone: "yes"};
+    if (score >= t - 0.05) return {label: "Borderline — no clear signal",  tone: "neutral"};
+    return                        {label: "Unlikely the same actor",        tone: "no"};
+  }
+
+  function _fmtScore(p) {
+    if (p.score_kind === "jaccard") return (p.score * 100).toFixed(0) + "% overlap";
+    return "cosine " + p.score.toFixed(3);
+  }
+
+  function renderComparePanel(d, container, handle) {
+    const section = document.createElement("div");
+    section.className = "detail-section compare-section";
+    const head = document.createElement("div");
+    head.className = "section-head";
+    head.textContent = "Compare";
+    section.appendChild(head);
+
+    const btn = document.createElement("button");
+    btn.className = "action compare-trigger";
+    btn.textContent = "→ Compare to peer…";
+    btn.title = "Pick from the top peers in the latest run";
+    section.appendChild(btn);
+
+    const picker = document.createElement("div");
+    picker.className = "compare-picker hidden";
+    section.appendChild(picker);
+
+    const out = document.createElement("div");
+    out.className = "compare-out";
+    section.appendChild(out);
+
+    let loaded = false;
+    btn.addEventListener("click", async () => {
+      // Toggle off if already shown.
+      if (!picker.classList.contains("hidden")) {
+        picker.classList.add("hidden");
+        return;
+      }
+      picker.classList.remove("hidden");
+      if (loaded) return;
+      picker.innerHTML = `<em class="muted">loading peers…</em>`;
+      try {
+        const nr = await api(
+          `/api/compare/nearest?kind=${encodeURIComponent(handle.kind)}` +
+          `&id=${encodeURIComponent(handle.id)}`,
+        );
+        const peers = (nr && nr.peers) || [];
+        loaded = true;
+        if (!peers.length) {
+          picker.innerHTML = `<em class="muted">No peer in the latest run.</em>`;
+          return;
+        }
+        renderPeerPicker(picker, peers, handle, out);
+      } catch (e) {
+        picker.innerHTML = `<em class="muted">peer fetch failed: ${escapeHtml(e.message || String(e))}</em>`;
+      }
+    });
+
+    container.appendChild(section);
+  }
+
+  function renderPeerPicker(picker, peers, handle, out) {
+    picker.innerHTML = "";
+    const hint = document.createElement("div");
+    hint.className = "compare-picker-hint";
+    hint.textContent = handle.kind === "campaign"
+      ? `Top ${peers.length} peers by member-playbook overlap:`
+      : `Top ${peers.length} peers by cosine similarity:`;
+    picker.appendChild(hint);
+
+    for (const p of peers) {
+      const row = document.createElement("button");
+      row.className = "compare-peer-row";
+      row.title = `Run compare against ${p.label} (${p.id})`;
+      const label = document.createElement("span");
+      label.className = "compare-peer-label";
+      label.textContent = p.label;
+      const score = document.createElement("span");
+      score.className = "compare-peer-score";
+      score.textContent = _fmtScore(p);
+      row.appendChild(label);
+      row.appendChild(score);
+      row.addEventListener("click", async () => {
+        Array.from(picker.querySelectorAll(".compare-peer-row")).forEach(b => b.classList.remove("selected"));
+        row.classList.add("selected");
+        out.innerHTML = `<em class="muted">analyzing…</em>`;
+        try {
+          const a = await api(
+            `/api/compare?kind=${encodeURIComponent(handle.kind)}` +
+            `&a=${encodeURIComponent(handle.id)}` +
+            `&b=${encodeURIComponent(p.id)}`,
+          );
+          renderCompareResult(out, a, p, handle);
+        } catch (e) {
+          out.innerHTML = `<em class="muted">compare failed: ${escapeHtml(e.message || String(e))}</em>`;
+        }
+      });
+      picker.appendChild(row);
+    }
+  }
+
+  function renderCompareResult(out, analysis, peer, handle) {
+    const verdict = _verdictFor(analysis);
+    const debug = _isDebugMode();
+    const card = document.createElement("div");
+    card.className = `compare-card verdict-${verdict.tone}`;
+
+    const h = document.createElement("div");
+    h.className = "compare-title";
+    const question = handle.kind === "campaign"
+      ? `Same campaign as <strong>${escapeHtml(peer.label)}</strong>?`
+      : `Same actor as <strong>${escapeHtml(peer.label)}</strong>?`;
+    h.innerHTML = question;
+    card.appendChild(h);
+
+    const v = document.createElement("div");
+    v.className = "compare-verdict";
+    v.textContent = verdict.label;
+    card.appendChild(v);
+
+    const meta = document.createElement("div");
+    meta.className = "compare-meta";
+    meta.innerHTML = _metaLineFor(analysis);
+    card.appendChild(meta);
+
+    const pivot = document.createElement("a");
+    pivot.className = "compare-pivot";
+    pivot.textContent = `→ Open ${peer.label} in graph`;
+    pivot.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      anchor(handle.anchorKind, peer.id);
+    });
+    card.appendChild(pivot);
+
+    if (debug) renderCompareDebug(card, analysis);
+
+    out.innerHTML = "";
+    out.appendChild(card);
+  }
+
+  function _metaLineFor(analysis) {
+    const sk = analysis.score_kind;
+    if (sk === "jaccard") {
+      const pct = (analysis.score * 100).toFixed(0);
+      const sharedIp = analysis.shared_ips_count != null ? ` · ${analysis.shared_ips_count} shared IPs` : "";
+      const sharedPb = analysis.shared_playbooks ? ` · ${analysis.shared_playbooks.length} shared playbooks` : "";
+      return `${pct}% playbook overlap${sharedPb}${sharedIp}`;
+    }
+    // cosine path (cluster / playbook). session_cluster's existing analyzer
+    // emits centroid_similarity + would_merge; the new kinds emit `score`.
+    const cosine = analysis.score != null ? analysis.score : analysis.centroid_similarity;
+    const t = analysis.merge_threshold;
+    let line = `cosine <b>${(cosine || 0).toFixed(3)}</b>`;
+    if (t != null) {
+      line += ` · merge threshold <b>${t.toFixed(3)}</b>`;
+      const would = analysis.would_merge != null ? analysis.would_merge : (cosine >= t);
+      line += would ? " · would merge" : " · below threshold";
+    }
+    return line;
+  }
+
+  function renderCompareDebug(card, a) {
+    const block = document.createElement("div");
+    block.className = "compare-debug";
+    const head = document.createElement("div");
+    head.className = "compare-debug-head";
+    head.textContent = "Technical detail (debug)";
+    block.appendChild(head);
+
+    const lines = [];
+    if (a.kind)          lines.push(`kind: ${a.kind}`);
+    if (a.run_id)        lines.push(`run_id: ${a.run_id}`);
+    if (a.scalar_weight != null) lines.push(`scalar weight: ${a.scalar_weight}`);
+    if (a.jaccard != null) lines.push(`top-K command jaccard: ${a.jaccard.toFixed(3)}`);
+    if (a.only_a) lines.push(`only in A: ${a.only_a.length}`);
+    if (a.only_b) lines.push(`only in B: ${a.only_b.length}`);
+    if (a.overlap) lines.push(`overlap: ${a.overlap.length}`);
+    if (a.shared_playbooks)  lines.push(`shared playbooks: ${a.shared_playbooks.length}`);
+    if (a.shared_ips_count != null) lines.push(`shared IPs: ${a.shared_ips_count}`);
+    if (a.union_ip_count != null)   lines.push(`union IPs: ${a.union_ip_count}`);
+
+    const pre = document.createElement("pre");
+    pre.className = "compare-debug-meta";
+    pre.textContent = lines.join("\n");
+    block.appendChild(pre);
+
+    // LLM Explain only makes sense for the rich session_cluster analyzer
+    // (the prompt is built around its scalar/top-K/sequence fields). For
+    // ip / command / playbook / campaign the Explain path has no surface
+    // to ground itself on, so it stays gated to session_cluster.
+    if (a.kind == null /* analyze_cluster_pair returns no `kind` */) {
+      const explainBtn = document.createElement("button");
+      explainBtn.className = "action compare-explain";
+      explainBtn.textContent = "Explain (LLM, 10–30s)";
+      const explainOut = document.createElement("div");
+      explainOut.className = "compare-explain-out";
+      explainBtn.addEventListener("click", async () => {
+        explainBtn.disabled = true;
+        explainBtn.textContent = "calling LLM…";
+        try {
+          const r = await fetch("/api/compare/explain", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({analysis: a}),
+          });
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          const d = await r.json();
+          explainOut.innerHTML =
+            `<div><span class="muted">verdict:</span> <code>${escapeHtml(d.verdict || "")}</code></div>` +
+            `<div><span class="muted">evidence:</span> ${escapeHtml(d.evidence || "")}</div>` +
+            `<div><span class="muted">recommendation:</span> <code>${escapeHtml(d.recommendation || "")}</code></div>` +
+            (d.rationale ? `<div><span class="muted">rationale:</span> ${escapeHtml(d.rationale)}</div>` : "");
+        } catch (e) {
+          explainOut.textContent = `LLM call failed: ${e.message || e}`;
+        } finally {
+          explainBtn.disabled = false;
+          explainBtn.textContent = "Explain (LLM, 10–30s)";
+        }
+      });
+      block.appendChild(explainBtn);
+      block.appendChild(explainOut);
+    }
+
+    card.appendChild(block);
+  }
+
   function renderActions(d, container) {
     const summary = d.summary || {};
     const cid = summary.cluster_id;
@@ -1129,6 +1434,24 @@
     const bc = document.querySelector(".breadcrumb-bar");
     if (!bc) return;
     bc.innerHTML = "";
+
+    // ROADMAP #17.9 — when /graph was opened from the inbox drawer, lead
+    // the crumb with a "← Inbox" hop that returns to the saved view.
+    if (state.returnToInbox && state.returnToInbox.payload && state.returnToInbox.payload.url) {
+      const back = document.createElement("a");
+      back.className = "step step-return";
+      back.textContent = "← Inbox";
+      const baseUrl = state.returnToInbox.payload.url;
+      const sep = baseUrl.includes("?") ? "&" : "?";
+      back.href = `${baseUrl}${sep}restore=${encodeURIComponent(state.returnToInbox.token)}`;
+      bc.appendChild(back);
+      if (state.history.length) {
+        const s = document.createElement("span");
+        s.className = "sep"; s.textContent = "›";
+        bc.appendChild(s);
+      }
+    }
+
     state.history.slice(-6).forEach((h, i, arr) => {
       const span = document.createElement("span");
       span.className = "step";
@@ -1161,6 +1484,11 @@
     // gets pushState'd back to the bare ioc form.
     const current = new URLSearchParams(location.search);
     if (current.get("debug") === "1") p.set("debug", "1");
+    // Preserve the inbox return-crumb token across knob changes so the
+    // breadcrumb's "← Inbox" hop survives a settings flip.
+    if (state.returnToInbox && state.returnToInbox.token) {
+      p.set("return", state.returnToInbox.token);
+    }
 
     // Graph state envelope (ROADMAP #17.5). Every knob that affects the
     // visible canvas rides in the URL so reload + share-link reproduce
@@ -1230,6 +1558,17 @@
     // settings object so /api callers pick them up via _withFilterParams.
     if (p.has("rl")) settings.requireLogin    = p.get("rl") !== "0";
     if (p.has("rc")) settings.requireCommands = p.get("rc") !== "0";
+
+    // Return-to-inbox crumb (ROADMAP #17.9). Token keys into
+    // sessionStorage; the resolved payload carries the inbox URL we'll
+    // hop back to.
+    if (p.has("return")) {
+      const tok = p.get("return");
+      try {
+        const raw = sessionStorage.getItem("inboxReturn:" + tok);
+        if (raw) state.returnToInbox = { token: tok, payload: JSON.parse(raw) };
+      } catch (_) {}
+    }
     return p;
   }
 

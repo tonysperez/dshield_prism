@@ -221,6 +221,393 @@ def _fetch_command_sequences(
     ]
 
 
+SUPPORTED_KINDS = (
+    "session_cluster", "ip_cluster", "command_cluster", "playbook", "campaign",
+)
+
+
+def _fetch_all_centroids(
+    es: Elasticsearch, clusters_idx: str, run_id: str, source_fields: list[str],
+) -> list[dict]:
+    """All cluster centroids in a given run; used by nearest-peer scans."""
+    resp = es.search(
+        index=clusters_idx, size=1000,
+        query={"bool": {"must": [
+            {"term": {"doc_type": "cluster"}},
+            {"term": {"run_id": run_id}},
+        ]}},
+        _source=source_fields,
+    )
+    return [h["_source"] for h in resp["hits"]["hits"]]
+
+
+def _nearest_in_cluster_index(
+    es: Elasticsearch, clusters_idx: str, target_id: str,
+    *, exclude_playbook_id: Optional[str] = None,
+    label_field: str = "playbook_name", top_n: int = 8,
+) -> tuple[Optional[str], list[dict]]:
+    """Shared engine for the three cluster kinds (session / IP / command).
+
+    Returns (run_id, peers[]) — peers descending by cosine to target. When
+    `exclude_playbook_id` is set, peers with the same playbook_id are
+    dropped (avoids surfacing a sibling cluster the merge layer already
+    bundled into the same playbook).
+    """
+    run_id = _latest_run_id(es, clusters_idx)
+    if not run_id:
+        return None, []
+
+    src_fields = ["cluster_id", "size", "centroid", "playbook_id", "playbook_name"]
+    target_doc = _fetch_centroids(es, clusters_idx, run_id, [target_id])
+    if target_id not in target_doc:
+        return run_id, []
+    target_centroid = target_doc[target_id].get("centroid")
+    if not target_centroid:
+        return run_id, []
+
+    peers: list[dict] = []
+    for src in _fetch_all_centroids(es, clusters_idx, run_id, src_fields):
+        cid = src.get("cluster_id")
+        if not cid or cid == target_id:
+            continue
+        if exclude_playbook_id and src.get("playbook_id") == exclude_playbook_id:
+            continue
+        cent = src.get("centroid")
+        if not cent:
+            continue
+        sim = _cosine(target_centroid, cent)
+        peers.append({
+            "id":         cid,
+            "label":      src.get(label_field) or cid,
+            "size":       int(src.get("size") or 0),
+            "score":      sim,
+            "score_kind": "cosine",
+            "playbook_id":   src.get("playbook_id"),
+            "playbook_name": src.get("playbook_name"),
+        })
+    peers.sort(key=lambda p: p["score"], reverse=True)
+    return run_id, peers[:top_n]
+
+
+def _playbook_mean_centroids(
+    es: Elasticsearch, clusters_idx: str, run_id: str,
+) -> dict[str, dict]:
+    """Group session-cluster centroids by playbook_id and return
+    {playbook_id -> {centroid, name, member_cluster_ids[], member_count}}.
+
+    A playbook may span multiple session-clusters when the merge step
+    folded near-duplicates together; the playbook's effective centroid
+    is the per-component mean of its members.
+    """
+    docs = _fetch_all_centroids(
+        es, clusters_idx, run_id,
+        ["cluster_id", "centroid", "playbook_id", "playbook_name", "size"],
+    )
+    groups: dict[str, dict] = {}
+    for src in docs:
+        pid = src.get("playbook_id")
+        cent = src.get("centroid")
+        if not pid or not cent:
+            continue
+        g = groups.setdefault(pid, {
+            "playbook_name": src.get("playbook_name"),
+            "centroid_sum":  [0.0] * len(cent),
+            "n":             0,
+            "member_cluster_ids": [],
+            "member_size":   0,
+        })
+        for i, v in enumerate(cent):
+            g["centroid_sum"][i] += v
+        g["n"] += 1
+        g["member_cluster_ids"].append(src.get("cluster_id"))
+        g["member_size"] += int(src.get("size") or 0)
+    out: dict[str, dict] = {}
+    for pid, g in groups.items():
+        n = g["n"] or 1
+        out[pid] = {
+            "playbook_id":         pid,
+            "playbook_name":       g["playbook_name"],
+            "centroid":            [v / n for v in g["centroid_sum"]],
+            "member_cluster_ids":  g["member_cluster_ids"],
+            "member_count":        g["n"],
+            "member_size":         g["member_size"],
+        }
+    return out
+
+
+def _nearest_playbooks(
+    es: Elasticsearch, cfg: AppConfig, target_id: str, top_n: int,
+) -> tuple[Optional[str], list[dict]]:
+    clusters_idx = cfg.elasticsearch.indexes.cowrie.session_clusters
+    run_id = _latest_run_id(es, clusters_idx)
+    if not run_id:
+        return None, []
+    pbks = _playbook_mean_centroids(es, clusters_idx, run_id)
+    target = pbks.get(target_id)
+    if not target:
+        return run_id, []
+    peers: list[dict] = []
+    for pid, pb in pbks.items():
+        if pid == target_id:
+            continue
+        sim = _cosine(target["centroid"], pb["centroid"])
+        peers.append({
+            "id":         pid,
+            "label":      pb["playbook_name"] or pid,
+            "size":       pb["member_size"],
+            "score":      sim,
+            "score_kind": "cosine",
+            "member_cluster_count": pb["member_count"],
+        })
+    peers.sort(key=lambda p: p["score"], reverse=True)
+    return run_id, peers[:top_n]
+
+
+def _nearest_campaigns(
+    es: Elasticsearch, cfg: AppConfig, target_id: str, top_n: int,
+) -> tuple[Optional[str], list[dict]]:
+    """Campaigns don't have embeddings — score via Jaccard over
+    member_playbook_ids. Higher = more shared playbooks = more likely the
+    same / overlapping campaign.
+    """
+    campaigns_idx = cfg.elasticsearch.indexes.cowrie.campaigns
+    # Most-recent run only; multi-run campaigns of the same id are stale.
+    run_id = _latest_run_id(es, campaigns_idx)
+    if not run_id:
+        return None, []
+    resp = es.search(
+        index=campaigns_idx, size=500,
+        query={"bool": {"must": [
+            {"term": {"doc_type": "campaign"}},
+            {"term": {"run_id": run_id}},
+        ]}},
+        _source=["campaign_id", "name", "member_playbook_ids",
+                 "member_source_ips", "kind", "ip_count"],
+    )
+    target = None
+    others: list[dict] = []
+    for h in resp["hits"]["hits"]:
+        src = h["_source"]
+        cid = src.get("campaign_id")
+        if not cid:
+            continue
+        if cid == target_id:
+            target = src
+        else:
+            others.append(src)
+    if target is None:
+        return run_id, []
+    target_pbks = set(target.get("member_playbook_ids") or [])
+    if not target_pbks:
+        return run_id, []
+    peers: list[dict] = []
+    for src in others:
+        peer_pbks = set(src.get("member_playbook_ids") or [])
+        if not peer_pbks:
+            continue
+        union = target_pbks | peer_pbks
+        if not union:
+            continue
+        jaccard = len(target_pbks & peer_pbks) / len(union)
+        peers.append({
+            "id":         src.get("campaign_id"),
+            "label":      src.get("name") or src.get("campaign_id"),
+            "size":       int(src.get("ip_count") or 0),
+            "score":      jaccard,
+            "score_kind": "jaccard",
+            "kind_tag":   src.get("kind"),
+        })
+    peers.sort(key=lambda p: p["score"], reverse=True)
+    return run_id, peers[:top_n]
+
+
+def nearest_peers(
+    es: Elasticsearch, cfg: AppConfig, kind: str, target_id: str, top_n: int = 8,
+) -> dict:
+    """Top-N peers for `target_id` within `kind`. Each peer is a dict with
+    `{id, label, size, score, score_kind, ...}`. The score is cosine for
+    centroid-bearing kinds and Jaccard over member playbooks for campaigns.
+
+    For `session_cluster`, peers sharing the target's playbook_id are
+    dropped — the merge layer already considers them the same playbook,
+    so surfacing them would just propose comparing a cluster to its sibling.
+    """
+    if kind not in SUPPORTED_KINDS:
+        raise ValueError(f"unsupported compare kind: {kind}")
+
+    if kind == "session_cluster":
+        clusters_idx = cfg.elasticsearch.indexes.cowrie.session_clusters
+        target_doc = _fetch_centroids(es, clusters_idx, _latest_run_id(es, clusters_idx) or "", [target_id])
+        exclude_pid = (target_doc.get(target_id) or {}).get("playbook_id")
+        run_id, peers = _nearest_in_cluster_index(
+            es, clusters_idx, target_id,
+            exclude_playbook_id=exclude_pid,
+            label_field="playbook_name", top_n=top_n,
+        )
+        merge_threshold = float(cfg.session.playbook_merge_threshold)
+        return {"run_id": run_id, "peers": peers, "merge_threshold": merge_threshold}
+
+    if kind == "ip_cluster":
+        clusters_idx = cfg.elasticsearch.indexes.cowrie.ip_clusters
+        run_id, peers = _nearest_in_cluster_index(
+            es, clusters_idx, target_id,
+            label_field="playbook_name", top_n=top_n,
+        )
+        # IP clustering uses its own augmented space; the session-layer
+        # merge threshold isn't meaningful here, so surface a band-only
+        # verdict by leaving merge_threshold absent.
+        return {"run_id": run_id, "peers": peers}
+
+    if kind == "command_cluster":
+        clusters_idx = cfg.elasticsearch.indexes.cowrie.command_clusters
+        run_id, peers = _nearest_in_cluster_index(
+            es, clusters_idx, target_id,
+            label_field="playbook_name", top_n=top_n,
+        )
+        return {"run_id": run_id, "peers": peers}
+
+    if kind == "playbook":
+        run_id, peers = _nearest_playbooks(es, cfg, target_id, top_n)
+        return {
+            "run_id": run_id, "peers": peers,
+            "merge_threshold": float(cfg.session.playbook_merge_threshold),
+        }
+
+    # campaign
+    run_id, peers = _nearest_campaigns(es, cfg, target_id, top_n)
+    return {"run_id": run_id, "peers": peers}
+
+
+def _analyze_centroid_pair(
+    es: Elasticsearch, clusters_idx: str, a_id: str, b_id: str,
+    *, merge_threshold: Optional[float] = None,
+) -> dict:
+    """Minimal centroid-only compare for ip_cluster / command_cluster.
+    No top-command set diffs (those are session-specific) — just cosine
+    and labels, enough for the analyst-facing verdict card.
+    """
+    run_id = _latest_run_id(es, clusters_idx)
+    if not run_id:
+        raise RuntimeError(f"No cluster docs in {clusters_idx}")
+    centroids = _fetch_centroids(es, clusters_idx, run_id, [a_id, b_id])
+    missing = [c for c in (a_id, b_id) if c not in centroids]
+    if missing:
+        raise RuntimeError(f"cluster(s) not found in run {run_id}: {missing}")
+    a = centroids[a_id]
+    b = centroids[b_id]
+    sim = _cosine(a["centroid"], b["centroid"])
+    return {
+        "kind":       "cluster",
+        "run_id":     run_id,
+        "a":          {"id": a_id, "label": a.get("playbook_name") or a_id, "size": int(a.get("size") or 0)},
+        "b":          {"id": b_id, "label": b.get("playbook_name") or b_id, "size": int(b.get("size") or 0)},
+        "score":      sim,
+        "score_kind": "cosine",
+        "merge_threshold": merge_threshold,
+    }
+
+
+def _analyze_playbook_pair(
+    es: Elasticsearch, cfg: AppConfig, a_id: str, b_id: str,
+) -> dict:
+    clusters_idx = cfg.elasticsearch.indexes.cowrie.session_clusters
+    run_id = _latest_run_id(es, clusters_idx)
+    if not run_id:
+        raise RuntimeError(f"No cluster docs in {clusters_idx}")
+    pbks = _playbook_mean_centroids(es, clusters_idx, run_id)
+    missing = [p for p in (a_id, b_id) if p not in pbks]
+    if missing:
+        raise RuntimeError(f"playbook(s) not found in run {run_id}: {missing}")
+    a, b = pbks[a_id], pbks[b_id]
+    sim = _cosine(a["centroid"], b["centroid"])
+    return {
+        "kind":       "playbook",
+        "run_id":     run_id,
+        "a":          {"id": a_id, "label": a["playbook_name"] or a_id,
+                       "size": a["member_size"],
+                       "member_cluster_count": a["member_count"]},
+        "b":          {"id": b_id, "label": b["playbook_name"] or b_id,
+                       "size": b["member_size"],
+                       "member_cluster_count": b["member_count"]},
+        "score":      sim,
+        "score_kind": "cosine",
+        "merge_threshold": float(cfg.session.playbook_merge_threshold),
+    }
+
+
+def _analyze_campaign_pair(
+    es: Elasticsearch, cfg: AppConfig, a_id: str, b_id: str,
+) -> dict:
+    campaigns_idx = cfg.elasticsearch.indexes.cowrie.campaigns
+    run_id = _latest_run_id(es, campaigns_idx)
+    if not run_id:
+        raise RuntimeError(f"No campaign docs in {campaigns_idx}")
+    resp = es.search(
+        index=campaigns_idx, size=len([a_id, b_id]) + 1,
+        query={"bool": {"must": [
+            {"term": {"doc_type": "campaign"}},
+            {"term": {"run_id": run_id}},
+            {"terms": {"campaign_id": [a_id, b_id]}},
+        ]}},
+        _source=["campaign_id", "name", "member_playbook_ids",
+                 "member_source_ips", "kind", "ip_count"],
+    )
+    by_id = {h["_source"]["campaign_id"]: h["_source"] for h in resp["hits"]["hits"]}
+    missing = [c for c in (a_id, b_id) if c not in by_id]
+    if missing:
+        raise RuntimeError(f"campaign(s) not found in run {run_id}: {missing}")
+    a, b = by_id[a_id], by_id[b_id]
+    pa, pb = set(a.get("member_playbook_ids") or []), set(b.get("member_playbook_ids") or [])
+    ia, ib = set(a.get("member_source_ips") or []), set(b.get("member_source_ips") or [])
+    union_pb = pa | pb
+    union_ip = ia | ib
+    return {
+        "kind":         "campaign",
+        "run_id":       run_id,
+        "a":            {"id": a_id, "label": a.get("name") or a_id,
+                         "size": int(a.get("ip_count") or 0),
+                         "kind_tag": a.get("kind"),
+                         "playbook_count": len(pa)},
+        "b":            {"id": b_id, "label": b.get("name") or b_id,
+                         "size": int(b.get("ip_count") or 0),
+                         "kind_tag": b.get("kind"),
+                         "playbook_count": len(pb)},
+        "score":        (len(pa & pb) / len(union_pb)) if union_pb else 0.0,
+        "score_kind":   "jaccard",
+        "shared_playbooks":  sorted(pa & pb),
+        "shared_ips_count":  len(ia & ib),
+        "shared_ips_sample": sorted(ia & ib)[:10],
+        "union_ip_count":    len(union_ip),
+    }
+
+
+def analyze_pair(
+    es: Elasticsearch, cfg: AppConfig, kind: str, a: str, b: str,
+) -> dict:
+    """Dispatch compare-analysis by kind. session_cluster delegates to the
+    existing rich analyzer; ip_cluster / command_cluster get a centroid-only
+    summary; playbook composes mean centroids over member clusters;
+    campaign uses set-based Jaccard.
+    """
+    if kind not in SUPPORTED_KINDS:
+        raise ValueError(f"unsupported compare kind: {kind}")
+    if a == b:
+        raise ValueError("a and b must differ")
+    if kind == "session_cluster":
+        return analyze_cluster_pair(es, cfg, a, b)
+    if kind == "ip_cluster":
+        return _analyze_centroid_pair(
+            es, cfg.elasticsearch.indexes.cowrie.ip_clusters, a, b,
+        )
+    if kind == "command_cluster":
+        return _analyze_centroid_pair(
+            es, cfg.elasticsearch.indexes.cowrie.command_clusters, a, b,
+        )
+    if kind == "playbook":
+        return _analyze_playbook_pair(es, cfg, a, b)
+    return _analyze_campaign_pair(es, cfg, a, b)
+
+
 def analyze_cluster_pair(
     es: Elasticsearch, cfg: AppConfig, a_id: str, b_id: str,
 ) -> dict:

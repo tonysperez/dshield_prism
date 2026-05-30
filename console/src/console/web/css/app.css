@@ -307,6 +307,11 @@ body.hide-detail #detail-pane { display: none; }
 }
 .breadcrumb-bar .step:hover { color: var(--accent); text-decoration: underline; }
 .breadcrumb-bar .sep { color: var(--muted); padding: 0 5px; }
+/* Return-to-inbox crumb (G.1 / ROADMAP #17.9). Sits ahead of the
+   graph-internal history; rendered as an anchor so middle-click /
+   right-click work the way an analyst expects of a back-link. */
+.breadcrumb-bar .step-return { color: var(--accent); text-decoration: none; padding-right: 2px; }
+.breadcrumb-bar .step-return:hover { text-decoration: underline; }
 
 #legend {
   position: absolute;
@@ -661,6 +666,89 @@ body.hide-detail #detail-reopen { display: block; }
 }
 .analyst-chip strong { color: #ffe9a3; font-weight: 600; }
 .analyst-artifacts-section .section-head { color: #ffd86b; }
+
+/* ---- Inline compare panel (G.2 / ROADMAP #17.11 amended) -------------- */
+.compare-section .compare-trigger {
+  font-size: 11px;
+  padding: 5px 9px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--panel2);
+  color: var(--accent);
+  cursor: pointer;
+  transition: background-color 120ms ease-out, border-color 120ms ease-out;
+}
+.compare-section .compare-trigger:hover:not(:disabled) { background: #2a3142; border-color: #4cc1ff55; }
+.compare-section .compare-trigger:disabled { opacity: 0.55; cursor: progress; }
+.compare-section .compare-out { margin-top: 8px; }
+.compare-section .muted { color: var(--muted); }
+
+/* Top-N peer picker — inline list under the trigger button. Each peer
+   is a button row with label left + score right. */
+.compare-picker { margin-top: 6px; }
+.compare-picker.hidden { display: none; }
+.compare-picker-hint {
+  font-size: 10px; color: var(--muted); margin-bottom: 4px;
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.compare-peer-row {
+  display: flex; align-items: center; justify-content: space-between;
+  width: 100%; padding: 4px 8px; margin: 2px 0;
+  border: 1px solid var(--border); border-radius: 3px;
+  background: var(--panel2); color: var(--fg); cursor: pointer;
+  font-size: 11px; text-align: left;
+  transition: background-color 100ms ease-out, border-color 100ms ease-out;
+}
+.compare-peer-row:hover { background: #2a3142; border-color: #4cc1ff55; }
+.compare-peer-row.selected { border-color: var(--accent); background: #1b2436; }
+.compare-peer-row .compare-peer-label {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 8px;
+}
+.compare-peer-row .compare-peer-score {
+  font-size: 10px; color: var(--muted); flex-shrink: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.compare-card {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 8px 10px;
+  background: var(--panel2);
+  font-size: 12px;
+}
+.compare-card.verdict-yes     { border-color: #2dd4bf55; }
+.compare-card.verdict-no      { border-color: #f8717155; }
+.compare-card.verdict-neutral { border-color: var(--border); }
+.compare-card .compare-title   { font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+.compare-card .compare-title strong { color: var(--fg); }
+.compare-card .compare-verdict { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.compare-card.verdict-yes .compare-verdict     { color: #2dd4bf; }
+.compare-card.verdict-no  .compare-verdict     { color: #f87171; }
+.compare-card.verdict-neutral .compare-verdict { color: var(--muted); }
+.compare-card .compare-meta { font-size: 10px; color: var(--muted); margin-bottom: 6px; }
+.compare-card .compare-pivot {
+  display: inline-block; cursor: pointer; color: var(--accent); font-size: 11px;
+}
+.compare-card .compare-pivot:hover { text-decoration: underline; }
+
+.compare-debug {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.compare-debug-head {
+  font-size: 10px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: 0.04em; font-weight: 600; margin-bottom: 4px;
+}
+.compare-debug-meta {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px; color: #c2c8d4; background: var(--panel); padding: 4px 6px;
+  border-radius: 3px; white-space: pre; margin: 0 0 6px;
+}
+.compare-explain { font-size: 11px; padding: 4px 8px; }
+.compare-explain-out { margin-top: 6px; font-size: 11px; color: #cdd6e3; }
+.compare-explain-out > div { margin: 2px 0; }
+.compare-explain-out code { font-size: 10px; }
 
 /* Graph node hover tooltip — small DOM overlay positioned at the cursor. */
 .graph-hover-tooltip {

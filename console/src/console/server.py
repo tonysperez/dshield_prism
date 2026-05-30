@@ -43,7 +43,6 @@ NAV_ITEMS: list[dict[str, str]] = [
     {"id": "inbox",     "label": "Inbox",    "href": "/inbox"},
     {"id": "graph",     "label": "Graph",    "href": "/graph"},
     {"id": "browse",    "label": "Browse",   "href": "/browse"},
-    {"id": "compare",   "label": "Compare",  "href": "/compare"},
     {"id": "rules",     "label": "Rules",    "href": "/artifact-rules"},
     {"id": "curation",  "label": "Curation", "href": "/curation"},
     {"id": "health",    "label": "Health",   "href": "/health"},
@@ -151,9 +150,12 @@ def build_app(config_path: str | None = None) -> FastAPI:
     def insights_page_redirect(request: Request) -> RedirectResponse:
         return RedirectResponse(_preserve_qs(request, "/browse"), status_code=302)
 
-    @app.get("/compare")
-    def compare_page(request: Request):
-        return _render(request, "compare.html", active_nav="compare")
+    # /compare folded into the graph as an inline compare panel
+    # (ROADMAP #17.11 amended, G.2). The standalone page is gone; any
+    # surviving deep-link drops the analyst on the graph landing.
+    @app.get("/compare", include_in_schema=False)
+    def compare_page_redirect(request: Request) -> RedirectResponse:
+        return RedirectResponse(_preserve_qs(request, "/graph"), status_code=302)
 
     @app.get("/health")
     def health_page(request: Request):
@@ -678,22 +680,52 @@ def build_app(config_path: str | None = None) -> FastAPI:
             raise HTTPException(500, f"list clusters failed: {exc}")
         return JSONResponse({"run_id": run_id, "clusters": clusters})
 
+    @app.get("/api/compare/nearest")
+    def compare_nearest(
+        kind: str = Query("session_cluster",
+                          description="session_cluster | ip_cluster | command_cluster | playbook | campaign"),
+        id: str   = Query(..., description="anchor id"),
+        top_n: int = Query(8, ge=1, le=25),
+    ) -> JSONResponse:
+        """Inline-compare entrypoint (ROADMAP #17.11). Returns the top-N
+        nearest peers within `kind` so the graph can offer a picker
+        instead of forcing the analyst into a single auto-pick.
+
+        For session_cluster, peers sharing the target's playbook_id are
+        excluded (the merge layer already considers them the same playbook;
+        comparing to a sibling is wasted clicks)."""
+        from enrich.sources.cowrie.explain import nearest_peers
+        try:
+            data = nearest_peers(es, _get_pipeline_cfg(), kind, id, top_n=top_n)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except Exception as exc:
+            log.exception("compare_nearest failed for %s %s", kind, id)
+            raise HTTPException(500, f"nearest failed: {exc}")
+        return JSONResponse(data)
+
     @app.get("/api/compare")
     def compare_analyze(
-        a: str = Query(..., description="cluster_id A"),
-        b: str = Query(..., description="cluster_id B"),
+        kind: str = Query("session_cluster",
+                          description="session_cluster | ip_cluster | command_cluster | playbook | campaign"),
+        a: str = Query(..., description="anchor A"),
+        b: str = Query(..., description="anchor B"),
     ) -> JSONResponse:
-        """Structured analysis of why two HDBSCAN clusters didn't merge.
-        Fast (ES-only); no LLM call."""
-        if a == b:
-            raise HTTPException(400, "a and b must be different cluster_ids")
-        from enrich.sources.cowrie.explain import analyze_cluster_pair
+        """Per-kind compare analysis. session_cluster runs the full
+        analyzer (centroid + scalar + top-K commands + sequences);
+        ip_cluster / command_cluster return a centroid-only summary;
+        playbook composes a mean centroid over member session-clusters;
+        campaign uses Jaccard over member playbooks. Fast (ES-only);
+        the LLM-narrative path is still /api/compare/explain."""
+        from enrich.sources.cowrie.explain import analyze_pair
         try:
-            data = analyze_cluster_pair(es, _get_pipeline_cfg(), a, b)
+            data = analyze_pair(es, _get_pipeline_cfg(), kind, a, b)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
         except RuntimeError as exc:
             raise HTTPException(404, str(exc))
         except Exception as exc:
-            log.exception("compare_analyze failed for %s vs %s", a, b)
+            log.exception("compare_analyze failed for %s %s vs %s", kind, a, b)
             raise HTTPException(500, f"analyze failed: {exc}")
         return JSONResponse(data)
 
