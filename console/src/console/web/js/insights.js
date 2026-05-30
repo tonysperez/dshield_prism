@@ -434,29 +434,12 @@
     wrap.appendChild(table);
   }
 
-  // ─── health badge ────────────────────────────────────────────────────────
-
-  async function pollHealth() {
-    const el = document.getElementById("health");
-    try {
-      const r = await fetch("/api/health");
-      const d = await r.json();
-      el.textContent = "ES " + (d.elasticsearch_version || d.version || "?");
-      el.className = "health " + (d.ok ? "ok" : "err");
-    } catch (_) {
-      el.textContent = "ES offline";
-      el.className = "health err";
-    }
-  }
-
   // ─── init ────────────────────────────────────────────────────────────────
 
   document.addEventListener("DOMContentLoaded", async () => {
     const loading = document.getElementById("loading");
     loading.classList.remove("hidden");
     loading.textContent = "loading insights…";
-    pollHealth();
-    setInterval(pollHealth, 30000);
     try {
       const resp = await fetch("/api/insights");
       if (!resp.ok) throw new Error(resp.status + " " + resp.statusText);

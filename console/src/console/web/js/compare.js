@@ -14,7 +14,6 @@
   // ---- bootstrap ---------------------------------------------------------
 
   document.addEventListener("DOMContentLoaded", () => {
-    initHealth();
     initTabs();
     initButtons();
     loadClusters().then(() => {
@@ -30,18 +29,6 @@
       }
     });
   });
-
-  async function initHealth() {
-    try {
-      const r = await fetch("/api/health");
-      const d = await r.json();
-      const el = document.getElementById("health");
-      el.textContent = d.ok ? "● healthy" : "● error";
-      el.className = "health " + (d.ok ? "ok" : "err");
-    } catch (_) {
-      document.getElementById("health").textContent = "● offline";
-    }
-  }
 
   function initTabs() {
     for (const tab of document.querySelectorAll(".cmp-tab")) {

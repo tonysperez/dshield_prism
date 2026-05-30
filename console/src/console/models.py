@@ -56,4 +56,8 @@ class HealthResponse(BaseModel):
     cluster_name: str | None = None
     indexes: dict[str, str]
     doc_counts: dict[str, Any]
+    # ISO-8601 timestamp of the freshest rollup doc — drives the
+    # "data Xm ago" badge in the topbar. None when no rollup data
+    # exists yet (fresh install) or when the lookup errored.
+    last_data_ts: str | None = None
     error: str | None = None

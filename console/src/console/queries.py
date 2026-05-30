@@ -1358,11 +1358,32 @@ def health(es: Elasticsearch, cfg: AppConfig) -> dict:
             counts[name] = es.count(index=idx).get("count", 0)
         except Exception as e:
             counts[name] = f"error: {e.__class__.__name__}"
+
+    # Freshest @timestamp across the analyst-visible rollup indices —
+    # drives the topbar's "data Xm ago" indicator. Sessions + IP rollups
+    # update on every backward cycle; whichever is fresher wins.
+    last_data_ts: str | None = None
+    for key in ("sessions_rollup", "ips_rollup"):
+        idx = indexes.get(key)
+        if not idx:
+            continue
+        try:
+            r = es.search(
+                index=idx, size=0,
+                aggs={"max_ts": {"max": {"field": "@timestamp"}}},
+            )
+            ts = r["aggregations"]["max_ts"].get("value_as_string")
+            if ts and (last_data_ts is None or ts > last_data_ts):
+                last_data_ts = ts
+        except Exception:
+            pass
+
     return {
         "elasticsearch_version": info.get("version", {}).get("number"),
         "cluster_name": info.get("cluster_name"),
         "indexes": indexes,
         "doc_counts": counts,
+        "last_data_ts": last_data_ts,
     }
 
 

@@ -195,27 +195,6 @@
   _loadUIConfig();
 
   // ---------------------------------------------------------------------
-  // Health badge
-  // ---------------------------------------------------------------------
-  async function refreshHealth() {
-    const badge = $("#health");
-    try {
-      const h = await api("/api/health");
-      if (h.ok) {
-        const total = Object.values(h.doc_counts).filter((v) => typeof v === "number").reduce((a, b) => a + b, 0);
-        badge.textContent = `ES ${h.elasticsearch_version} • ${total.toLocaleString()} docs`;
-        badge.className = "health ok";
-      } else {
-        badge.textContent = `ES error: ${h.error || "unknown"}`;
-        badge.className = "health err";
-      }
-    } catch (e) {
-      badge.textContent = `ES error: ${e.message}`;
-      badge.className = "health err";
-    }
-  }
-
-  // ---------------------------------------------------------------------
   // Search
   // ---------------------------------------------------------------------
   async function doSearch(q) {
@@ -2082,9 +2061,6 @@ What specific steps should a defender take to prevent this attack from succeedin
         _submitAsk();
       }
     });
-
-    refreshHealth();
-    setInterval(refreshHealth, 30000);
 
     window.addEventListener("popstate", () => {
       const target = readUrl();
