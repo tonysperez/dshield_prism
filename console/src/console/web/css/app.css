@@ -200,6 +200,33 @@ main {
   min-height: 0;
   overflow: hidden;
 }
+.graph-notice {
+  position: absolute;
+  top: 50%; left: 50%; transform: translate(-50%, -50%);
+  max-width: 440px;
+  z-index: 10;
+  background: rgba(20, 27, 42, 0.95);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  border-radius: 6px;
+  padding: 14px 18px;
+  color: var(--fg);
+  font-size: 12px; line-height: 1.5;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+}
+.graph-notice h4 {
+  margin: 0 0 6px;
+  font-size: 11px; font-weight: 600;
+  color: var(--warn);
+  text-transform: uppercase; letter-spacing: 0.7px;
+}
+.graph-notice code {
+  background: var(--panel2); padding: 1px 5px; border-radius: 3px;
+  font-size: 11px;
+}
+.graph-notice .gn-foot {
+  margin-top: 8px; font-size: 11px; color: var(--muted);
+}
 #cy {
   position: absolute;
   inset: 0;

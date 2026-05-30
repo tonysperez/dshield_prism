@@ -6,8 +6,10 @@
        Single-page layout, no shared CSS with the graph page. */
 
     #findings-main {
-      max-width: 1400px;
-      margin: 0 auto;
+      /* Inbox is a triage workflow surface — claim the full viewport
+         width rather than centering inside a 1400px cap. Facet rail
+         anchors to the left; the table absorbs everything to the right. */
+      margin: 0;
       padding: 16px 20px 60px;
       display: grid;
       grid-template-columns: minmax(0, 1fr);
@@ -83,6 +85,36 @@
     table.fnd-table td.trend svg { display: block; vertical-align: middle; }
     table.fnd-table td.trend .trend-empty { color: #4a5470; }
 
+    /* Next-action chip — the spine (#14). Colour codes the verb; tooltip
+       carries the full one-line recommendation. */
+    .action-chip {
+      display: inline-block;
+      font-size: 10px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.6px;
+      padding: 2px 7px; border-radius: 3px;
+      border: 1px solid; white-space: nowrap;
+      cursor: help;
+    }
+    .action-chip.action-confirm      { color: #4ade80; border-color: #4ade8060; background: #0a2914; }
+    .action-chip.action-investigate  { color: #fbbf24; border-color: #fbbf2460; background: #291f0a; }
+    .action-chip.action-auto_confirm { color: #4cc1ff; border-color: #4cc1ff80; background: #0a1929; }
+    .action-chip.action-ack          { color: #94a3b8; border-color: #94a3b860; background: #14181f; }
+    .action-chip.action-reject       { color: #ff6464; border-color: #ff646460; background: #29140a; }
+    table.fnd-table td.next-action  { white-space: nowrap; }
+    table.fnd-table td.next-action .action-empty { color: #4a5470; }
+
+    /* Drawer next-action banner — leading section of the drawer,
+       higher emphasis than the inline chip. */
+    .drawer-next-action {
+      background: #0e1e35;
+      border-left: 3px solid #4cc1ff;
+      padding: 12px 16px;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .drawer-next-action .action-text {
+      font-size: 12px; color: #c8d0e2;
+    }
+
     .fnd-kind-badge {
       font-size: 10px; font-weight: 600; text-transform: uppercase;
       letter-spacing: 0.6px; padding: 1px 6px;
@@ -103,9 +135,11 @@
     /* Narrative truncates to a single line with an ellipsis (#24);
        hovering the cell shows the full text via the [data-tooltip]
        pattern. The cell is a flex row so the LLM chip stays visible
-       after the truncated text. */
+       after the truncated text. The 280px cap leaves room for the
+       Next + Status columns at the end of the row on standard
+       desktop widths (~1440px viewport, ~1100px inbox column). */
     table.fnd-table td.narrative {
-      max-width: 480px; color: #c8d0e2;
+      max-width: 280px; width: 280px; color: #c8d0e2;
       display: flex; align-items: center; gap: 6px;
     }
     table.fnd-table td.narrative .narrative-text {
@@ -119,6 +153,10 @@
       white-space: normal; max-width: 480px;
       line-height: 1.5;
     }
+    /* Safety net — if a narrow viewport still can't fit the row,
+       scroll horizontally rather than clip the Status cell off
+       screen. */
+    #inbox-rows { overflow-x: auto; }
     .narrative-llm-chip {
       display: inline-block; margin-left: 4px;
       font-size: 9px; padding: 0 4px;

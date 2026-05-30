@@ -14,6 +14,63 @@
  */
 
 const STATUSES = ["new", "ack", "confirmed", "rejected"];
+
+// ────────────────────────────────────────────────────────────────────────────
+// Next-action templates (ROADMAP #17.14 — the spine of the overhaul).
+//
+// A finding without a suggested next step is a notification, not a triage
+// row. Deterministic per-kind templates are intentionally first — they
+// close ~80% of the value before any LLM rescue. Each entry has:
+//   verb: confirm | investigate | ack | auto_confirm | reject
+//   text: one-line explanation rendered as the chip tooltip + drawer body
+// `intel_verdict_flip` is direction-dependent and computed in nextAction().
+// Confirmed/rejected rows return null — the decision is already made.
+// ────────────────────────────────────────────────────────────────────────────
+const ACTION_TEMPLATES = {
+  // Drift kinds — confirm to keep tracking, investigate for the high-signal ones
+  playbook_command_drift:  {verb: "confirm",     text: "Drift in tracked playbook commands — confirm to keep watching, or reject if it's known noise"},
+  playbook_artifact_drift: {verb: "confirm",     text: "New artifacts appeared on a tracked playbook — confirm to keep watching"},
+  playbook_geo_drift:      {verb: "confirm",     text: "Geo distribution shifted on this playbook — confirm to keep tracking"},
+  playbook_size_drift:     {verb: "confirm",     text: "Playbook size moved beyond its baseline — confirm to keep tracking"},
+  playbook_resurgence:     {verb: "investigate", text: "Playbook is back after a silent period — investigate the new sessions"},
+  playbook_sequence_drift: {verb: "confirm",     text: "Command sequence shifted on this playbook — confirm to keep tracking"},
+  campaign_growth:         {verb: "investigate", text: "Campaign added members since its baseline — investigate the new IPs"},
+
+  // Coverage kinds — analyst-pinnable artifacts. Confirming arms drift watch.
+  playbook: {verb: "confirm", text: "Confirm to start drift-watching this playbook"},
+  campaign: {verb: "confirm", text: "Confirm to start drift-watching this campaign"},
+
+  // Discovery kinds — first appearances + anomalies
+  new_playbook:           {verb: "confirm",     text: "Confirm if this is a real new TTP, reject if it's a one-off"},
+  outlier_burst:          {verb: "investigate", text: "Burst activity on a single IP — investigate before it spreads"},
+  novel_edge_session:     {verb: "investigate", text: "Session is structurally unusual — investigate the command sequence"},
+  unattributed_active_ip: {verb: "investigate", text: "Orphan IP with no known cluster home — investigate its session history"},
+  campaign_convergence:   {verb: "confirm",     text: "Multiple playbooks converging on shared infrastructure — confirm to track"},
+  ip_behavior_shift:      {verb: "investigate", text: "IP's behaviour changed from its previous pattern — investigate the shift"},
+  // intel_verdict_flip handled in nextAction() — direction matters
+};
+
+const ACTION_VERB_LABEL = {
+  confirm:      "Confirm",
+  investigate:  "Investigate",
+  ack:          "Ack",
+  auto_confirm: "Auto-confirm",
+  reject:       "Reject",
+};
+
+function nextAction(row) {
+  if (!row || !row.kind) return null;
+  // Confirmed/rejected already decided — no action chip in the row.
+  if (row.status === "confirmed" || row.status === "rejected") return null;
+
+  if (row.kind === "intel_verdict_flip") {
+    const v = ((row.evidence || {}).verdict_curr || "").toLowerCase();
+    if (v === "malicious") return {verb: "auto_confirm", text: "Intel verdict flipped to malicious — auto-confirm candidate"};
+    if (v === "clean")     return {verb: "ack",          text: "Intel verdict flipped to clean — consider ack"};
+    return {verb: "investigate", text: "Intel verdict changed — investigate the new evidence"};
+  }
+  return ACTION_TEMPLATES[row.kind] || null;
+}
 // Display labels for the three backend streams (the API contract still
 // uses drift/discovery/coverage; the UI surfaces them as a Category facet).
 const STREAM_LABEL = {
@@ -268,6 +325,7 @@ function renderInbox(rows) {
     el("th", null, ["Narrative"]),
     el("th", null, ["First"]),
     el("th", null, ["Last"]),
+    el("th", null, ["Next"]),
     el("th", null, ["Status"]),
   ])]);
   table.appendChild(thead);
@@ -316,6 +374,20 @@ function renderInbox(rows) {
     const ev = r.evidence || {};
     tr.appendChild(el("td", null, [fmtTs(ev.first_seen || r.first_seen_at)]));
     tr.appendChild(el("td", null, [fmtTs(ev.last_seen || r.last_seen_at)]));
+    // Next-action chip — the spine. Empty cell when the finding is
+    // already confirmed/rejected or no template covers its kind.
+    const actCell = el("td", {class: "next-action"});
+    const action = nextAction(r);
+    if (action) {
+      const chip = el("span", {
+        class: "action-chip action-" + action.verb,
+        "data-tooltip": action.text,
+      }, [ACTION_VERB_LABEL[action.verb] || action.verb]);
+      actCell.appendChild(chip);
+    } else {
+      actCell.appendChild(el("span", {class: "action-empty"}, ["—"]));
+    }
+    tr.appendChild(actCell);
     const sel = el("select", {class: "fnd-status-select", "data-fid": r._id || r.finding_id});
     for (const s of STATUSES) {
       const opt = el("option", {value: s}, [s]);
@@ -500,6 +572,20 @@ function renderDrawer(data) {
     `${data.kind || "finding"} — ${artifactLabel(data)}`;
   document.getElementById("drawer-subtitle").textContent =
     `${a.kind || "?"}:${a.value || ""}  •  status: ${data.status || "?"}  •  score ${fmtScore(data.score)}`;
+
+  // Next action — the spine (ROADMAP #17.14). Rendered first so it's
+  // the analyst's eye-anchor on drawer open. Suppressed for already-
+  // decided rows so the drawer doesn't pretend there's something left
+  // to do.
+  const action = nextAction(data);
+  if (action) {
+    const sec = el("div", {class: "drawer-section drawer-next-action"});
+    sec.appendChild(el("span", {
+      class: "action-chip action-" + action.verb,
+    }, [ACTION_VERB_LABEL[action.verb] || action.verb]));
+    sec.appendChild(el("span", {class: "action-text"}, [" " + action.text]));
+    body.appendChild(sec);
+  }
 
   // Narrative
   if (data.narrative) {
