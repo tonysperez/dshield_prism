@@ -149,7 +149,41 @@ async function loadRuns() {
   body.appendChild(table);
 }
 
+async function purgeCache() {
+  const btn = document.getElementById("cfg-purge-cache");
+  const status = document.getElementById("cfg-purge-status");
+  if (!btn || !status) return;
+  btn.disabled = true;
+  status.className = "h-action-status";
+  status.textContent = "purging…";
+  try {
+    const r = await fetch("/api/cache/purge", { method: "POST" });
+    if (r.ok) {
+      const data = await r.json();
+      const layers = (data.cleared || []).join(", ") || "ok";
+      status.className = "h-action-status success";
+      status.textContent = `purged: ${layers}`;
+      setTimeout(() => {
+        if (status.textContent.startsWith("purged")) {
+          status.textContent = "";
+          status.className = "h-action-status";
+        }
+      }, 4000);
+    } else {
+      status.className = "h-action-status error";
+      status.textContent = `failed: HTTP ${r.status}`;
+    }
+  } catch (exc) {
+    status.className = "h-action-status error";
+    status.textContent = `error: ${exc}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   loadFreshness();
   loadRuns();
+  const purgeBtn = document.getElementById("cfg-purge-cache");
+  if (purgeBtn) purgeBtn.addEventListener("click", purgeCache);
 });

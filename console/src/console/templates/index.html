@@ -3,34 +3,17 @@
     <form id="search-form" class="search">
       <input id="search-input" type="text" autocomplete="off" spellcheck="false"
              placeholder="search IOC: IP, session id, sha256, playbook, campaign, cluster #, T1059.003, AS12345, US, or free text" />
-      <button type="submit">Search</button>
-      <button type="button" id="fit-btn" title="Recenter / fit graph">Fit</button>
-      <button type="button" id="reset-btn" title="Reset graph">Reset</button>
       <button type="button" id="settings-btn" title="Filter / display settings" aria-label="settings">⚙</button>
       <button type="button" id="ask-ai-btn" title="Ask the local LLM a question about what's in view">Ask AI</button>
     </form>
-    <label class="siblings" title="How many cluster sibling layers to pull in. 0 = just the anchor's pipeline trace; 1 = also other IPs/sessions/commands in the same clusters; 2+ = siblings of siblings.">
-      <span class="siblings-label">siblings</span>
-      <input id="siblings-slider" type="range" min="0" max="3" step="1" value="0" />
-      <span id="siblings-value" class="siblings-value">0</span>
-    </label>
-    <div class="lanes" title="Toggle which IOC swimlanes are shown. Hiding a lane removes those nodes from the graph; re-enabling backfills via pipeline auto-trace.">
-      <span class="lanes-label">lanes</span>
-      <label class="lane-chk"><input type="checkbox" data-lane="geo" checked /><span>geo</span></label>
-      <label class="lane-chk"><input type="checkbox" data-lane="ip" checked /><span>ip</span></label>
-      <label class="lane-chk"><input type="checkbox" data-lane="session" checked /><span>session</span></label>
-      <label class="lane-chk"><input type="checkbox" data-lane="command" checked /><span>command</span></label>
-      <label class="lane-chk"><input type="checkbox" data-lane="file" checked /><span>file</span></label>
-      <label class="lane-chk"><input type="checkbox" data-lane="mitre" checked /><span>mitre</span></label>
-    </div>
-    <div class="spotlight" title="Highlight nodes that are cluster-specific (specificity above the threshold). Only takes effect when the graph anchor is a playbook or session — multi-playbook views have no single score to filter on.">
-      <label class="spot-chk"><input type="checkbox" id="spotlight-toggle" /><span>distinctive only</span></label>
-      <label class="spot-chk spot-hide"><input type="checkbox" id="spotlight-hide" disabled /><span>hide commodity</span></label>
-      <label class="spot-chk spot-threshold" title="Cutoff at which a node counts as 'distinctive'. Per-browser; persists in localStorage. Click ↺ to fall back to the server-config default.">
-        <span>≥</span>
-        <input id="spotlight-threshold" type="number" min="0" max="1" step="0.05" inputmode="decimal" />
-        <button type="button" id="spotlight-threshold-reset" class="spot-reset" title="Reset to server-config default" hidden>↺</button>
-      </label>
+    <!-- 3-way spotlight mode (F.2 / UX backlog). Replaces the dual
+         "distinctive only" + "hide commodity" checkboxes and threshold
+         input. Threshold + lanes moved to the settings modal. -->
+    <div class="spot-mode" role="radiogroup" aria-label="Spotlight mode"
+         title="Spotlight mode. everything = no filter, signature = highlight cluster-distinctive nodes only, commodity = hide the cluster-distinctive ones to reveal commodity infrastructure.">
+      <button type="button" class="spot-mode-btn active" data-spot-mode="everything">Everything</button>
+      <button type="button" class="spot-mode-btn"        data-spot-mode="signature">Signature</button>
+      <button type="button" class="spot-mode-btn"        data-spot-mode="commodity">Commodity</button>
     </div>
 {% endblock %}
 {% block topbar_breadcrumb %}
@@ -152,17 +135,33 @@
         </fieldset>
 
         <fieldset class="setting-group">
-          <legend>Cache</legend>
+          <legend>Graph display</legend>
           <p class="setting-hint">
-            The console caches insights (60&nbsp;s) and the latest cluster
-            run id (5&nbsp;min) to keep page loads snappy. After a fresh
-            pipeline run, purge the cache to force a re-read of ES.
+            Lanes toggle which IOC swimlanes appear in the graph.
+            Spotlight threshold sets the cutoff for the topbar's
+            Signature / Commodity modes — nodes whose cluster-specificity
+            is above this count as "signature".
           </p>
-          <div class="setting-row">
-            <button type="button" id="cfg-purge-cache" class="setting-action">Purge cache</button>
-            <span id="cfg-purge-status" class="setting-status"></span>
+          <div class="setting-row lanes-row">
+            <span class="setting-label">Lanes:</span>
+            <label class="lane-chk"><input type="checkbox" data-lane="geo" checked /><span>geo</span></label>
+            <label class="lane-chk"><input type="checkbox" data-lane="ip" checked /><span>ip</span></label>
+            <label class="lane-chk"><input type="checkbox" data-lane="session" checked /><span>session</span></label>
+            <label class="lane-chk"><input type="checkbox" data-lane="command" checked /><span>command</span></label>
+            <label class="lane-chk"><input type="checkbox" data-lane="file" checked /><span>file</span></label>
+            <label class="lane-chk"><input type="checkbox" data-lane="mitre" checked /><span>mitre</span></label>
           </div>
+          <div class="setting-row">
+            <span class="setting-label">Spotlight threshold:</span>
+            <span class="thresh-control">
+              <span>≥</span>
+              <input id="spotlight-threshold" type="number" min="0" max="1" step="0.05" inputmode="decimal" />
+              <button type="button" id="spotlight-threshold-reset" class="spot-reset" title="Reset to server-config default" hidden>↺</button>
+            </span>
+          </div>
+          <div id="spotlight-threshold-preview" class="setting-status thresh-preview"></div>
         </fieldset>
+
       </section>
       <footer class="modal-footer">
         <button type="button" class="modal-cancel">Cancel</button>

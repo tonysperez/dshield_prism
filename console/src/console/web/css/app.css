@@ -722,6 +722,57 @@ main {
 }
 .setting-status.success { color: var(--accent); }
 .setting-status.error { color: #f87171; }
+.setting-label { color: var(--muted); min-width: 130px; }
+/* Lanes row inside settings modal (F.2) — horizontal flow next to the
+   "Lanes:" label. */
+.lanes-row { flex-wrap: wrap; gap: 6px 10px; }
+.lanes-row .lane-chk { font-size: 11px; }
+/* Threshold control wrapper inside the modal so the number input,
+   reset arrow, and prefix sit on one row. */
+.thresh-control {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px;
+}
+.thresh-control input[type="number"] {
+  width: 4.5em;
+  background: var(--panel2); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 3px;
+  padding: 2px 6px; font: inherit;
+}
+.thresh-control .spot-reset {
+  background: transparent; border: 0;
+  color: var(--muted); cursor: pointer;
+  font-size: 12px; padding: 0 4px;
+}
+.thresh-control .spot-reset:hover { color: var(--fg); }
+.thresh-preview {
+  margin-left: 138px;          /* aligns under the value column */
+  font-size: 11px; color: var(--muted);
+  font-style: italic;
+}
+
+/* 3-way spotlight switch on the topbar (F.2 / UX backlog). Replaces
+   "distinctive only" + "hide commodity" + threshold checkboxes. The
+   threshold lives in the settings modal now. */
+.spot-mode {
+  display: inline-flex; align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.spot-mode-btn {
+  background: var(--panel2); color: var(--muted);
+  border: 0; border-right: 1px solid var(--border);
+  padding: 3px 10px;
+  font-size: 11px; font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.spot-mode-btn:last-child { border-right: 0; }
+.spot-mode-btn:hover { color: var(--fg); background: #2a3142; }
+.spot-mode-btn.active {
+  background: #0a1929; color: var(--accent);
+}
 .modal-footer {
   display: flex;
   justify-content: flex-end;
@@ -900,19 +951,8 @@ main {
   display: block;
 }
 
-/* Ask AI ------------------------------------------------------------------ */
-#ask-ai-btn {
-  background: #1e3a4a55;
-  border: 1px solid #4cc1ff44;
-  color: var(--accent);
-  padding: 4px 10px;
-  border-radius: 4px;
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  white-space: nowrap;
-}
-#ask-ai-btn:hover { background: #1e3a4a99; border-color: var(--accent); }
+/* Ask AI — uses the same baseline coloring as the search-form
+   buttons (Settings ⚙) so the topbar reads as one set of controls. */
 
 .ask-ai-card { width: min(580px, calc(100vw - 32px)); }
 

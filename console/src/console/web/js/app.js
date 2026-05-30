@@ -71,7 +71,7 @@
     anchor: null,           // {type, id}
     history: [],            // [{type, id, label}]
     currentDetail: null,    // last /api/ioc/... payload
-    siblings: 0,            // cluster sibling expansion levels (0 = none)
+    siblings: 1,            // cluster sibling expansion levels (default 1 — F.2)
     pipelineExpanded: new Set(),  // ids whose pipeline neighbors we've fetched
     siblingsExpanded: new Set(),  // cluster pill ids whose members we've fetched
     // Per-node directional role for pipeline auto-trace:
@@ -1160,7 +1160,7 @@
     // Graph state envelope (ROADMAP #17.5). Every knob that affects the
     // visible canvas rides in the URL so reload + share-link reproduce
     // the view exactly.
-    if (state.siblings > 0) p.set("siblings", String(state.siblings));
+    if (state.siblings !== 1) p.set("siblings", String(state.siblings));
     if (!_lanesAreDefault(state.lanesVisible)) {
       p.set("lanes", Array.from(state.lanesVisible).join(","));
     }
@@ -1746,12 +1746,6 @@
       btn.addEventListener("click", () => setMode(btn.dataset.mode));
     });
 
-    // Fit button — works for both modes.
-    $("#fit-btn").addEventListener("click", () => {
-      if (tlState.mode === "timeline") Timeline.fit();
-      else Graph.fit();
-    });
-
     // GroupBy checkboxes for Timeline Y-axis.
     function _syncGroupBy() {
       Timeline.setGroupBy({
@@ -1770,42 +1764,16 @@
       if (q) doSearch(q);
     });
 
-    $("#reset-btn").addEventListener("click", () => {
-      state.history = [];
-      state.anchor = null;
-      state.expandToken += 1;
-      state.depthOf = new Map();
-      state.pipelineExpanded = new Set();
-      state.siblingsExpanded = new Set();
-      state.pipelineRole = new Map();
-      state.addedClusters = new Map();
-      _updateLoading(0);
-      clearSetsFilter();
-      Graph.replace({ nodes: [], edges: [] }, null);
-      $("#detail-header").innerHTML = "<em>Search an IOC to begin.</em>";
-      $("#tab-overview").innerHTML = "";
-      $("#tab-related").innerHTML = "";
-      $("#tab-activity").innerHTML = "";
-      _activityCache.clear();
-      _currentSelectedNode = null;
-      $("#raw-json").textContent = "";
-      history.replaceState(null, "", "/");
-    });
     $("#sets-clear").addEventListener("click", clearSetsFilter);
 
     // ROADMAP #17.5 — restore the URL state envelope BEFORE wiring
     // initial UI state so shared links reproduce the view exactly.
     applyGraphStateFromUrl();
 
-    const sibSlider = $("#siblings-slider");
-    sibSlider.value = String(state.siblings);
-    $("#siblings-value").textContent = String(state.siblings);
-    sibSlider.addEventListener("input", (e) => {
-      $("#siblings-value").textContent = e.target.value;
-    });
-    sibSlider.addEventListener("change", (e) => {
-      siblingsTarget(e.target.value);
-    });
+    // Siblings slider was removed in F.2 — default is now 1 and the
+    // analyst expands per-cluster via "+ Add cluster to view" in the
+    // detail pane. state.siblings is still URL-encodable for shared
+    // links that want a wider initial fan-out.
 
     document.querySelectorAll(".lane-chk input").forEach((chk) => {
       chk.checked = state.lanesVisible.has(chk.dataset.lane);
@@ -1814,31 +1782,36 @@
       });
     });
 
-    // ROADMAP #4 — cluster-specificity spotlight. Shares `prism.spotlightOnly`
-    // localStorage with the findings drawer so toggling in one view carries to
-    // the other. The "hide commodity" sub-toggle is its own key and is
-    // disabled in the UI while spotlight is off.
+    // ROADMAP #4 + F.2 — 3-way spotlight switch on the topbar
+    // (everything / signature / commodity). Maps to the existing
+    // localStorage keys so the findings drawer + graph getters keep
+    // working unchanged.
     const SPOT_KEY = "prism.spotlightOnly";
     const SPOT_HIDE_KEY = "prism.spotlightHide";
-    const spotOn = $("#spotlight-toggle");
-    const spotHide = $("#spotlight-hide");
-    if (spotOn && spotHide) {
-      spotOn.checked = localStorage.getItem(SPOT_KEY) === "1";
-      spotHide.checked = localStorage.getItem(SPOT_HIDE_KEY) === "1";
-      spotHide.disabled = !spotOn.checked;
-      Graph.setSpotlight({on: spotOn.checked, hide: spotHide.checked});
-      spotOn.addEventListener("change", () => {
-        localStorage.setItem(SPOT_KEY, spotOn.checked ? "1" : "0");
-        spotHide.disabled = !spotOn.checked;
-        Graph.setSpotlight({on: spotOn.checked, hide: spotHide.checked});
-        updateUrl();
-      });
-      spotHide.addEventListener("change", () => {
-        localStorage.setItem(SPOT_HIDE_KEY, spotHide.checked ? "1" : "0");
-        Graph.setSpotlight({on: spotOn.checked, hide: spotHide.checked});
-        updateUrl();
-      });
+    function _readSpotMode() {
+      const on   = localStorage.getItem(SPOT_KEY) === "1";
+      const hide = localStorage.getItem(SPOT_HIDE_KEY) === "1";
+      if (!on)   return "everything";
+      if (hide)  return "commodity";
+      return "signature";
     }
+    function _applySpotMode(mode) {
+      const on   = mode !== "everything";
+      const hide = mode === "commodity";
+      localStorage.setItem(SPOT_KEY,      on   ? "1" : "0");
+      localStorage.setItem(SPOT_HIDE_KEY, hide ? "1" : "0");
+      Graph.setSpotlight({on, hide});
+      document.querySelectorAll(".spot-mode-btn").forEach((b) => {
+        b.classList.toggle("active", b.dataset.spotMode === mode);
+      });
+      updateUrl();
+    }
+    // Initial render from current LS state (URL state was already
+    // applied earlier via applyGraphStateFromUrl).
+    _applySpotMode(_readSpotMode());
+    document.querySelectorAll(".spot-mode-btn").forEach((btn) => {
+      btn.addEventListener("click", () => _applySpotMode(btn.dataset.spotMode));
+    });
 
     // ROADMAP #4 — threshold input (writes to the shared LS key the drawer +
     // graph getters already read). Validation: clamp to [0,1] and snap to
@@ -1847,8 +1820,31 @@
     const SPOT_THRESH_KEY = "prism.spotlightThreshold";
     const threshInput = $("#spotlight-threshold");
     const threshReset = $("#spotlight-threshold-reset");
+    // F.2 — live preview of the spotlight threshold's effect on the
+    // current canvas, written into the settings modal. Counts how many
+    // nodes are above (would surface) vs below (would hide) the
+    // threshold among nodes that carry a specificity score at all.
+    function _renderThresholdPreview() {
+      const el = $("#spotlight-threshold-preview");
+      if (!el) return;
+      const thr = window.PrismUI?.specThreshold ?? 0.5;
+      const nodes = (window.Graph && typeof Graph.allNodes === "function")
+        ? Graph.allNodes() : [];
+      let above = 0, below = 0;
+      for (const n of nodes) {
+        if (n.specificity == null) continue;
+        if (n.specificity >= thr) above++; else below++;
+      }
+      if (above + below === 0) {
+        el.textContent = "no scored nodes in view yet";
+        return;
+      }
+      el.textContent = `at ≥ ${thr.toFixed(2)}: ${above} would surface · ${below} would hide`;
+    }
+
     if (threshInput) {
       _syncSpotlightThresholdUI();
+      threshInput.addEventListener("input", _renderThresholdPreview);
       threshInput.addEventListener("change", () => {
         const raw = threshInput.value.trim();
         if (raw === "") {
@@ -1863,6 +1859,7 @@
           window.PrismUI.specThreshold = v;
         }
         _syncSpotlightThresholdUI();
+        _renderThresholdPreview();
         // Redraw graph; the drawer (if open) doesn't auto-refresh — analyst
         // re-opens it. Documented in the field tooltip.
         if (window.Graph && typeof window.Graph.setSpotlight === "function") {
@@ -1876,12 +1873,17 @@
         localStorage.removeItem(SPOT_THRESH_KEY);
         window.PrismUI.specThreshold = window.PrismUI.serverSpecThreshold ?? 0.5;
         _syncSpotlightThresholdUI();
+        _renderThresholdPreview();
         if (window.Graph && typeof window.Graph.setSpotlight === "function") {
           window.Graph.setSpotlight({});
         }
         updateUrl();
       });
     }
+
+    // Expose so the modal-open path can refresh the preview against
+    // the latest canvas.
+    window.__renderThresholdPreview = _renderThresholdPreview;
 
     // Settings modal
     const modal = $("#settings-modal");
@@ -1891,6 +1893,9 @@
       cfgLogin.checked = settings.requireLogin;
       cfgCmd.checked = settings.requireCommands;
       modal.classList.remove("hidden");
+      if (typeof window.__renderThresholdPreview === "function") {
+        window.__renderThresholdPreview();
+      }
     }
     function closeSettings() { modal.classList.add("hidden"); }
     function applySettings() {
@@ -1914,43 +1919,8 @@
     modal.querySelector(".modal-cancel").addEventListener("click", closeSettings);
     modal.querySelector(".modal-save").addEventListener("click", applySettings);
 
-    // Cache purge button. Resets the server-side in-memory caches so
-    // the next request reads ES afresh — useful after a manual pipeline
-    // run or an out-of-band data fix when waiting for the 60s/5min
-    // TTLs to expire is impatient. Updates the status span in-place;
-    // doesn't close the modal.
-    const purgeBtn = $("#cfg-purge-cache");
-    const purgeStatus = $("#cfg-purge-status");
-    if (purgeBtn && purgeStatus) {
-      purgeBtn.addEventListener("click", async () => {
-        purgeBtn.disabled = true;
-        purgeStatus.className = "setting-status";
-        purgeStatus.textContent = "purging…";
-        try {
-          const r = await fetch("/api/cache/purge", { method: "POST" });
-          if (r.ok) {
-            const data = await r.json();
-            const layers = (data.cleared || []).join(", ") || "ok";
-            purgeStatus.className = "setting-status success";
-            purgeStatus.textContent = `purged: ${layers}`;
-            setTimeout(() => {
-              if (purgeStatus.textContent.startsWith("purged")) {
-                purgeStatus.textContent = "";
-                purgeStatus.className = "setting-status";
-              }
-            }, 4000);
-          } else {
-            purgeStatus.className = "setting-status error";
-            purgeStatus.textContent = `failed: HTTP ${r.status}`;
-          }
-        } catch (exc) {
-          purgeStatus.className = "setting-status error";
-          purgeStatus.textContent = `error: ${exc}`;
-        } finally {
-          purgeBtn.disabled = false;
-        }
-      });
-    }
+    // Cache purge moved to the Health page (web/js/health.js).
+
     modal.addEventListener("click", (e) => {
       // Clicking the backdrop (the modal itself, not the card) closes.
       if (e.target === modal) closeSettings();

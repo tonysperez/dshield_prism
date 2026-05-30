@@ -56,6 +56,20 @@
       padding: 12px; background: #1a0e0e;
       border: 1px solid #f8717128; border-radius: 6px;
     }
+    /* Cache purge controls — siblings of the freshness/runs tables. */
+    .h-actions { display: flex; align-items: center; gap: 10px; }
+    .h-action-btn {
+      padding: 5px 14px;
+      background: #1a2540; color: #4cc1ff;
+      border: 1px solid #4cc1ff28; border-radius: 4px;
+      font: inherit; font-size: 12px; font-weight: 600;
+      cursor: pointer;
+    }
+    .h-action-btn:hover:not(:disabled) { background: #1f2d4e; }
+    .h-action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .h-action-status { font-size: 11px; color: #6b7494; }
+    .h-action-status.success { color: #4ade80; }
+    .h-action-status.error   { color: #f87171; }
   </style>
 {% endblock %}
 {% block content %}
@@ -73,6 +87,16 @@
         <span class="h-hint">latest <code>run_summary</code> doc per cluster index</span>
       </p>
       <div id="runs-body"><em class="h-empty">loading…</em></div>
+    </section>
+
+    <section>
+      <p class="h-section-title">Cache
+        <span class="h-hint">in-memory caches in the console process — insights summaries (60&nbsp;s TTL), latest cluster <code>run_id</code> (5&nbsp;min TTL). Purge to force a fresh read after a pipeline cycle.</span>
+      </p>
+      <div class="h-actions">
+        <button type="button" id="cfg-purge-cache" class="h-action-btn">Purge cache</button>
+        <span id="cfg-purge-status" class="h-action-status"></span>
+      </div>
     </section>
 
     <p style="font-size:11px; color:#414b62; margin:0;">
