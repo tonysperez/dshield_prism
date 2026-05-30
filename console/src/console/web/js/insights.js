@@ -33,9 +33,9 @@
 
   // ─── navigation ──────────────────────────────────────────────────────────
 
-  // M5: `/` redirects to `/findings`. Insights navigations target the
-  // graph explicitly so the IOC query parameter actually lands you on
-  // the graph view of the artifact.
+  // `/` redirects to `/inbox`. Browse navigations target the graph
+  // explicitly so the IOC query parameter actually lands you on the
+  // graph view of the artifact.
   function graphHref(type, id) {
     return "/graph?ioc=" + encodeURIComponent(type + ":" + id);
   }
@@ -56,29 +56,29 @@
     return b;
   }
 
-  // Some artifact types map onto a findings rule kind (playbook → playbook,
+  // Some artifact types map onto an inbox-finding kind (playbook → playbook,
   // session_cluster → playbook, campaign → campaign). Others (command_cluster,
-  // ip_cluster) don't, so the button just lands the analyst on the findings
-  // inbox with no kind filter applied.
-  const _FINDINGS_KIND_BY_TYPE = {
+  // ip_cluster) don't, so the button just lands the analyst on the inbox
+  // with no kind filter applied.
+  const _INBOX_KIND_BY_TYPE = {
     "playbook":        "playbook",
     "session_cluster": "playbook",
     "campaign":        "campaign",
   };
 
-  function findingsHref(type) {
-    const kind = _FINDINGS_KIND_BY_TYPE[type];
-    return kind ? `/findings?kind=${encodeURIComponent(kind)}` : "/findings";
+  function inboxHref(type) {
+    const kind = _INBOX_KIND_BY_TYPE[type];
+    return kind ? `/inbox?kind=${encodeURIComponent(kind)}` : "/inbox";
   }
 
-  function findingsBtn(type, _id) {
+  function inboxBtn(type, _id) {
     const b = document.createElement("button");
     b.className = "pivot-btn findings-btn";
-    b.textContent = "→ Findings";
-    b.title = "Open in the findings inbox";
+    b.textContent = "→ Inbox";
+    b.title = "Open in the inbox";
     b.addEventListener("click", (e) => {
       e.stopPropagation();
-      window.location.href = findingsHref(type);
+      window.location.href = inboxHref(type);
     });
     return b;
   }
@@ -87,7 +87,7 @@
     const cell = document.createElement("td");
     cell.className = "actions";
     cell.appendChild(pivotBtn(type, id));
-    cell.appendChild(findingsBtn(type, id));
+    cell.appendChild(inboxBtn(type, id));
     return cell;
   }
 

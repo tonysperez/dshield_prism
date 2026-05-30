@@ -40,9 +40,9 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 # marked with aria-current rather than dropped, so neighbouring links
 # don't shift as the analyst tabs around.
 NAV_ITEMS: list[dict[str, str]] = [
-    {"id": "findings",  "label": "Findings", "href": "/findings"},
+    {"id": "inbox",     "label": "Inbox",    "href": "/inbox"},
     {"id": "graph",     "label": "Graph",    "href": "/graph"},
-    {"id": "insights",  "label": "Insights", "href": "/insights"},
+    {"id": "browse",    "label": "Browse",   "href": "/browse"},
     {"id": "compare",   "label": "Compare",  "href": "/compare"},
     {"id": "rules",     "label": "Rules",    "href": "/artifact-rules"},
     {"id": "health",    "label": "Health",   "href": "/health"},
@@ -102,26 +102,38 @@ def build_app(config_path: str | None = None) -> FastAPI:
             {"active_nav": active_nav, **(ctx or {})},
         )
 
-    # M5: `/` is the findings page; the graph (original index) moves to
-    # `/graph`. The redirect uses a 302 so older bookmarks still resolve
-    # to the new landing.
+    # `/` lands on the analyst inbox. `/findings` and `/insights` remain
+    # as 302 redirects so bookmarks and deep links (with query strings)
+    # continue to resolve after the rename.
     from fastapi.responses import RedirectResponse
+
+    def _preserve_qs(request: Request, target: str) -> str:
+        qs = request.url.query
+        return f"{target}?{qs}" if qs else target
 
     @app.get("/")
     def root() -> RedirectResponse:
-        return RedirectResponse(url="/findings", status_code=302)
+        return RedirectResponse(url="/inbox", status_code=302)
+
+    @app.get("/inbox")
+    def inbox_page(request: Request):
+        return _render(request, "findings.html", active_nav="inbox")
 
     @app.get("/findings")
-    def findings_page(request: Request):
-        return _render(request, "findings.html", active_nav="findings")
+    def findings_page_redirect(request: Request) -> RedirectResponse:
+        return RedirectResponse(_preserve_qs(request, "/inbox"), status_code=302)
 
     @app.get("/graph")
     def graph_page(request: Request):
         return _render(request, "index.html", active_nav="graph")
 
+    @app.get("/browse")
+    def browse_page(request: Request):
+        return _render(request, "insights.html", active_nav="browse")
+
     @app.get("/insights")
-    def insights_page(request: Request):
-        return _render(request, "insights.html", active_nav="insights")
+    def insights_page_redirect(request: Request) -> RedirectResponse:
+        return RedirectResponse(_preserve_qs(request, "/browse"), status_code=302)
 
     @app.get("/compare")
     def compare_page(request: Request):
