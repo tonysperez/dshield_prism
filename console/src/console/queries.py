@@ -1387,6 +1387,86 @@ def health(es: Elasticsearch, cfg: AppConfig) -> dict:
     }
 
 
+def health_freshness(es: Elasticsearch, cfg: AppConfig) -> list[dict]:
+    """Per-index freshness for the /health page.
+
+    For each index (cowrie rollup + cluster + findings + intel), return
+    `{name, idx, doc_count, last_ts}` where `last_ts` is the max
+    @timestamp in that index. None means the index doesn't exist yet
+    or the aggregation failed. Cheap — one size:0 search per index.
+    """
+    rows: list[dict] = []
+
+    def _probe(name: str, idx: str) -> None:
+        if not idx:
+            return
+        doc_count: int | None
+        last_ts: str | None
+        try:
+            doc_count = es.count(index=idx).get("count", 0)
+        except Exception:
+            doc_count = None
+        try:
+            r = es.search(
+                index=idx, size=0,
+                aggs={"max_ts": {"max": {"field": "@timestamp"}}},
+            )
+            last_ts = r["aggregations"]["max_ts"].get("value_as_string")
+        except Exception:
+            last_ts = None
+        rows.append({
+            "name": name, "idx": idx,
+            "doc_count": doc_count, "last_ts": last_ts,
+        })
+
+    cowrie = cfg.elasticsearch.indexes.cowrie.model_dump()
+    for name, idx in cowrie.items():
+        _probe(name, idx)
+    _probe("findings", cfg.findings.indexes.default)
+    intel = cfg.intel.indexes.model_dump()
+    for name, idx in intel.items():
+        _probe(f"intel_{name}", idx)
+    return rows
+
+
+def health_runs(es: Elasticsearch, cfg: AppConfig) -> list[dict]:
+    """Most recent run_summary doc from each cluster index. Each entry
+    is `{verb, idx, run_id, ts, total_docs, n_clusters, n_outliers}`.
+    Indices without run_summary docs (or that don't exist) yield None
+    fields so the UI can render a "never run" placeholder.
+    """
+    idxs = cfg.elasticsearch.indexes.cowrie
+    targets = [
+        ("cluster commands", idxs.command_clusters),
+        ("cluster sessions", idxs.session_clusters),
+        ("cluster ips",      idxs.ip_clusters),
+    ]
+    rows: list[dict] = []
+    for verb, idx in targets:
+        row: dict = {"verb": verb, "idx": idx}
+        try:
+            r = es.search(
+                index=idx, size=1,
+                _source=["run_id", "@timestamp", "total_docs",
+                         "n_clusters", "n_outliers"],
+                query={"term": {"doc_type": "run_summary"}},
+                sort=[{"@timestamp": {"order": "desc"}}],
+            )
+            hits = r["hits"]["hits"]
+            src = hits[0]["_source"] if hits else {}
+        except Exception:
+            src = {}
+        row.update({
+            "run_id":     src.get("run_id"),
+            "ts":         src.get("@timestamp"),
+            "total_docs": src.get("total_docs"),
+            "n_clusters": src.get("n_clusters"),
+            "n_outliers": src.get("n_outliers"),
+        })
+        rows.append(row)
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Insights: pre-aggregated data for the /insights dashboard page.
 # ---------------------------------------------------------------------------

@@ -1,214 +1,155 @@
-// Health page — command-grounding coverage report (ROADMAP #11.5).
-//
-// Single fetch to /api/health/commands, renders three blocks:
-//   - stat bar (totals + counts per status)
-//   - "needs definition" list
-//   - "tldr only" list
-//
-// The structure is intentionally generic so future health sections
-// (cluster stability, LLM cost, pipeline timer status, etc.) can drop
-// in as additional <section> blocks without rewriting this one.
+"use strict";
 
-(() => {
-  function el(tag, cls, text) {
-    const e = document.createElement(tag);
-    if (cls) e.className = cls;
-    if (text !== undefined) e.textContent = text;
-    return e;
+/* Pipeline-health page. Two panels:
+ *   - Data freshness — per-index doc count + max(@timestamp).
+ *   - Recent pipeline runs — latest run_summary per cluster index.
+ *
+ * LLM-grounding curation moved to /curation under ROADMAP #17.10.
+ */
+
+// Stale thresholds (hours). Rows older than this flag amber. Tuned for
+// a corpus that runs the backward cycle every 60 min; tune per deploy.
+const STALE_HOURS = {
+  default: 24,                  // fallback for any index not listed below
+  sessions_raw: 2,              // forward pipeline — should be very fresh
+  commands: 2,
+  sessions_rollup: 2,
+  ips_rollup: 2,
+  command_clusters: 36,
+  session_clusters: 36,
+  ip_clusters: 36,
+  findings: 36,
+  campaigns: 36,
+  intel_ip: 168,                // 7d — intel refresh has long TTLs
+  intel_url: 336,               // 14d
+  intel_domain: 336,
+  intel_hash: 720,              // 30d
+};
+
+function el(tag, attrs, children) {
+  const e = document.createElement(tag);
+  if (attrs) for (const k in attrs) {
+    if (k === "class") e.className = attrs[k];
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), attrs[k]);
+    else e.setAttribute(k, attrs[k]);
   }
-
-  function statCard(label, value, sub, kind = "") {
-    const card = el("div", `stat-card ${kind}`.trim());
-    card.appendChild(el("div", "stat-label", label));
-    card.appendChild(el("div", "stat-value", String(value)));
-    if (sub) card.appendChild(el("div", "stat-sub", sub));
-    return card;
+  if (children) for (const c of children) {
+    if (c == null) continue;
+    e.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
   }
+  return e;
+}
 
-  function renderStats(stats) {
-    const bar = document.getElementById("grounding-stats");
-    bar.innerHTML = "";
-    if (!stats) return;
-    bar.appendChild(statCard(
-      "unique commands in corpus",
-      stats.total_unique_cmds,
-      "after shell-line parsing",
-      "info"
-    ));
-    bar.appendChild(statCard(
-      "curated",
-      stats.curated,
-      "structured per-flag entries",
-      "ok"
-    ));
-    bar.appendChild(statCard(
-      "tldr only",
-      stats.tldr_only,
-      "fallback description, no per-flag detail",
-      stats.tldr_only > 0 ? "info" : "ok"
-    ));
-    bar.appendChild(statCard(
-      "needs definition",
-      stats.needs_def,
-      "no entry of any kind",
-      stats.needs_def > 0 ? "warn" : "ok"
-    ));
-    if (typeof stats.denied === "number") {
-      bar.appendChild(statCard(
-        "denied",
-        stats.denied,
-        "flagged as not-a-command",
-        "info"
-      ));
-    }
-    if (typeof stats.total_corpus_occurrences === "number") {
-      bar.appendChild(statCard(
-        "total occurrences",
-        stats.total_corpus_occurrences.toLocaleString(),
-        "weighted by occurrence_count",
-        "info"
-      ));
-    }
+function fmtNum(n) {
+  if (n == null) return "—";
+  return Number(n).toLocaleString();
+}
+
+function fmtRelTs(iso) {
+  if (!iso) return {text: "never", cls: "missing"};
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return {text: iso, cls: ""};
+  const sec = Math.max(0, Math.round((Date.now() - then) / 1000));
+  let text;
+  if (sec < 60)       text = `${sec}s ago`;
+  else if (sec < 3600)   text = `${Math.round(sec / 60)}m ago`;
+  else if (sec < 86_400) text = `${Math.round(sec / 3600)}h ago`;
+  else                   text = `${Math.round(sec / 86_400)}d ago`;
+  return {text, cls: "", hours: sec / 3600};
+}
+
+function tsCell(iso, indexName) {
+  const f = fmtRelTs(iso);
+  let cls = "ts";
+  if (f.cls === "missing") cls += " missing";
+  else {
+    const threshold = STALE_HOURS[indexName] ?? STALE_HOURS.default;
+    if (typeof f.hours === "number" && f.hours > threshold) cls += " stale";
   }
+  const td = el("td", {class: cls}, [f.text]);
+  if (iso) td.setAttribute("data-tooltip", iso);
+  return td;
+}
 
-  function renderList(containerId, items, emptyMsg, opts = {}) {
-    const c = document.getElementById(containerId);
-    c.innerHTML = "";
-    if (!items || items.length === 0) {
-      c.appendChild(el("em", "hs-empty", emptyMsg));
-      return;
-    }
-    for (const it of items) {
-      const row = el("div", "hs-item");
-      row.appendChild(el("div", "hs-cmd", it.name));
-
-      const samplesWrap = el("div", "hs-samples");
-      // For denied rows, the rationale is more useful than samples.
-      if (opts.rationale && it.rationale) {
-        samplesWrap.appendChild(el("div", "hs-sample", it.rationale));
-      }
-      for (const s of (it.samples || [])) {
-        samplesWrap.appendChild(el("div", "hs-sample", s));
-      }
-      row.appendChild(samplesWrap);
-
-      // Action column: count + per-row button. Block on non-denied rows,
-      // Unblock on denied rows. Both call back into `load()` after a
-      // successful write so the UI reflects the new bucket.
-      const actions = el("div", "hs-actions");
-      actions.appendChild(el("div", "hs-count", `${it.count} occ`));
-      if (opts.allowBlock) {
-        const btn = el("button", "hs-btn hs-btn-block", "Block");
-        btn.title = "Add this token to the denylist (suppresses it from the LLM grounding block and moves it to the Denied bucket here).";
-        btn.addEventListener("click", () => blockToken(it.name, btn));
-        actions.appendChild(btn);
-      } else if (opts.allowUnblock) {
-        const btn = el("button", "hs-btn", "Unblock");
-        btn.title = "Remove this token from the denylist (it will go back to needs_def or tldr_only on the next refresh).";
-        btn.addEventListener("click", () => unblockToken(it.name, btn));
-        actions.appendChild(btn);
-      }
-      row.appendChild(actions);
-
-      c.appendChild(row);
-    }
+async function loadFreshness() {
+  const body = document.getElementById("freshness-body");
+  let data;
+  try {
+    const r = await fetch("/api/health/freshness");
+    data = await r.json();
+  } catch (e) {
+    body.innerHTML = "";
+    body.appendChild(el("div", {class: "h-error"}, [`fetch failed: ${e.message}`]));
+    return;
   }
-
-  async function blockToken(name, btn) {
-    const rationale = window.prompt(
-      `Add "${name}" to the denylist.\n\nRationale ` +
-      `(one short sentence — appears in the YAML and on the Denied bucket):`,
-      "added via Health page"
-    );
-    if (rationale === null) return;   // user cancelled
-    btn.disabled = true;
-    btn.textContent = "…";
-    try {
-      const r = await fetch("/api/health/commands/denylist", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({token: name, rationale: rationale || "added via Health page"}),
-      });
-      if (!r.ok) {
-        const text = await r.text();
-        throw new Error(`HTTP ${r.status} — ${text}`);
-      }
-      await load();
-    } catch (e) {
-      window.alert(`Failed to block ${name}: ${e.message}`);
-      btn.disabled = false;
-      btn.textContent = "Block";
-    }
+  if (data.error) {
+    body.innerHTML = "";
+    body.appendChild(el("div", {class: "h-error"}, [data.error]));
+    return;
   }
-
-  async function unblockToken(name, btn) {
-    if (!window.confirm(
-      `Remove "${name}" from the denylist?\n\n` +
-      "It will reappear in needs_def or tldr_only on the next refresh."
-    )) return;
-    btn.disabled = true;
-    btn.textContent = "…";
-    try {
-      const r = await fetch(
-        `/api/health/commands/denylist/${encodeURIComponent(name)}`,
-        {method: "DELETE"}
-      );
-      if (!r.ok) {
-        const text = await r.text();
-        throw new Error(`HTTP ${r.status} — ${text}`);
-      }
-      await load();
-    } catch (e) {
-      window.alert(`Failed to unblock ${name}: ${e.message}`);
-      btn.disabled = false;
-      btn.textContent = "Unblock";
-    }
+  body.innerHTML = "";
+  const table = el("table", {class: "h-table"});
+  table.appendChild(el("thead", null, [el("tr", null, [
+    el("th", null, ["Name"]),
+    el("th", null, ["Index"]),
+    el("th", {class: "num"}, ["Docs"]),
+    el("th", null, ["Freshest"]),
+  ])]));
+  const tbody = el("tbody");
+  for (const r of (data.rows || [])) {
+    const tr = el("tr");
+    tr.appendChild(el("td", {class: "name"}, [r.name]));
+    tr.appendChild(el("td", {class: "idx"}, [r.idx || "—"]));
+    tr.appendChild(el("td", {class: "num"}, [fmtNum(r.doc_count)]));
+    tr.appendChild(tsCell(r.last_ts, r.name));
+    tbody.appendChild(tr);
   }
+  table.appendChild(tbody);
+  body.appendChild(table);
+}
 
-  function renderError(containerId, msg) {
-    const c = document.getElementById(containerId);
-    c.innerHTML = "";
-    c.appendChild(el("div", "hs-error", msg));
+async function loadRuns() {
+  const body = document.getElementById("runs-body");
+  let data;
+  try {
+    const r = await fetch("/api/health/runs");
+    data = await r.json();
+  } catch (e) {
+    body.innerHTML = "";
+    body.appendChild(el("div", {class: "h-error"}, [`fetch failed: ${e.message}`]));
+    return;
   }
-
-  async function load() {
-    try {
-      const r = await fetch("/api/health/commands");
-      if (!r.ok) {
-        const text = await r.text();
-        throw new Error(`HTTP ${r.status} — ${text}`);
-      }
-      const data = await r.json();
-      if (!data.available) {
-        const reason = data.reason || "command grounding module not available on this install.";
-        renderError("grounding-stats", reason);
-        document.getElementById("grounding-needs-def").innerHTML = "";
-        document.getElementById("grounding-tldr-only").innerHTML = "";
-        return;
-      }
-      renderStats(data.stats);
-      renderList(
-        "grounding-needs-def",
-        data.needs_def,
-        "every command in the corpus has at least a tldr entry — nothing urgent to curate.",
-        { allowBlock: true }
-      );
-      renderList(
-        "grounding-tldr-only",
-        data.tldr_only,
-        "every command in the corpus has a curated entry.",
-        { allowBlock: true }
-      );
-      renderList(
-        "grounding-denied",
-        data.denied,
-        "no denylisted tokens have appeared in the corpus.",
-        { rationale: true, allowUnblock: true }
-      );
-    } catch (e) {
-      renderError("grounding-stats", `Failed to load health data: ${e.message}`);
-    }
+  if (data.error) {
+    body.innerHTML = "";
+    body.appendChild(el("div", {class: "h-error"}, [data.error]));
+    return;
   }
+  body.innerHTML = "";
+  const table = el("table", {class: "h-table"});
+  table.appendChild(el("thead", null, [el("tr", null, [
+    el("th", null, ["Verb"]),
+    el("th", null, ["Last run"]),
+    el("th", {class: "num"}, ["Input docs"]),
+    el("th", {class: "num"}, ["Clusters"]),
+    el("th", {class: "num"}, ["Outliers"]),
+    el("th", null, ["Run id"]),
+  ])]));
+  const tbody = el("tbody");
+  for (const r of (data.rows || [])) {
+    const tr = el("tr");
+    tr.appendChild(el("td", {class: "name"}, [r.verb]));
+    tr.appendChild(tsCell(r.ts, r.verb.replace(/^cluster /, "") + "_clusters"));
+    tr.appendChild(el("td", {class: "num"}, [fmtNum(r.total_docs)]));
+    tr.appendChild(el("td", {class: "num"}, [fmtNum(r.n_clusters)]));
+    tr.appendChild(el("td", {class: "num"}, [fmtNum(r.n_outliers)]));
+    tr.appendChild(el("td", {class: "idx"}, [r.run_id || "—"]));
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  body.appendChild(table);
+}
 
-  load();
-})();
+document.addEventListener("DOMContentLoaded", () => {
+  loadFreshness();
+  loadRuns();
+});

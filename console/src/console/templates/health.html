@@ -2,8 +2,9 @@
 {% block title %}DShield Health{% endblock %}
 {% block head_extra %}
   <style>
-    /* Health-page layout — sibling of insights.html, shares the topbar
-       styles via app.css. ROADMAP #11.5. */
+    /* Pipeline-health page (ROADMAP #17.10). Surfaces data freshness
+       per index and the latest run_summary per cluster verb. LLM-
+       grounding curation moved to /curation. */
 
     #health-main {
       max-width: 1180px;
@@ -11,177 +12,73 @@
       padding: 16px 20px 60px;
       display: flex;
       flex-direction: column;
-      gap: 36px;
+      gap: 32px;
     }
 
-    .hs-section-title {
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.8px;
-      color: #6b7494;
-      margin: 0 0 14px;
-      display: flex;
-      align-items: baseline;
-      gap: 10px;
+    .h-section-title {
+      font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.8px;
+      color: #6b7494; margin: 0 0 14px;
+      display: flex; align-items: baseline; gap: 10px;
     }
-    .hs-hint {
-      font-size: 10px;
-      text-transform: none;
-      letter-spacing: 0;
-      color: #414b62;
-      font-weight: 400;
+    .h-hint {
+      font-size: 10px; text-transform: none; letter-spacing: 0;
+      color: #414b62; font-weight: 400;
     }
 
-    /* Stat bar — reuses insights' visual language so the two pages
-       feel like siblings, but we redeclare it locally so this page is
-       self-contained. */
-    .stat-bar {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-      gap: 10px;
-      margin-bottom: 14px;
+    /* Table shared by both panels. */
+    table.h-table {
+      width: 100%; border-collapse: collapse; font-size: 12px;
     }
-    .stat-card {
-      background: #111827;
-      border: 1px solid #1e2540;
-      border-radius: 7px;
-      padding: 13px 15px;
+    table.h-table th {
+      text-align: left; padding: 6px 10px;
+      font-size: 10px; text-transform: uppercase;
+      letter-spacing: 0.6px; color: #6b7494; font-weight: 600;
+      border-bottom: 1px solid #1d2840;
     }
-    .stat-label {
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: #6b7494;
-      margin-bottom: 4px;
+    table.h-table td {
+      padding: 7px 10px; border-bottom: 1px solid #161c2e;
+      vertical-align: middle; color: #c8d0e2;
     }
-    .stat-value {
-      font-size: 22px;
-      font-weight: 700;
-      color: #e8edf7;
-    }
-    .stat-sub {
-      font-size: 10px;
-      color: #6b7494;
-      margin-top: 2px;
-    }
-    .stat-card.warn .stat-value { color: #f87171; }
-    .stat-card.ok   .stat-value { color: #4ade80; }
-    .stat-card.info .stat-value { color: #4cc1ff; }
+    table.h-table td.name { font-weight: 600; color: #c8d0e2; }
+    table.h-table td.idx  { color: #6b7494; font-family: ui-monospace, monospace; font-size: 11px; }
+    table.h-table td.num  { font-variant-numeric: tabular-nums; text-align: right; }
+    table.h-table td.ts   { color: #9aa3b8; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    table.h-table td.ts.stale  { color: #fbbf24; }
+    table.h-table td.ts.missing { color: #6b7494; font-style: italic; }
 
-    /* Command list */
-    .hs-list {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
+    .h-empty {
+      padding: 14px; text-align: center;
+      color: #4a5470; font-size: 12px;
     }
-    .hs-item {
-      background: #0c1424;
-      border: 1px solid #1e2540;
-      border-radius: 6px;
-      padding: 10px 14px;
-      display: grid;
-      grid-template-columns: 100px 1fr auto;
-      gap: 12px;
-      align-items: start;
-    }
-    .hs-item .hs-cmd {
-      font-family: "JetBrains Mono", "SF Mono", "Consolas", monospace;
-      font-size: 13px;
-      font-weight: 600;
-      color: #e8edf7;
-    }
-    .hs-item .hs-count {
-      font-size: 10px;
-      color: #6b7494;
-      grid-column: 3;
-    }
-    .hs-item .hs-samples {
-      grid-column: 2;
-      font-family: "JetBrains Mono", "SF Mono", "Consolas", monospace;
-      font-size: 11px;
-      color: #8e9bbf;
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      overflow: hidden;
-    }
-    .hs-item .hs-sample {
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .hs-item .hs-actions {
-      grid-column: 3;
-      grid-row: 1 / span 2;
-      display: flex;
-      flex-direction: column;
-      align-items: flex-end;
-      gap: 4px;
-    }
-    .hs-btn {
-      font-size: 10px;
-      font-weight: 600;
-      background: #0e1e35;
-      border: 1px solid #4cc1ff28;
-      color: #4cc1ff;
-      border-radius: 4px;
-      padding: 3px 9px;
-      cursor: pointer;
-      white-space: nowrap;
-    }
-    .hs-btn:hover { background: #1a2d4e; }
-    .hs-btn.hs-btn-block { color: #f87171; border-color: #f8717128; }
-    .hs-btn.hs-btn-block:hover { background: #2a1414; }
-    .hs-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-    .hs-empty {
-      font-size: 12px;
-      color: #414b62;
-      padding: 12px;
-    }
-    .hs-error {
-      font-size: 12px;
-      color: #f87171;
-      padding: 12px;
-      background: #1a0e0e;
-      border: 1px solid #f8717128;
-      border-radius: 6px;
+    .h-error {
+      color: #f87171; font-size: 12px;
+      padding: 12px; background: #1a0e0e;
+      border: 1px solid #f8717128; border-radius: 6px;
     }
   </style>
 {% endblock %}
 {% block content %}
   <main id="health-main">
 
-    <!-- Command grounding section (ROADMAP #11.5) -->
-    <section class="hs-section" id="sec-grounding">
-      <p class="hs-section-title">Command grounding
-        <span class="hs-hint">corpus coverage for the LLM-grounding block in <code>command_enrichment.txt</code> (ROADMAP #11)</span>
+    <section>
+      <p class="h-section-title">Data freshness
+        <span class="h-hint">per-index document count and the most recent <code>@timestamp</code> &mdash; stale rows highlight in amber</span>
       </p>
-      <div id="grounding-stats" class="stat-bar"></div>
-      <p class="hs-section-title" style="margin-top:24px">Needs definition
-        <span class="hs-hint">commands seen in the corpus with NO curated YAML and NO tldr entry — curate the top of this list first</span>
-      </p>
-      <div id="grounding-needs-def" class="hs-list">
-        <em class="hs-empty">loading…</em>
-      </div>
-      <p class="hs-section-title" style="margin-top:24px">Tldr-only
-        <span class="hs-hint">covered by the vendored tldr-pages bundle but no curated entry — analyst framing + per-flag descriptions would help here</span>
-      </p>
-      <div id="grounding-tldr-only" class="hs-list">
-        <em class="hs-empty">loading…</em>
-      </div>
-      <p class="hs-section-title" style="margin-top:24px">Denied (suppressed as not-a-command)
-        <span class="hs-hint">tokens the parser surfaces but the analyst flagged as payload names / prompt leakage / artifacts via <code>src/enrich/data/commands/denylist.yaml</code>. Add new entries there.</span>
-      </p>
-      <div id="grounding-denied" class="hs-list">
-        <em class="hs-empty">loading…</em>
-      </div>
+      <div id="freshness-body"><em class="h-empty">loading…</em></div>
     </section>
 
-    <!-- Future health concerns slot in below as additional <section> blocks.
-         Keep each one self-contained (its own title + body div + a JS
-         module that owns just that block) so the page stays editable. -->
+    <section>
+      <p class="h-section-title">Recent pipeline runs
+        <span class="h-hint">latest <code>run_summary</code> doc per cluster index</span>
+      </p>
+      <div id="runs-body"><em class="h-empty">loading…</em></div>
+    </section>
+
+    <p style="font-size:11px; color:#414b62; margin:0;">
+      LLM-grounding coverage moved to
+      <a href="/curation" style="color:#4cc1ff; text-decoration:none;">/curation</a>.
+    </p>
 
   </main>
 {% endblock %}

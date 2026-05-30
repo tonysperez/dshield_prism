@@ -45,6 +45,7 @@ NAV_ITEMS: list[dict[str, str]] = [
     {"id": "browse",    "label": "Browse",   "href": "/browse"},
     {"id": "compare",   "label": "Compare",  "href": "/compare"},
     {"id": "rules",     "label": "Rules",    "href": "/artifact-rules"},
+    {"id": "curation",  "label": "Curation", "href": "/curation"},
     {"id": "health",    "label": "Health",   "href": "/health"},
 ]
 
@@ -142,6 +143,10 @@ def build_app(config_path: str | None = None) -> FastAPI:
     @app.get("/health")
     def health_page(request: Request):
         return _render(request, "health.html", active_nav="health")
+
+    @app.get("/curation")
+    def curation_page(request: Request):
+        return _render(request, "curation.html", active_nav="curation")
 
     @app.get("/artifact/ip/{value}")
     def artifact_ip_page(request: Request, value: str):
@@ -651,6 +656,24 @@ def build_app(config_path: str | None = None) -> FastAPI:
                 ok=False, indexes={}, doc_counts={},
                 error=f"{e.__class__.__name__}: {e}",
             )
+
+    @app.get("/api/health/freshness")
+    def health_freshness_api() -> JSONResponse:
+        """Per-index doc count + max(@timestamp). Drives the data-
+        freshness panel on /health."""
+        try:
+            return JSONResponse({"rows": queries.health_freshness(es, cfg)})
+        except Exception as e:  # pragma: no cover -- depends on ES state
+            return JSONResponse({"rows": [], "error": f"{e.__class__.__name__}: {e}"})
+
+    @app.get("/api/health/runs")
+    def health_runs_api() -> JSONResponse:
+        """Latest run_summary doc per cluster index. Drives the recent-
+        pipeline-runs panel on /health."""
+        try:
+            return JSONResponse({"rows": queries.health_runs(es, cfg)})
+        except Exception as e:  # pragma: no cover -- depends on ES state
+            return JSONResponse({"rows": [], "error": f"{e.__class__.__name__}: {e}"})
 
     @app.get("/api/config/ui")
     def config_ui() -> JSONResponse:
