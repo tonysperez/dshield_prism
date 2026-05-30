@@ -33,7 +33,7 @@ import re
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
 log = logging.getLogger(__name__)
 

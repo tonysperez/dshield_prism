@@ -879,7 +879,7 @@ def build_app(config_path: str | None = None) -> FastAPI:
             raise HTTPException(503, "LLM not configured — add an llm: block to local.yaml")
         if not body.question.strip():
             raise HTTPException(400, "question is required")
-        from enrich.llm.fencing import FENCE_NOTICE, fence, make_nonce
+        from enrich.llm.fencing import FENCE_NOTICE, make_nonce
         nonce = make_nonce()
         prompt = _build_ask_prompt(body.question, body.context, nonce)
         try:
