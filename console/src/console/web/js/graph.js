@@ -446,16 +446,30 @@
     });
 
     // 3. Allocate column x positions. Cap per-column width so removing a
-    //    lane visibly *narrows* the layout (columns don't balloon to fill
-    //    the canvas). Columns live at world x ∈ [0, totalW] — fit()
-    //    handles centering the band horizontally in the viewport so
-    //    "lane removed" reads as an obvious narrowing of the band.
+    //    lane visibly *narrows* the layout. F.4 — empty "always visible"
+    //    columns (ip/session/command when the anchor produces none)
+    //    collapse to a thin 12-px gutter so playbook anchors don't
+    //    waste ~30% of the canvas on dead space upstream.
     const minPad = 28;
     const maxColW = 360;
-    const naturalColW = (viewW - minPad * 2) / Math.max(1, visible.length);
+    const GUTTER_W = 12;
+    const gutters = new Set();
+    for (const c of visible) {
+      if (c === anchorCol) continue;
+      if (buckets[c] && buckets[c].length > 0) continue;
+      gutters.add(c);
+    }
+    const contentCount = visible.length - gutters.size;
+    const naturalColW = (viewW - minPad * 2 - gutters.size * GUTTER_W) /
+      Math.max(1, contentCount);
     const colW = Math.min(naturalColW, maxColW);
+    const widthOf = (c) => gutters.has(c) ? GUTTER_W : colW;
     const colX = {};
-    visible.forEach((c, i) => { colX[c] = i * colW + colW / 2; });
+    let _xCursor = 0;
+    for (const c of visible) {
+      colX[c] = _xCursor + widthOf(c) / 2;
+      _xCursor += widthOf(c);
+    }
 
     // 4. For each visible column, group items by cluster id and lay them
     //    out vertically.
@@ -588,7 +602,7 @@
         }
       }
 
-      layoutByCol[c] = { x: colX[c], width: colW, placements, height: y };
+      layoutByCol[c] = { x: colX[c], width: widthOf(c), placements, height: y };
       colHeights[c] = y;
     }
 
@@ -669,7 +683,7 @@
     }
 
     // 7. Cache layout meta for renderer
-    _layoutMeta = { visible, colX, colW, colHeaderH, maxH, layoutByCol };
+    _layoutMeta = { visible, colX, colW, colHeaderH, maxH, layoutByCol, gutters };
   }
 
   let _layoutMeta = null;
@@ -727,7 +741,10 @@
     // The column band lives at world x ∈ [0, bandW]. Pad with 30px on
     // each side when sizing the zoom so columns don't kiss the canvas
     // edges. Then position so the band's center matches the viewport's.
-    const bandW = meta.visible.length * meta.colW;
+    // F.4 — gutters contribute their narrow width, not the full colW.
+    const GUTTER_W = 12;
+    const contentCount = meta.visible.length - (meta.gutters ? meta.gutters.size : 0);
+    const bandW = contentCount * meta.colW + (meta.gutters ? meta.gutters.size : 0) * GUTTER_W;
     const h = meta.maxH + 80;
     const zx = viewW / (bandW + 60);
     const zy = viewH / h;
@@ -1061,18 +1078,23 @@
     ctx.font = "600 11px ui-sans-serif,system-ui";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
+    const GUTTER_W = 12;
     for (const c of meta.visible) {
       const x = meta.colX[c];
+      const isGutter = meta.gutters && meta.gutters.has(c);
+      const w = isGutter ? GUTTER_W : meta.colW;
       // column divider
       ctx.strokeStyle = "rgba(155,167,194,0.10)";
       ctx.lineWidth = 1 / zoom;
       ctx.beginPath();
-      ctx.moveTo(x - meta.colW / 2 + 8, 6);
-      ctx.lineTo(x - meta.colW / 2 + 8, meta.maxH + 30);
+      ctx.moveTo(x - w / 2 + (isGutter ? 0 : 8), 6);
+      ctx.lineTo(x - w / 2 + (isGutter ? 0 : 8), meta.maxH + 30);
       ctx.stroke();
-      // title strip
-      ctx.fillStyle = "rgba(155,167,194,0.55)";
-      ctx.fillText(COL_LABEL[c].toUpperCase(), x, 14);
+      // title strip — skip on gutters so they read as anonymous spacers.
+      if (!isGutter) {
+        ctx.fillStyle = "rgba(155,167,194,0.55)";
+        ctx.fillText(COL_LABEL[c].toUpperCase(), x, 14);
+      }
     }
     ctx.restore();
   }

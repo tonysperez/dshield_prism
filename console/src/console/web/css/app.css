@@ -189,9 +189,15 @@ body {
 main {
   flex: 1;
   display: grid;
-  grid-template-columns: 1fr 240px 380px;
+  /* Sets sidecar is hidden by default (F.3 / UX backlog) — power-user
+     toggle in the settings modal restores the 240px column. */
+  grid-template-columns: 1fr 380px;
   min-height: 0;
 }
+body.show-sets main {
+  grid-template-columns: 1fr 240px 380px;
+}
+body:not(.show-sets) #sets-pane { display: none; }
 
 #graph-pane {
   position: relative;

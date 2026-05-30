@@ -1770,6 +1770,22 @@
     // initial UI state so shared links reproduce the view exactly.
     applyGraphStateFromUrl();
 
+    // F.3 — Sets sidecar is off by default; the preference lives in
+    // localStorage so an analyst who opts in stays opted in across
+    // visits. Toggle UI lives in the settings modal.
+    const SHOW_SETS_KEY = "prism.showSets";
+    function _applyShowSets(on) {
+      document.body.classList.toggle("show-sets", !!on);
+      try { localStorage.setItem(SHOW_SETS_KEY, on ? "1" : "0"); } catch (_) {}
+      const chk = document.getElementById("cfg-show-sets");
+      if (chk) chk.checked = !!on;
+    }
+    _applyShowSets(localStorage.getItem(SHOW_SETS_KEY) === "1");
+    const showSetsChk = document.getElementById("cfg-show-sets");
+    if (showSetsChk) {
+      showSetsChk.addEventListener("change", () => _applyShowSets(showSetsChk.checked));
+    }
+
     // Siblings slider was removed in F.2 — default is now 1 and the
     // analyst expands per-cluster via "+ Add cluster to view" in the
     // detail pane. state.siblings is still URL-encodable for shared
