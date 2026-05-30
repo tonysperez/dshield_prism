@@ -353,6 +353,11 @@
   async function selectNode(node) {
     if (!node || !node.id) return;
     _currentSelectedNode = node;
+    // If the detail pane was hidden, bring it back — the analyst
+    // clicked a node, they want the detail. (#4)
+    if (typeof window.__showDetailPane === "function") {
+      window.__showDetailPane();
+    }
     // Selection changed → next Activity-tab open should re-fetch fresh.
     $("#tab-activity").innerHTML = "";
     // Campaign and cluster pill nodes also activate the sets filter so
@@ -1784,6 +1789,88 @@
     const showSetsChk = document.getElementById("cfg-show-sets");
     if (showSetsChk) {
       showSetsChk.addEventListener("change", () => _applyShowSets(showSetsChk.checked));
+    }
+
+    // Per-badge visibility toggles. Each checkbox carries a
+    // data-badge-key matching the key Graph._badgesFor reads from
+    // localStorage (`prism.badge.<key>`). Defaults live in graph.js.
+    const BADGE_DEFAULTS = {
+      specificity: "1", pbks: "1", asn: "1", country: "1",
+      mitre_technique: "0", mitre_tactic: "0",
+    };
+    document.querySelectorAll(".cfg-badge").forEach((chk) => {
+      const key = chk.dataset.badgeKey;
+      if (!key) return;
+      const stored = localStorage.getItem("prism.badge." + key);
+      const on = stored === "1" || (stored == null && BADGE_DEFAULTS[key] === "1");
+      chk.checked = on;
+      chk.addEventListener("change", () => {
+        try {
+          localStorage.setItem("prism.badge." + key, chk.checked ? "1" : "0");
+        } catch (_) {}
+        // Re-render so the change shows immediately without re-anchoring.
+        if (window.Graph && typeof Graph.setSpotlight === "function") {
+          Graph.setSpotlight({});
+        }
+      });
+    });
+
+    // #4 — Detail pane is closable + resizable. Width persists per
+    // browser. Closing hides the pane and surfaces a vertical "Detail"
+    // re-open tab on the right edge; clicking a node also brings it
+    // back (handled by selectNode → renderDetail).
+    const DETAIL_W_KEY    = "prism.detailWidth";
+    const DETAIL_HIDE_KEY = "prism.detailHidden";
+    const MIN_W = 280, MAX_W = 720;
+    const savedW = parseInt(localStorage.getItem(DETAIL_W_KEY) || "", 10);
+    if (Number.isFinite(savedW) && savedW >= MIN_W && savedW <= MAX_W) {
+      document.documentElement.style.setProperty("--detail-width", savedW + "px");
+    }
+    if (localStorage.getItem(DETAIL_HIDE_KEY) === "1") {
+      document.body.classList.add("hide-detail");
+    }
+    function _setDetailHidden(hidden) {
+      document.body.classList.toggle("hide-detail", !!hidden);
+      try { localStorage.setItem(DETAIL_HIDE_KEY, hidden ? "1" : "0"); } catch (_) {}
+    }
+    const closeBtn = document.getElementById("detail-close");
+    if (closeBtn) closeBtn.addEventListener("click", () => _setDetailHidden(true));
+    const reopenBtn = document.getElementById("detail-reopen");
+    if (reopenBtn) reopenBtn.addEventListener("click", () => _setDetailHidden(false));
+    // Expose so selectNode can auto-reopen on node click.
+    window.__showDetailPane = () => _setDetailHidden(false);
+    // Drag handle (left edge of #detail-pane) drives --detail-width.
+    const dragHandle = document.getElementById("detail-resize");
+    if (dragHandle) {
+      let startX = 0, startW = 0;
+      const onMove = (ev) => {
+        // Mouse moves left → pane grows; moves right → pane shrinks.
+        const dx = startX - ev.clientX;
+        const w = Math.max(MIN_W, Math.min(MAX_W, startW + dx));
+        document.documentElement.style.setProperty("--detail-width", w + "px");
+      };
+      const onUp = () => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        document.body.classList.remove("detail-resizing");
+        const w = parseInt(
+          getComputedStyle(document.documentElement)
+            .getPropertyValue("--detail-width"),
+          10,
+        );
+        if (Number.isFinite(w)) {
+          try { localStorage.setItem(DETAIL_W_KEY, String(w)); } catch (_) {}
+        }
+      };
+      dragHandle.addEventListener("mousedown", (ev) => {
+        ev.preventDefault();
+        startX = ev.clientX;
+        const cs = getComputedStyle(document.getElementById("detail-pane"));
+        startW = parseInt(cs.width, 10) || 380;
+        document.body.classList.add("detail-resizing");
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+      });
     }
 
     // Siblings slider was removed in F.2 — default is now 1 and the

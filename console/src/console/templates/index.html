@@ -84,7 +84,11 @@
     </aside>
 
     <aside id="detail-pane">
-      <div id="detail-header"><em>Search an IOC to begin.</em></div>
+      <div id="detail-resize" title="Drag to resize"></div>
+      <div id="detail-header">
+        <button id="detail-close" type="button" title="Hide detail pane" aria-label="Hide detail pane">×</button>
+        <em>Search an IOC to begin.</em>
+      </div>
       <nav id="detail-tabs">
         <button data-tab="summary" class="active">Summary</button>
         <button data-tab="related">Related</button>
@@ -107,6 +111,9 @@
       </div>
     </aside>
   </main>
+
+  <!-- Reopen tab when the detail pane is hidden. (See body.hide-detail.) -->
+  <button id="detail-reopen" type="button" title="Show detail pane">Detail</button>
 
   <div id="search-suggestions" class="suggestions hidden"></div>
 
@@ -163,6 +170,31 @@
           <label class="setting-row">
             <input type="checkbox" id="cfg-show-sets" />
             <span>Show the Sets sidecar (UpSet-style intersect filter — power-user; off by default)</span>
+          </label>
+          <div class="setting-row setting-subhead">Artifact badges:</div>
+          <label class="setting-row">
+            <input type="checkbox" class="cfg-badge" data-badge-key="specificity" />
+            <span>Specificity score <span class="setting-eg">★ 0.76</span></span>
+          </label>
+          <label class="setting-row">
+            <input type="checkbox" class="cfg-badge" data-badge-key="pbks" />
+            <span>Multi-playbook counter (IPs only, when &gt; 1) <span class="setting-eg">3 pbks</span></span>
+          </label>
+          <label class="setting-row">
+            <input type="checkbox" class="cfg-badge" data-badge-key="asn" />
+            <span>ASN <span class="setting-eg">AS12345</span></span>
+          </label>
+          <label class="setting-row">
+            <input type="checkbox" class="cfg-badge" data-badge-key="country" />
+            <span>Country <span class="setting-eg">US</span></span>
+          </label>
+          <label class="setting-row">
+            <input type="checkbox" class="cfg-badge" data-badge-key="mitre_technique" />
+            <span>MITRE technique <span class="setting-eg">T1059.003</span> (off — busy on commands)</span>
+          </label>
+          <label class="setting-row">
+            <input type="checkbox" class="cfg-badge" data-badge-key="mitre_tactic" />
+            <span>MITRE tactic <span class="setting-eg">TA0003</span> (off — usually redundant with techniques)</span>
           </label>
         </fieldset>
 

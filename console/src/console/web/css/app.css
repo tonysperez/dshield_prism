@@ -190,14 +190,22 @@ main {
   flex: 1;
   display: grid;
   /* Sets sidecar is hidden by default (F.3 / UX backlog) — power-user
-     toggle in the settings modal restores the 240px column. */
-  grid-template-columns: 1fr 380px;
+     toggle in the settings modal restores the 240px column. The
+     detail pane width is a CSS variable so the drag handle can
+     adjust it without re-styling. */
+  grid-template-columns: 1fr var(--detail-width, 380px);
   min-height: 0;
 }
 body.show-sets main {
-  grid-template-columns: 1fr 240px 380px;
+  grid-template-columns: 1fr 240px var(--detail-width, 380px);
 }
 body:not(.show-sets) #sets-pane { display: none; }
+/* Detail pane closed — grid collapses the right column. The toggle
+   button stays visible as a thin handle on the right edge so the
+   analyst can bring the pane back without clicking a node. */
+body.hide-detail main { grid-template-columns: 1fr; }
+body.show-sets.hide-detail main { grid-template-columns: 1fr 240px; }
+body.hide-detail #detail-pane { display: none; }
 
 #graph-pane {
   position: relative;
@@ -206,6 +214,45 @@ body:not(.show-sets) #sets-pane { display: none; }
   min-height: 0;
   overflow: hidden;
 }
+/* Overflow popover — listed via clicking a +N badge. Anchored under
+   the chip; auto-flips up when there's no room. */
+.graph-overflow-popover {
+  position: absolute;
+  z-index: 25;
+  min-width: 160px; max-width: 260px;
+  max-height: 280px; overflow: auto;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+  padding: 6px;
+  font-size: 11px;
+}
+.graph-overflow-popover.hidden { display: none; }
+.graph-overflow-popover .gop-list {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.graph-overflow-popover .gop-chip {
+  display: flex; align-items: baseline; gap: 6px;
+  background: transparent;
+  border: 1px solid;
+  border-radius: 3px;
+  padding: 3px 8px;
+  font: inherit; font-size: 11px; font-weight: 600;
+  cursor: pointer;
+  text-align: left; width: 100%;
+}
+.graph-overflow-popover .gop-chip:hover:not(:disabled) {
+  background: rgba(255,255,255,0.04);
+}
+.graph-overflow-popover .gop-chip:disabled { cursor: default; opacity: 0.65; }
+.graph-overflow-popover .gop-prefix {
+  text-transform: uppercase; font-size: 9px;
+  color: var(--muted); letter-spacing: 0.5px;
+}
+.graph-overflow-popover .gop-label { font-family: ui-monospace, monospace; }
+
 .graph-notice {
   position: absolute;
   top: 50%; left: 50%; transform: translate(-50%, -50%);
@@ -414,7 +461,53 @@ body:not(.show-sets) #sets-pane { display: none; }
   display: flex;
   flex-direction: column;
   min-height: 0;
+  position: relative;
 }
+/* Drag handle on the left edge of the detail pane (#4 — resizable). */
+#detail-resize {
+  position: absolute;
+  top: 0; bottom: 0; left: -3px;
+  width: 6px;
+  cursor: ew-resize;
+  background: transparent;
+  z-index: 5;
+}
+#detail-resize:hover, body.detail-resizing #detail-resize {
+  background: var(--accent);
+  opacity: 0.35;
+}
+body.detail-resizing { cursor: ew-resize; user-select: none; }
+/* Close button lives in the header; matches drawer-close look. */
+#detail-close {
+  float: right;
+  cursor: pointer;
+  background: transparent; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 3px;
+  padding: 1px 7px; font-size: 11px;
+  line-height: 1.4;
+}
+#detail-close:hover { color: var(--fg); border-color: #3a4258; }
+/* Reopen handle — a thin vertical tab on the right edge when the
+   detail pane is hidden. Click to bring it back. */
+#detail-reopen {
+  position: fixed;
+  top: 50%; right: 0;
+  transform: translateY(-50%);
+  display: none;
+  z-index: 50;
+  cursor: pointer;
+  padding: 14px 4px;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-right: 0;
+  border-radius: 4px 0 0 4px;
+  color: var(--muted);
+  font-size: 11px; font-weight: 600;
+  writing-mode: vertical-rl;
+  letter-spacing: 0.5px;
+}
+#detail-reopen:hover { color: var(--fg); background: #1a2540; }
+body.hide-detail #detail-reopen { display: block; }
 #detail-header {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
@@ -729,6 +822,20 @@ body:not(.show-sets) #sets-pane { display: none; }
 .setting-status.success { color: var(--accent); }
 .setting-status.error { color: #f87171; }
 .setting-label { color: var(--muted); min-width: 130px; }
+.setting-subhead {
+  color: var(--muted); font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.6px;
+  margin-top: 6px; padding-bottom: 0;
+  cursor: default;
+}
+.setting-eg {
+  font-family: ui-monospace, monospace;
+  color: var(--muted); font-size: 10px;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border: 1px solid var(--border); border-radius: 3px;
+  background: var(--panel2);
+}
 /* Lanes row inside settings modal (F.2) — horizontal flow next to the
    "Lanes:" label. */
 .lanes-row { flex-wrap: wrap; gap: 6px 10px; }
@@ -831,7 +938,9 @@ body:not(.show-sets) #sets-pane { display: none; }
   background: var(--panel2);
   border: 1px solid var(--border);
   border-radius: 4px;
-  z-index: 100;
+  /* Sits above the Prism/Timeline mode toggle (z-index: 200) so an
+     active autocomplete isn't obscured. */
+  z-index: 300;
   max-height: 60vh;
   overflow: auto;
   box-shadow: 0 6px 24px rgba(0,0,0,0.4);

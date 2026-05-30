@@ -217,14 +217,31 @@
     // because the canvas isn't focusable; we guard against firing while
     // the user is typing in an input.
     document.addEventListener("keydown", _onKeyDown);
+    // Overflow popover (the +N badge menu) dismisses on any outside
+    // click. Bound on the document so clicks anywhere in the app close
+    // it, not just clicks on the canvas.
+    document.addEventListener("mousedown", _onDocMouseDown);
 
     _scheduleRender();
+  }
+  function _onDocMouseDown(e) {
+    if (!_overflowPopoverEl || _overflowPopoverEl.classList.contains("hidden")) return;
+    if (_overflowPopoverEl.contains(e.target)) return;
+    // Clicks on the +N chip itself reach the canvas — the canvas click
+    // handler will re-open the popover on the chip anyway, so close
+    // here unconditionally.
+    _closeOverflowPopover();
   }
 
   function _onKeyDown(e) {
     if (e.key !== "Escape") return;
     const t = e.target;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    // Escape unwinds: overflow popover first, then persistent highlights.
+    if (_overflowPopoverEl && !_overflowPopoverEl.classList.contains("hidden")) {
+      _closeOverflowPopover();
+      return;
+    }
     if (pinnedIds.size === 0 && greyedIds.size === 0) return;
     pinnedIds.clear();
     greyedIds.clear();
@@ -259,6 +276,7 @@
     hoverId = null;
     highlightSetIds = null;
     highlightIntersectionIds = null;
+    _closeOverflowPopover();
     _ingest(graph);
     _layout();
     _resetView();
@@ -445,14 +463,16 @@
         || buckets[c].length > 0 || c === anchorCol;
     });
 
-    // 3. Allocate column x positions. Cap per-column width so removing a
-    //    lane visibly *narrows* the layout. F.4 — empty "always visible"
-    //    columns (ip/session/command when the anchor produces none)
-    //    collapse to a thin 12-px gutter so playbook anchors don't
-    //    waste ~30% of the canvas on dead space upstream.
+    // 3. Allocate column x positions. F.4 — empty "always visible"
+    //    columns collapse to a thin 12-px gutter so playbook anchors
+    //    don't waste ~30% of the canvas. Issue #2 — an explicit
+    //    COL_GAP between adjacent content columns is preserved even
+    //    when many lanes are in play; per-column content width
+    //    shrinks instead of the gap closing up.
     const minPad = 28;
     const maxColW = 360;
     const GUTTER_W = 12;
+    const COL_GAP  = 24;
     const gutters = new Set();
     for (const c of visible) {
       if (c === anchorCol) continue;
@@ -460,16 +480,18 @@
       gutters.add(c);
     }
     const contentCount = visible.length - gutters.size;
-    const naturalColW = (viewW - minPad * 2 - gutters.size * GUTTER_W) /
+    const interGapTotal = Math.max(0, visible.length - 1) * COL_GAP;
+    const naturalColW = (viewW - minPad * 2 - interGapTotal - gutters.size * GUTTER_W) /
       Math.max(1, contentCount);
     const colW = Math.min(naturalColW, maxColW);
     const widthOf = (c) => gutters.has(c) ? GUTTER_W : colW;
     const colX = {};
     let _xCursor = 0;
-    for (const c of visible) {
+    visible.forEach((c, i) => {
       colX[c] = _xCursor + widthOf(c) / 2;
       _xCursor += widthOf(c);
-    }
+      if (i < visible.length - 1) _xCursor += COL_GAP;
+    });
 
     // 4. For each visible column, group items by cluster id and lay them
     //    out vertically.
@@ -741,10 +763,15 @@
     // The column band lives at world x ∈ [0, bandW]. Pad with 30px on
     // each side when sizing the zoom so columns don't kiss the canvas
     // edges. Then position so the band's center matches the viewport's.
-    // F.4 — gutters contribute their narrow width, not the full colW.
+    // F.4 — gutters contribute their narrow width, not the full colW;
+    // issue #2 — inter-column gaps add a constant per visible column.
     const GUTTER_W = 12;
+    const COL_GAP  = 24;
     const contentCount = meta.visible.length - (meta.gutters ? meta.gutters.size : 0);
-    const bandW = contentCount * meta.colW + (meta.gutters ? meta.gutters.size : 0) * GUTTER_W;
+    const gapCount     = Math.max(0, meta.visible.length - 1);
+    const bandW = contentCount * meta.colW
+      + (meta.gutters ? meta.gutters.size : 0) * GUTTER_W
+      + gapCount * COL_GAP;
     const h = meta.maxH + 80;
     const zx = viewW / (bandW + 60);
     const zy = viewH / h;
@@ -759,6 +786,7 @@
 
   function _onWheel(e) {
     e.preventDefault();
+    _closeOverflowPopover();
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top;
@@ -791,7 +819,10 @@
     if (dragState) {
       const dx = px - dragState.x0;
       const dy = py - dragState.y0;
-      if (!dragState.moved && Math.hypot(dx, dy) > 3) dragState.moved = true;
+      if (!dragState.moved && Math.hypot(dx, dy) > 3) {
+        dragState.moved = true;
+        _closeOverflowPopover();
+      }
       panX = dragState.panX0 + dx;
       panY = dragState.panY0 + dy;
       _scheduleRender();
@@ -953,6 +984,10 @@
       _handleBadgeClick(t.node, t.idx);
       return;
     }
+    if (t.kind === "overflow") {
+      _openOverflowPopover(t.node);
+      return;
+    }
     if (t.kind === "node") {
       const id = t.node.id;
       if (e.altKey) {
@@ -1009,6 +1044,73 @@
   }
 
   // ===================================================================
+  // Overflow popover for badges that don't fit on the row.
+  // ===================================================================
+  let _overflowPopoverEl = null;
+  function _closeOverflowPopover() {
+    if (_overflowPopoverEl) {
+      _overflowPopoverEl.classList.add("hidden");
+      _overflowPopoverEl.innerHTML = "";
+    }
+  }
+  function _openOverflowPopover(node) {
+    const o = node._overflow;
+    if (!o || !o.hidden || !o.hidden.length) return;
+    _closeOverflowPopover();
+    if (!_overflowPopoverEl) {
+      _overflowPopoverEl = document.createElement("div");
+      _overflowPopoverEl.className = "graph-overflow-popover hidden";
+      containerEl.appendChild(_overflowPopoverEl);
+    }
+    const list = document.createElement("ul");
+    list.className = "gop-list";
+    for (const b of o.hidden) {
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "gop-chip";
+      const color = TYPE_COLOR[b.type] || "#94a3b8";
+      btn.style.borderColor = _hexA(color, 0.7);
+      btn.style.color = color;
+      const prefix = document.createElement("span");
+      prefix.className = "gop-prefix";
+      prefix.textContent = b.prefix || b.type;
+      const label = document.createElement("span");
+      label.className = "gop-label";
+      label.textContent = b.label;
+      btn.appendChild(prefix);
+      btn.appendChild(label);
+      btn.disabled = !!b.nonPivot;
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        _closeOverflowPopover();
+        if (b.nonPivot) return;
+        if (pivotHandler) pivotHandler({ type: b.type, id: b.id });
+      });
+      li.appendChild(btn);
+      list.appendChild(li);
+    }
+    _overflowPopoverEl.appendChild(list);
+
+    // Anchor the popover to the +N chip's screen position. Auto-flip up
+    // if the natural drop-down would clip below the canvas.
+    const screenX = o.x * zoom + panX;
+    const screenY = (o.y + o.h) * zoom + panY;
+    _overflowPopoverEl.classList.remove("hidden");
+    const popRect = _overflowPopoverEl.getBoundingClientRect();
+    let left = Math.max(6, screenX - 4);
+    if (left + popRect.width > viewW - 6) {
+      left = Math.max(6, viewW - popRect.width - 6);
+    }
+    let top = screenY + 6;
+    if (top + popRect.height > viewH - 6) {
+      top = Math.max(6, (o.y * zoom + panY) - popRect.height - 6);
+    }
+    _overflowPopoverEl.style.left = left + "px";
+    _overflowPopoverEl.style.top  = top  + "px";
+  }
+
+  // ===================================================================
   // Hit testing
   // ===================================================================
   function _hitTest(e) {
@@ -1037,6 +1139,14 @@
             return { kind: "badge", node: n, idx: i };
           }
           bx += bw + 3;
+        }
+      }
+      // +N overflow chip drawn after the last badge. Click opens the
+      // popover with the hidden badges.
+      if (n._overflow) {
+        const o = n._overflow;
+        if (wx >= o.x && wx <= o.x + o.w && wy >= o.y && wy <= o.y + o.h) {
+          return { kind: "overflow", node: n };
         }
       }
     }
@@ -1130,6 +1240,26 @@
     for (const g of clusterGroups.values()) {
       g.rects = _bubbleColumnRects(g.members, CLUSTER_PAD);
     }
+    // Pre-wrap each playbook's label so the bubble's top padding can
+    // grow to match a multi-line tag. Without this a long playbook
+    // name would sit on top of the contained cluster bubbles.
+    // (graph issue #1 follow-up)
+    ctx.save();
+    ctx.font = "600 9px ui-sans-serif,system-ui";
+    // Match the math _drawBubbleLabel uses on the final rect:
+    //   rect_width ≈ colW - 4 (node colW-28 wrapped in PLAYBOOK_PAD.pad*2)
+    //   tag_max    = rect_width - 12     (6px margin each side)
+    //   inner_max  = tag_max - tagPad*2  (5px each side) = rect_width - 22
+    // → inner_max ≈ colW - 26. Use the same here so we never
+    // under-estimate the wrapped line count.
+    const labelInnerMax = Math.max(40, _layoutMeta.colW - 26);
+    for (const [pid, g] of playbookGroups) {
+      const text  = `playbook \xb7 ${g.displayName || pid}`.toUpperCase();
+      const lines = _wrapTextToWidth(text, labelInnerMax);
+      g.labelLines  = lines;
+      g.labelPadTop = 3 + (lines.length * 11 + 6) + 4;
+    }
+    ctx.restore();
     for (const g of playbookGroups.values()) {
       g.rects = _playbookSegments(g, clusterGroups);
     }
@@ -1266,6 +1396,12 @@
       if (!intervalsByCol.has(col)) intervalsByCol.set(col, []);
       intervalsByCol.get(col).push({ l, r, t, b });
     }
+    // Grow the top padding to fit the wrapped label, but never shrink
+    // below the existing baseline. Both the member-rect and the
+    // cluster-enclose paths use the same padTop so the playbook bubble
+    // grows uniformly upward regardless of which member sets the top.
+    const padTop  = Math.max(g.labelPadTop || 0, PLAYBOOK_PAD.padTop);
+    const ePadTop = Math.max(g.labelPadTop || 0, PLAYBOOK_ENCLOSE_GAP.padTop);
 
     for (const n of g.members) {
       if (!isFinite(n.x) || !isFinite(n.y)) continue;
@@ -1275,7 +1411,7 @@
         c,
         n.x - n.w / 2 - PLAYBOOK_PAD.pad,
         n.x + n.w / 2 + PLAYBOOK_PAD.pad,
-        n.y - n.h / 2 - PLAYBOOK_PAD.padTop,
+        n.y - n.h / 2 - padTop,
         n.y + n.h / 2 + PLAYBOOK_PAD.pad,
       );
     }
@@ -1287,7 +1423,7 @@
           er.col,
           er.l - PLAYBOOK_ENCLOSE_GAP.pad,
           er.r + PLAYBOOK_ENCLOSE_GAP.pad,
-          er.t - PLAYBOOK_ENCLOSE_GAP.padTop,
+          er.t - ePadTop,
           er.b + PLAYBOOK_ENCLOSE_GAP.pad,
         );
       }
@@ -1460,8 +1596,17 @@
     const text   = opts.labelText.toUpperCase();
     ctx.font     = "600 9px ui-sans-serif,system-ui";
     const tagPad = 5;
-    const tagH   = 14;
-    const tagW   = ctx.measureText(text).width + tagPad * 2;
+    const lineH  = 11;
+    // Constrain the tag width to the bubble so long playbook /
+    // campaign names wrap instead of protruding into adjacent
+    // columns. (graph issue #1)
+    const maxTagW   = Math.max(40, (rect.r - rect.l) - 12);
+    const maxInnerW = maxTagW - tagPad * 2;
+    const lines     = _wrapTextToWidth(text, maxInnerW);
+    let widest = 0;
+    for (const ln of lines) widest = Math.max(widest, ctx.measureText(ln).width);
+    const tagW   = Math.min(maxTagW, widest + tagPad * 2);
+    const tagH   = lines.length * lineH + 6;
     const tagX   = rect.l + 6;
     const tagY   = rect.t + 3;
     ctx.fillStyle   = `hsla(${opts.hue}, 50%, 18%, 0.88)`;
@@ -1475,7 +1620,52 @@
     ctx.fillStyle    = `hsl(${opts.hue}, 75%, 78%)`;
     ctx.textAlign    = "left";
     ctx.textBaseline = "middle";
-    ctx.fillText(text, tagX + tagPad, tagY + tagH / 2);
+    let cy = tagY + 3 + lineH / 2;
+    for (const ln of lines) {
+      ctx.fillText(ln, tagX + tagPad, cy);
+      cy += lineH;
+    }
+  }
+
+  // Word-wrap a single-line string to lines that fit `maxWidth` in
+  // the current context's font. Words longer than the column are
+  // broken on character boundaries as a last resort so a single
+  // unbreakable token doesn't blow out the bubble.
+  function _wrapTextToWidth(text, maxWidth) {
+    const words = text.split(/\s+/);
+    const out = [];
+    let cur = "";
+    for (const w of words) {
+      const trial = cur ? cur + " " + w : w;
+      if (ctx.measureText(trial).width <= maxWidth) {
+        cur = trial;
+      } else if (cur) {
+        out.push(cur);
+        // Word itself may exceed maxWidth — break by character.
+        if (ctx.measureText(w).width > maxWidth) {
+          let chunk = "";
+          for (const ch of w) {
+            if (ctx.measureText(chunk + ch).width > maxWidth) {
+              out.push(chunk);
+              chunk = ch;
+            } else chunk += ch;
+          }
+          cur = chunk;
+        } else cur = w;
+      } else {
+        // First word exceeds maxWidth — break by character.
+        let chunk = "";
+        for (const ch of w) {
+          if (ctx.measureText(chunk + ch).width > maxWidth) {
+            out.push(chunk);
+            chunk = ch;
+          } else chunk += ch;
+        }
+        cur = chunk;
+      }
+    }
+    if (cur) out.push(cur);
+    return out.length ? out : [text];
   }
 
   function _roundRectPath(x, y, w, h, r) {
@@ -1748,21 +1938,48 @@
 
   function _drawBadges(n) {
     if (_isBadgeKind(n.type)) return; // don't badge badge-anchored nodes
-    const badges = _badgesFor(n);
-    n._badges = badges;
-    if (!badges || badges.length === 0) return;
-    const left = n.x - n.w / 2;
+    const allBadges = _badgesFor(n);
+    if (!allBadges || allBadges.length === 0) { n._badges = []; return; }
     const right = n.x + n.w / 2;
+    // Issue #3 — contain badges within the host node's column. Compute
+    // the column's right edge from the layout meta and stop rendering
+    // (with a "+N" overflow chip) before any badge would cross it.
+    const meta = _layoutMeta;
+    const TYPE_TO_COL = {
+      ip: "ip", session: "session", command: "command",
+      ip_cluster: "ip", session_cluster: "session", command_cluster: "command",
+      playbook: "playbook", campaign: "campaign",
+      file: "file", asn: "geo", country: "geo",
+      mitre_technique: "mitre", mitre_tactic: "mitre",
+    };
+    const col = TYPE_TO_COL[n.type];
+    const colW = (meta && col && !(meta.gutters && meta.gutters.has(col)))
+      ? meta.colW : 360;
+    const colRightEdge = (meta && col && colX(col) != null)
+      ? colX(col) + colW / 2
+      : right + 200;
     let bx = right + 4;
     const by = n.y;
     ctx.save();
     ctx.font = "600 9px ui-sans-serif,system-ui";
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
-    for (let i = 0; i < badges.length; i++) {
-      const b = badges[i];
+    // OVERFLOW_W reserved for a "+N" indicator chip when not every
+    // badge fits.
+    const OVERFLOW_W = 22;
+    const drawn = [];
+    let truncated = 0;
+    for (let i = 0; i < allBadges.length; i++) {
+      const b = allBadges[i];
       const w = ctx.measureText(b.label).width + 10;
+      // Reserve room for the overflow chip on all but the last badge.
+      const reserve = (i < allBadges.length - 1) ? (OVERFLOW_W + 3) : 0;
+      if (bx + w + reserve > colRightEdge) {
+        truncated = allBadges.length - i;
+        break;
+      }
       b._w = w;
+      b._x = bx;
       const hovered = hoverBadge && hoverBadge.nodeId === n.id && hoverBadge.idx === i;
       const color = TYPE_COLOR[b.type] || "#94a3b8";
       ctx.fillStyle = hovered ? _hexA(color, 0.35) : _hexA(color, 0.18);
@@ -1775,8 +1992,60 @@
       ctx.fillStyle = hovered ? "#f0f7ff" : "#cdd6e3";
       ctx.fillText(b.label, bx + 5, by);
       bx += w + 3;
+      drawn.push(b);
+    }
+    if (truncated > 0) {
+      const label = "+" + truncated;
+      const w = Math.max(OVERFLOW_W, ctx.measureText(label).width + 10);
+      ctx.fillStyle = _hexA("#94a3b8", 0.18);
+      ctx.strokeStyle = _hexA("#94a3b8", 0.7);
+      ctx.lineWidth = 0.8 / zoom;
+      ctx.beginPath();
+      _roundRectPath(bx, by - n.h / 2 + 2, w, n.h - 4, 3);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#cdd6e3";
+      ctx.fillText(label, bx + 5, by);
+      // Stash the overflow chip's geometry + hidden badges for the
+      // hit-test and the popover that pops up on click.
+      n._overflow = {
+        x: bx, y: by - n.h / 2 + 2, w, h: n.h - 4,
+        hidden: allBadges.slice(allBadges.length - truncated),
+      };
+    } else {
+      n._overflow = null;
     }
     ctx.restore();
+    // Hit-testing iterates n._badges with their _w; only expose the
+    // ones we actually drew so the overflow chip doesn't pretend to be
+    // pivotable.
+    n._badges = drawn;
+  }
+  // Helper: column center lookup that gracefully returns null if the
+  // column wasn't laid out (e.g. node placed before _layoutMeta updated).
+  function colX(c) {
+    const m = _layoutMeta;
+    return (m && m.colX && Object.prototype.hasOwnProperty.call(m.colX, c)) ? m.colX[c] : null;
+  }
+
+  // Per-badge visibility preferences, persisted to localStorage as
+  // `prism.badge.<key>`. Each entry is independently toggleable in the
+  // Settings modal under Graph display → Artifact badges.
+  const BADGE_PREFS_DEFAULT = {
+    specificity:     "1",   // ★ 0.76
+    pbks:            "1",   // 3 pbks
+    asn:             "1",   // AS12345
+    country:         "1",   // US
+    mitre_technique: "0",   // T1059.003 — verbose, off by default
+    mitre_tactic:    "0",   // TA0003
+  };
+  function _badgePrefOn(key) {
+    try {
+      const v = localStorage.getItem("prism.badge." + key);
+      if (v === "1") return true;
+      if (v === "0") return false;
+    } catch (_) {}
+    return BADGE_PREFS_DEFAULT[key] === "1";
   }
 
   function _badgesFor(n) {
@@ -1786,34 +2055,42 @@
       // via this IP's sessions (IP -> session -> playbook), pulled from
       // the in-memory edge graph. Only shown when >1 — a single-playbook
       // IP is the common case and adding "1" to every IP would be noise.
-      const npb = _ipPlaybookCount(n.id);
-      if (npb > 1) {
-        out.push({
-          type:   "playbook",
-          id:     n.id,                // not pivotable on its own — informational counter
-          prefix: "pb",
-          label:  `${npb} pbks`,
-          nonPivot: true,
-        });
+      if (_badgePrefOn("pbks")) {
+        const npb = _ipPlaybookCount(n.id);
+        if (npb > 1) {
+          out.push({
+            type:   "playbook",
+            id:     n.id,                // not pivotable on its own — informational counter
+            prefix: "pb",
+            label:  `${npb} pbks`,
+            nonPivot: true,
+          });
+        }
       }
-      if (n.asn) out.push({ type: "asn", id: String(n.asn), prefix: "asn", label: `AS${n.asn}` });
-      if (n.country) out.push({ type: "country", id: String(n.country), prefix: "cc", label: String(n.country) });
+      if (n.asn && _badgePrefOn("asn")) {
+        out.push({ type: "asn", id: String(n.asn), prefix: "asn", label: `AS${n.asn}` });
+      }
+      if (n.country && _badgePrefOn("country")) {
+        out.push({ type: "country", id: String(n.country), prefix: "cc", label: String(n.country) });
+      }
     }
     if (n.type === "command") {
-      const tt = n.mitre_techniques || [];
-      const ta = n.mitre_tactics || [];
-      for (const t of tt) {
-        out.push({ type: "mitre_technique", id: t, prefix: "tt", label: t });
+      if (_badgePrefOn("mitre_technique")) {
+        for (const t of (n.mitre_techniques || [])) {
+          out.push({ type: "mitre_technique", id: t, prefix: "tt", label: t });
+        }
       }
-      for (const t of ta) {
-        out.push({ type: "mitre_tactic", id: t, prefix: "ta", label: t });
+      if (_badgePrefOn("mitre_tactic")) {
+        for (const t of (n.mitre_tactics || [])) {
+          out.push({ type: "mitre_tactic", id: t, prefix: "ta", label: t });
+        }
       }
     }
     // ROADMAP #4 — cluster-specificity chip. Surfaced for IP and command
     // nodes whenever the backend attached a score (single-playbook scope).
-    // Unshift so it leads the row — distinctive is the headline signal —
-    // and stays in view if the slice(0, 4) truncates trailing chips.
-    if ((n.type === "ip" || n.type === "command") && n.specificity != null) {
+    // Unshift so it leads the row — distinctive is the headline signal.
+    if ((n.type === "ip" || n.type === "command") && n.specificity != null
+        && _badgePrefOn("specificity")) {
       const s = n.specificity;
       out.unshift({
         type:     "specificity",
@@ -1823,8 +2100,7 @@
         nonPivot: true,
       });
     }
-    // truncate to avoid blowing past row height
-    return out.slice(0, 4);
+    return out;
   }
 
   // For an IP node id, count the distinct `playbook` neighbours reachable
