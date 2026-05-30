@@ -76,6 +76,12 @@
     table.fnd-table tr.fnd-row { cursor: pointer; }
     table.fnd-table tr.fnd-row:hover td { background: #0e1e35; }
     table.fnd-table td.size { font-variant-numeric: tabular-nums; white-space: nowrap; }
+    table.fnd-table td.trend {
+      width: 130px; padding: 4px 10px;
+      color: #4a5470; font-size: 11px;
+    }
+    table.fnd-table td.trend svg { display: block; vertical-align: middle; }
+    table.fnd-table td.trend .trend-empty { color: #4a5470; }
 
     .fnd-kind-badge {
       font-size: 10px; font-weight: 600; text-transform: uppercase;
@@ -94,8 +100,24 @@
       font-size: 11px; padding: 2px 6px;
     }
     .fnd-status-select:focus { outline: 1px solid #4cc1ff; outline-offset: 0; }
+    /* Narrative truncates to a single line with an ellipsis (#24);
+       hovering the cell shows the full text via the [data-tooltip]
+       pattern. The cell is a flex row so the LLM chip stays visible
+       after the truncated text. */
     table.fnd-table td.narrative {
-      max-width: 480px; color: #c8d0e2; white-space: normal;
+      max-width: 480px; color: #c8d0e2;
+      display: flex; align-items: center; gap: 6px;
+    }
+    table.fnd-table td.narrative .narrative-text {
+      flex: 1; min-width: 0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    /* Tooltip on narrative cells allows wrapping — narratives can run
+       a couple of paragraphs and the default single-line tooltip would
+       overflow off-screen. */
+    table.fnd-table td.narrative[data-tooltip]:hover::after {
+      white-space: normal; max-width: 480px;
+      line-height: 1.5;
     }
     .narrative-llm-chip {
       display: inline-block; margin-left: 4px;
@@ -207,9 +229,9 @@
       <div class="facet-group">
         <h5>Sort</h5>
         <select id="sort-select" class="fnd-status-select">
-          <option value="score">score</option>
           <option value="last_seen">last seen</option>
           <option value="first_seen">first seen</option>
+          <option value="score">score</option>
         </select>
       </div>
       <!-- P1c: dynamic facet groups (score/age/IP/intent/intel verdict).

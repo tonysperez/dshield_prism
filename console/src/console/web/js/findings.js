@@ -31,9 +31,11 @@ const STATUS_TOOLTIP = {
   confirmed: "Real signal — arms drift watch on the artifact",
   rejected:  "Noise — suppress similar in future",
 };
-const FACET_DIMS = ["score_band", "age_band", "ip_band", "intent", "intel_verdict"];
+// Score is intentionally absent — banding an uncalibrated number adds
+// fake precision and triage decisions hang on intent / intel_verdict /
+// recency instead. (ROADMAP #17.12 amended)
+const FACET_DIMS = ["age_band", "ip_band", "intent", "intel_verdict"];
 const FACET_LABEL = {
-  score_band:    "Score",
   age_band:      "Age",
   ip_band:       "IP count",
   intent:        "Intent",
@@ -52,7 +54,7 @@ const STREAM_TOOLTIP = {
 const state = {
   status: "new",     // single status (chip click), or "all"
   stream: "",        // "" = all categories; or "drift" | "discovery" | "coverage"
-  sort: "score",
+  sort: "last_seen", // reverse-chronological by default — score is uncalibrated
   facets: {},        // {dim: bucket_key} — one active bucket per dim
 };
 
@@ -70,7 +72,7 @@ function pushQuery() {
   const q = new URLSearchParams();
   q.set("status", state.status);
   if (state.stream) q.set("stream", state.stream);
-  if (state.sort !== "score") q.set("sort", state.sort);
+  if (state.sort !== "last_seen") q.set("sort", state.sort);
   for (const dim of FACET_DIMS) {
     if (state.facets[dim]) q.set(dim, state.facets[dim]);
   }
@@ -262,7 +264,7 @@ function renderInbox(rows) {
     el("th", null, ["Kind"]),
     el("th", null, ["Artifact"]),
     el("th", null, ["Size"]),
-    el("th", null, ["Score"]),
+    el("th", null, ["Trend"]),
     el("th", null, ["Narrative"]),
     el("th", null, ["First"]),
     el("th", null, ["Last"]),
@@ -282,8 +284,31 @@ function renderInbox(rows) {
     tr.appendChild(el("td", null, [kindBadge(r.kind)]));
     tr.appendChild(el("td", {class: "artifact"}, [artifactLabel(r)]));
     tr.appendChild(el("td", {class: "size"}, [sizeCell(r)]));
-    tr.appendChild(el("td", {class: "score"}, [fmtScore(r.score)]));
-    const narrCell = el("td", {class: "narrative"}, [r.narrative || ""]);
+    // Trend — the same lifecycle snapshots the drawer plots, rendered
+    // small so the analyst can scan "is this still moving?" without
+    // opening every row. (#20)
+    const snaps = r.lifecycle_snapshots || [];
+    const trendCell = el("td", {class: "trend"});
+    const spark = inlineSparkline(snaps, {w: 120, h: 18, stroke: 1.2});
+    if (spark) {
+      trendCell.appendChild(spark);
+      const last = snaps[snaps.length - 1] || {};
+      const first = snaps[0] || {};
+      trendCell.setAttribute(
+        "data-tooltip",
+        `${snaps.length} snapshots · ` +
+        `${first.session_count ?? "?"} → ${last.session_count ?? "?"} sessions`,
+      );
+    } else {
+      trendCell.appendChild(el("span", {class: "trend-empty"}, ["—"]));
+    }
+    tr.appendChild(trendCell);
+    // Score lives in the drawer only — the inbox triage decision hangs
+    // on intent/intel_verdict/recency, not a numeric facet. (#12 amended)
+    const narrText = r.narrative || "";
+    const narrCell = el("td", {class: "narrative"});
+    narrCell.appendChild(el("span", {class: "narrative-text"}, [narrText]));
+    if (narrText) narrCell.setAttribute("data-tooltip", narrText);
     if (r.narrative_source === "llm") {
       narrCell.appendChild(el("span", {class: "narrative-llm-chip"}, ["LLM"]));
     }
@@ -362,26 +387,44 @@ async function mutateStatus(fid, newStatus, selEl) {
 // Detail drawer
 // ---------------------------------------------------------------------------
 
-function inlineSparkline(snapshots) {
+function inlineSparkline(snapshots, opts) {
   if (!snapshots || !snapshots.length) return null;
-  const w = 480, h = 50;
+  const w = (opts && opts.w) || 480;
+  const h = (opts && opts.h) || 50;
+  const stroke = (opts && opts.stroke) || 1.5;
   const sessionVals = snapshots.map(s => +(s.session_count ?? 0));
   const max = Math.max(1, ...sessionVals);
-  const dx = w / Math.max(1, snapshots.length - 1);
-  let d = "";
-  sessionVals.forEach((v, i) => {
-    const x = i * dx;
-    const y = h - (v / max) * (h - 6) - 3;
-    d += (i === 0 ? "M" : "L") + `${x.toFixed(1)},${y.toFixed(1)} `;
-  });
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  const pad = Math.max(2, stroke * 2);
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("width", w);
   svg.setAttribute("height", h);
   svg.setAttribute("class", "sparkline");
-  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+
+  // Single snapshot: a path with one MoveTo has zero geometry and
+  // renders nothing. Drop a small dot at the centre so the cell still
+  // reads as "this finding exists, no trend across cycles yet".
+  if (sessionVals.length === 1) {
+    const dot = document.createElementNS(SVG_NS, "circle");
+    dot.setAttribute("cx", String(w / 2));
+    dot.setAttribute("cy", String(h / 2));
+    dot.setAttribute("r", String(Math.max(1.2, stroke * 1.2)));
+    dot.setAttribute("fill", "#4cc1ff");
+    svg.appendChild(dot);
+    return svg;
+  }
+
+  const dx = w / (snapshots.length - 1);
+  let d = "";
+  sessionVals.forEach((v, i) => {
+    const x = i * dx;
+    const y = h - (v / max) * (h - pad) - pad / 2;
+    d += (i === 0 ? "M" : "L") + `${x.toFixed(1)},${y.toFixed(1)} `;
+  });
+  const path = document.createElementNS(SVG_NS, "path");
   path.setAttribute("d", d.trim());
   path.setAttribute("stroke", "#4cc1ff");
-  path.setAttribute("stroke-width", "1.5");
+  path.setAttribute("stroke-width", String(stroke));
   path.setAttribute("fill", "none");
   svg.appendChild(path);
   return svg;

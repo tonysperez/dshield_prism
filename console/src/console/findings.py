@@ -128,7 +128,75 @@ def list_findings(
         src["_id"] = h.get("_id")
         rows.append(src)
     total = hits.get("total", {}).get("value", 0) if isinstance(hits.get("total"), dict) else 0
+    _attach_inbox_snapshots(es, cfg, rows)
     return {"total": total, "rows": rows, "page": {"from": frm, "size": size}}
+
+
+def _attach_inbox_snapshots(
+    es, cfg, rows: list[dict], *, max_snaps: int = 20,
+) -> None:
+    """Stitch up to `max_snaps` recent session_count snapshots onto each
+    row as `lifecycle_snapshots` — drives the inline sparkline column
+    in the inbox (ROADMAP #17.20). Bulk-fetched: one mget per anchor
+    kind. Best-effort; failures leave rows without the field.
+    """
+    if not rows:
+        return
+
+    # Group artifact ids by kind so each kind hits its lifecycle index
+    # in one mget call.
+    by_kind: dict[str, dict[str, list[dict]]] = {}
+    for r in rows:
+        a = r.get("artifact") or {}
+        k, v = a.get("kind"), a.get("value")
+        if not k or not v:
+            continue
+        by_kind.setdefault(k, {}).setdefault(v, []).append(r)
+
+    if not by_kind:
+        return
+
+    def _idx(name: str, default: str) -> str:
+        try:
+            return getattr(cfg.findings.indexes, name, None) or default
+        except Exception:
+            return default
+
+    LC_INDEX = {
+        "playbook": _idx("playbook_lifecycle",
+                         "lifecycle-dshield.cowrie.playbook-default"),
+        "campaign": _idx("campaign_lifecycle",
+                         "lifecycle-dshield.cowrie.campaign-default"),
+        "ip":       _idx("source_ip_lifecycle",
+                         "lifecycle-dshield.cowrie.source_ip-default"),
+    }
+
+    for kind, by_value in by_kind.items():
+        idx = LC_INDEX.get(kind)
+        if not idx:
+            continue
+        try:
+            if not es.indices.exists(index=idx):
+                continue
+            resp = es.mget(
+                index=idx, body={"ids": list(by_value.keys())},
+                _source=["snapshots"],
+            )
+        except Exception as exc:
+            log.warning("findings: mget snapshots %s failed: %s", idx, exc)
+            continue
+        for doc in resp.get("docs", []):
+            if not doc.get("found"):
+                continue
+            snaps = ((doc.get("_source") or {}).get("snapshots") or [])
+            # Only the session_count rides — the sparkline is the only
+            # consumer; everything else stays out of the inbox payload.
+            trimmed = [
+                {"session_count": s.get("session_count")}
+                for s in snaps[-max_snaps:]
+            ]
+            for row in by_value.get(doc["_id"], []):
+                row["lifecycle_snapshots"] = trimmed
 
 
 def status_counts(es, cfg) -> dict[str, int]:
