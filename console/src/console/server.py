@@ -90,6 +90,56 @@ class ArtifactRuleRequest(BaseModel):
     notes: str = ""
 
 
+class ArtifactsDetailRequest(BaseModel):
+    """POST body for /api/graph/artifacts-detail (ROADMAP #6, Phase H).
+    Bulk-resolves the data the graph doesn't keep in memory by default —
+    full command_line + threat indicators for each command sha, plus
+    credentials + file-event URLs + analyst artifacts for each session,
+    plus analyst-authored lifecycle notes for each anchor in view
+    (playbook / campaign / IP).
+    """
+    session_ids:   list[str] = []
+    command_shas:  list[str] = []
+    playbook_ids:  list[str] = []
+    campaign_ids:  list[str] = []
+    ips:           list[str] = []
+
+
+def _build_cmd_artifact(src: dict) -> dict:
+    """Project a command doc's _source down to the fields the Copy modal
+    cares about. Centralised so both the mget path and the field-search
+    fallback in /api/graph/artifacts-detail emit the same shape."""
+    proc = src.get("process") or {}
+    threat = src.get("threat") or {}
+    enr = ((src.get("dshield") or {}).get("cowrie") or {}).get("enrichment", {}) or {}
+    indicators = threat.get("indicator") or []
+    urls:   list[str] = []
+    ips:    list[str] = []
+    hashes: list[str] = []
+    domains: list[str] = []
+    for ind in indicators:
+        if not isinstance(ind, dict):
+            continue
+        u = ((ind.get("url") or {}).get("full"))
+        if u: urls.append(u)
+        ip_v = ind.get("ip")
+        if ip_v: ips.append(ip_v)
+        h = ((ind.get("file") or {}).get("hash") or {}).get("sha256")
+        if h: hashes.append(h)
+        d = ind.get("domain")
+        if d: domains.append(d)
+    return {
+        "command_line": proc.get("command_line") or "",
+        "sha256_full":  (proc.get("hash") or {}).get("sha256") or "",
+        "intent":       enr.get("intent"),
+        "indicator_urls":    sorted(set(urls)),
+        "indicator_ips":     sorted(set(ips)),
+        "indicator_hashes":  sorted(set(hashes)),
+        "indicator_domains": sorted(set(domains)),
+        "analyst_artifacts": enr.get("analyst_artifacts") or [],
+    }
+
+
 def build_app(config_path: str | None = None) -> FastAPI:
     cfg = load_config(config_path)
     secrets = load_secrets(config_path)
@@ -815,6 +865,374 @@ def build_app(config_path: str | None = None) -> FastAPI:
             require_login=require_login,
             require_commands=require_commands,
         )
+
+    @app.post("/api/graph/artifacts-detail")
+    def graph_artifacts_detail(body: ArtifactsDetailRequest) -> JSONResponse:
+        """Bulk artifact resolution for the Copy modal (ROADMAP #6, Phase H).
+        Returns full command_line + threat indicators for each command sha,
+        and credentials + file-event URLs + analyst artifacts for each
+        session. Pure read — no LLM, no upstream calls.
+
+        Designed to be called once when the analyst opens the modal, so
+        we use mget for both indexes (single round-trip per kind) plus a
+        small fallback search for command shas that don't resolve by _id."""
+        out_sessions: dict[str, dict] = {}
+        out_commands: dict[str, dict] = {}
+
+        sess_idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
+        cmd_idx  = cfg.elasticsearch.indexes.cowrie.commands
+
+        sess_ids = list({s for s in (body.session_ids or []) if s})
+        cmd_shas = list({c for c in (body.command_shas or []) if c})
+
+        if sess_ids:
+            try:
+                resp = es.mget(index=sess_idx, ids=sess_ids,
+                               _source=[
+                                   "cowrie.session_id",
+                                   "dshield.cowrie.enrichment.session.credentials",
+                                   "dshield.cowrie.enrichment.session.file_events",
+                                   "dshield.cowrie.enrichment.session.artifact_set",
+                                   "dshield.cowrie.enrichment.session.analyst_artifacts",
+                               ])
+                for d in resp.get("docs", []):
+                    if not d.get("found"):
+                        continue
+                    sid = d["_id"]
+                    src = d.get("_source") or {}
+                    senr = (((src.get("dshield") or {}).get("cowrie") or {})
+                            .get("enrichment", {}).get("session", {}))
+                    fe = senr.get("file_events") or []
+                    file_event_urls = sorted({
+                        f.get("url") for f in fe if isinstance(f, dict) and f.get("url")
+                    })
+                    # File hashes keep the filename / path alongside the
+                    # hash so the Report can render the analyst-facing
+                    # name next to the sha. De-dup on (sha, name) so the
+                    # same drop with different filenames still shows up.
+                    seen_fh: set[tuple[str, str, str]] = set()
+                    file_event_files: list[dict] = []
+                    for f in fe:
+                        if not isinstance(f, dict):
+                            continue
+                        sha = f.get("sha256") or ""
+                        nm  = f.get("filename") or ""
+                        ch  = f.get("command_hash") or ""
+                        attr = f.get("command_attribution") or ""
+                        action = f.get("action") or ""
+                        if not sha:
+                            continue
+                        # Dedup on (sha, filename, command_hash) — same hash
+                        # dropped from different commands or with different
+                        # filenames is meaningful provenance the analyst
+                        # report should keep.
+                        key = (sha, nm, ch)
+                        if key in seen_fh:
+                            continue
+                        seen_fh.add(key)
+                        file_event_files.append({
+                            "sha256": sha, "filename": nm,
+                            "action": action,
+                            "command_hash": ch,
+                            "command_attribution": attr,
+                        })
+                    out_sessions[sid] = {
+                        "credentials":        senr.get("credentials") or [],
+                        "file_event_urls":    file_event_urls,
+                        "file_event_files":   file_event_files,
+                        "artifact_set":       senr.get("artifact_set") or [],
+                        "analyst_artifacts":  senr.get("analyst_artifacts") or [],
+                    }
+            except Exception as exc:
+                log.exception("artifacts-detail mget(session) failed")
+                raise HTTPException(500, f"session mget failed: {exc}")
+
+        if cmd_shas:
+            try:
+                resp = es.mget(index=cmd_idx, ids=cmd_shas,
+                               _source=[
+                                   "process.command_line",
+                                   "process.hash.sha256",
+                                   "threat.indicator",
+                                   "dshield.cowrie.enrichment.intent",
+                                   "dshield.cowrie.enrichment.analyst_artifacts",
+                               ])
+                resolved: set[str] = set()
+                for d in resp.get("docs", []):
+                    if not d.get("found"):
+                        continue
+                    sha = d["_id"]
+                    resolved.add(sha)
+                    out_commands[sha] = _build_cmd_artifact(d.get("_source") or {})
+                missing = [s for s in cmd_shas if s not in resolved]
+                # 64-hex shas (full process.hash.sha256) don't match the
+                # 16-hex doc _id. Fall back to a field-term lookup for any
+                # that missed; mget is the common case, this is the long tail.
+                if missing:
+                    fb = es.search(
+                        index=cmd_idx,
+                        size=len(missing),
+                        query={"terms": {"process.hash.sha256": missing}},
+                        _source=[
+                            "process.command_line",
+                            "process.hash.sha256",
+                            "threat.indicator",
+                            "dshield.cowrie.enrichment.intent",
+                            "dshield.cowrie.enrichment.analyst_artifacts",
+                        ],
+                    )
+                    for h in fb.get("hits", {}).get("hits", []):
+                        src = h.get("_source") or {}
+                        full = ((src.get("process") or {}).get("hash") or {}).get("sha256")
+                        if full and full in missing:
+                            out_commands[full] = _build_cmd_artifact(src)
+            except Exception as exc:
+                log.exception("artifacts-detail mget(command) failed")
+                raise HTTPException(500, f"command mget failed: {exc}")
+
+        # Resolve dropping-command hashes to their command_line text so
+        # the Report shows the analyst-readable command instead of an
+        # opaque 16-hex doc id. File events with no command_hash are
+        # typically SFTP/SCP uploads — those carry an empty value here
+        # and the frontend distinguishes them by `action`.
+        dropping_command_lines: dict[str, str] = {}
+        dropping_shas: set[str] = set()
+        for s in out_sessions.values():
+            for fe in s.get("file_event_files") or []:
+                ch = fe.get("command_hash") or ""
+                if ch:
+                    dropping_shas.add(ch)
+        # Many dropping_command_hashes will already have been resolved by
+        # the commands mget above (when the command was also a graph node);
+        # only fetch the residual.
+        residual = [h for h in dropping_shas if h not in out_commands]
+        if residual:
+            try:
+                resp = es.mget(index=cmd_idx, ids=residual,
+                               _source=["process.command_line"])
+                for d in resp.get("docs", []):
+                    if not d.get("found"):
+                        continue
+                    src = d.get("_source") or {}
+                    line = ((src.get("process") or {}).get("command_line") or "")
+                    if line:
+                        dropping_command_lines[d["_id"]] = line
+            except Exception as exc:
+                log.warning("artifacts-detail dropping-cmd mget failed: %s", exc)
+        # Fold the in-band commands' lines in too (free lookup).
+        for sha, art in out_commands.items():
+            if sha in dropping_shas and art.get("command_line"):
+                dropping_command_lines[sha] = art["command_line"]
+
+        # Lifecycle notes — pull analyst-authored notes off finding docs
+        # for any playbook / campaign / IP currently on the graph. Notes
+        # live as `status_history[].note` entries; we ignore the empty
+        # ones (which are status-flip-only audit records).
+        lifecycle_notes: list[dict] = []
+        kind_to_values: list[tuple[str, list[str]]] = []
+        if body.playbook_ids: kind_to_values.append(("playbook", [v for v in body.playbook_ids if v]))
+        if body.campaign_ids: kind_to_values.append(("campaign", [v for v in body.campaign_ids if v]))
+        if body.ips:          kind_to_values.append(("ip",       [v for v in body.ips          if v]))
+        kind_to_values = [(k, v) for k, v in kind_to_values if v]
+        if kind_to_values:
+            findings_idx = cfg.findings.indexes.default
+            should: list[dict] = []
+            for kind, values in kind_to_values:
+                should.append({"bool": {"must": [
+                    {"term":  {"artifact.kind":  kind}},
+                    {"terms": {"artifact.value": values}},
+                ]}})
+            try:
+                resp = es.search(
+                    index=findings_idx,
+                    size=500,
+                    query={"bool": {"should": should, "minimum_should_match": 1}},
+                    _source=["finding_id", "artifact", "status_history"],
+                )
+                for h in resp.get("hits", {}).get("hits", []):
+                    src = h.get("_source") or {}
+                    art = src.get("artifact") or {}
+                    fid = src.get("finding_id") or h.get("_id")
+                    for ev in src.get("status_history") or []:
+                        if not isinstance(ev, dict):
+                            continue
+                        note = (ev.get("note") or "").strip()
+                        if not note:
+                            continue
+                        lifecycle_notes.append({
+                            "finding_id":     fid,
+                            "artifact_kind":  art.get("kind"),
+                            "artifact_value": art.get("value"),
+                            "ts":             ev.get("ts"),
+                            "status":         ev.get("to") or ev.get("from"),
+                            "note":           note,
+                        })
+                # Newest first within the response — matches the analyst's
+                # reading order in the inbox drawer.
+                lifecycle_notes.sort(key=lambda r: r.get("ts") or "", reverse=True)
+            except Exception as exc:
+                log.exception("artifacts-detail findings search failed")
+                # Notes are best-effort; surface the error in the payload
+                # rather than failing the whole bulk fetch.
+                return JSONResponse({
+                    "sessions": out_sessions,
+                    "commands": out_commands,
+                    "lifecycle_notes": [],
+                    "lifecycle_notes_error": str(exc),
+                })
+
+        # Analyst-rule notes — each analyst_artifacts entry on a session/
+        # command doc carries a `rule_id`; the rule's analyst-authored
+        # `notes` field is the "why" of the rule. Surface them so the
+        # Report carries the rule rationale alongside each match.
+        rule_notes: dict[str, str] = {}
+        seen_rule_ids: set[str] = set()
+        for blob in list(out_sessions.values()) + list(out_commands.values()):
+            for a in blob.get("analyst_artifacts") or []:
+                if not isinstance(a, dict):
+                    continue
+                rid = a.get("rule_id")
+                if rid:
+                    seen_rule_ids.add(rid)
+        if seen_rule_ids:
+            # The analyst-rule config lives on the pipeline-side AppConfig
+            # (the console's lighter cfg model doesn't carry it). Use the
+            # same lazy pipeline-cfg accessor the artifact-rule routes use.
+            rules_idx = _get_pipeline_cfg().analyst.indexes.artifact_rules
+            try:
+                resp = es.mget(index=rules_idx, ids=list(seen_rule_ids),
+                               _source=["rule_id", "notes"])
+                for d in resp.get("docs", []):
+                    if not d.get("found"):
+                        continue
+                    src = d.get("_source") or {}
+                    rid = src.get("rule_id") or d.get("_id")
+                    note = (src.get("notes") or "").strip()
+                    if rid and note:
+                        rule_notes[rid] = note
+            except Exception as exc:
+                # Notes are best-effort — surface the error but don't kill
+                # the whole response.
+                log.warning("artifacts-detail rule-notes mget failed: %s", exc)
+
+        # IP rollup extras — HASSH today, expand later if other per-IP
+        # attribution signals (e.g. JA3) become useful in the Report.
+        ip_extras: dict[str, dict] = {}
+        if body.ips:
+            ip_rollup_idx = cfg.elasticsearch.indexes.cowrie.ips_rollup
+            try:
+                resp = es.mget(index=ip_rollup_idx, ids=[v for v in body.ips if v],
+                               _source=["dshield.cowrie.enrichment.ip.hassh"])
+                for d in resp.get("docs", []):
+                    if not d.get("found"):
+                        continue
+                    src = d.get("_source") or {}
+                    ipenr = (((src.get("dshield") or {}).get("cowrie") or {})
+                             .get("enrichment", {}).get("ip", {}))
+                    ip_extras[d["_id"]] = {"hassh": ipenr.get("hassh") or ""}
+            except Exception as exc:
+                log.warning("artifacts-detail ip-extras mget failed: %s", exc)
+
+        # Intel verdicts — minimal shape (verdict + family + counts) across
+        # all three intel indexes. We mget by id (the artifact value).
+        intel = {"ip": {}, "url": {}, "hash": {}}
+        intel_targets: list[tuple[str, str, list[str]]] = []
+        if body.ips:
+            intel_targets.append(("ip", cfg.intel.indexes.ip,
+                                  [v for v in body.ips if v]))
+        # URL + hash inputs come from the bulk-resolved details, so we
+        # collect them after the session/command passes have run.
+        url_values: set[str] = set()
+        hash_values: set[str] = set()
+        for s in out_sessions.values():
+            for u in s.get("file_event_urls") or []: url_values.add(u)
+            for fe in s.get("file_event_files") or []:
+                if fe.get("sha256"): hash_values.add(fe["sha256"])
+        for c in out_commands.values():
+            for u in c.get("indicator_urls") or []:    url_values.add(u)
+            for h in c.get("indicator_hashes") or []:  hash_values.add(h)
+        if url_values:
+            intel_targets.append(("url",  cfg.intel.indexes.url,
+                                  sorted(url_values)))
+        if hash_values:
+            intel_targets.append(("hash", cfg.intel.indexes.hash,
+                                  sorted(hash_values)))
+        for kind, idx, values in intel_targets:
+            if not values:
+                continue
+            try:
+                resp = es.mget(index=idx, ids=values,
+                               _source=["derived", "family", "tags"])
+                for d in resp.get("docs", []):
+                    if not d.get("found"):
+                        continue
+                    src = d.get("_source") or {}
+                    derived = src.get("derived") or {}
+                    cons_mal  = bool(derived.get("consensus_malicious"))
+                    cons_cln  = bool(derived.get("consensus_clean"))
+                    override  = derived.get("override_applied") or ""
+                    mc = derived.get("malicious_provider_count")
+                    cc = derived.get("clean_provider_count")
+                    pc = (mc or 0) + (cc or 0) if (mc is not None or cc is not None) else None
+                    verdict = "malicious" if cons_mal else ("clean" if cons_cln else "unknown")
+                    fam = src.get("family") or ""
+                    intel[kind][d["_id"]] = {
+                        "verdict":          verdict,
+                        "family":           fam,
+                        "override":         override,
+                        "malicious_count":  mc,
+                        "provider_count":   pc,
+                    }
+            except Exception as exc:
+                log.warning("artifacts-detail intel mget(%s) failed: %s", kind, exc)
+
+        # Ordered command sequences per session — events index, sorted by
+        # @timestamp. Bounded msearch so a tab with hundreds of sessions
+        # in view doesn't blow up the request, though analysts rarely
+        # report on more than a few sessions at a time.
+        session_sequences: dict[str, list[dict]] = {}
+        if body.session_ids:
+            events_idx = cfg.elasticsearch.indexes.cowrie.sessions_raw
+            try:
+                body_parts: list = []
+                for sid in body.session_ids:
+                    body_parts.append({"index": events_idx})
+                    body_parts.append({
+                        "size": 300,
+                        "_source": ["process.command_line", "process.hash.sha256", "@timestamp"],
+                        "query": {"bool": {"must": [
+                            {"term": {"cowrie.session_id": sid}},
+                            {"term": {"event.action": "cowrie.command.input"}},
+                        ]}},
+                        "sort": [{"@timestamp": {"order": "asc"}}],
+                    })
+                if body_parts:
+                    msr = es.msearch(body=body_parts)
+                    for sid, resp in zip(body.session_ids, msr.get("responses", [])):
+                        cmds: list[dict] = []
+                        for h in (resp.get("hits") or {}).get("hits", []):
+                            src = h.get("_source") or {}
+                            cmd = (src.get("process") or {}).get("command_line")
+                            sha = ((src.get("process") or {}).get("hash") or {}).get("sha256") or ""
+                            if not cmd:
+                                continue
+                            cmds.append({"ts": src.get("@timestamp"),
+                                         "command_line": cmd, "sha256": sha})
+                        if cmds:
+                            session_sequences[sid] = cmds
+            except Exception as exc:
+                log.warning("artifacts-detail session sequences msearch failed: %s", exc)
+
+        return JSONResponse({
+            "sessions": out_sessions,
+            "commands": out_commands,
+            "lifecycle_notes": lifecycle_notes,
+            "rule_notes": rule_notes,
+            "ip_extras": ip_extras,
+            "intel": intel,
+            "session_sequences": session_sequences,
+            "dropping_command_lines": dropping_command_lines,
+        })
 
     @app.get("/api/ioc/{ioc_type}/{ident}/neighbors", response_model=GraphResponse)
     def ioc_neighbors(

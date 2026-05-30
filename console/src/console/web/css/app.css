@@ -1391,3 +1391,74 @@ body.hide-detail #detail-reopen { display: block; }
   padding: 1px 5px;
 }
 .spot-reset:hover { color: var(--accent); border-color: var(--accent); }
+
+
+/* ===== Copy artifacts modal (Phase H / ROADMAP #6) ===================== */
+.copy-artifacts-card { width: min(720px, calc(100vw - 32px)); }
+.copy-body { display: flex; flex-direction: column; gap: 12px; }
+
+.copy-scope-row, .copy-format-row {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  font-size: 12px;
+}
+.copy-scope-row .setting-label,
+.copy-format-row .setting-label {
+  color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em;
+  font-size: 10px; font-weight: 600;
+}
+.copy-scope-count {
+  color: var(--muted); font-size: 11px; font-style: italic;
+}
+.radio-row {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; cursor: pointer;
+}
+.copy-cat-row {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 4px 0;
+}
+.copy-cat-label {
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.copy-cat-count { color: var(--muted); font-size: 11px; }
+.copy-cat-opts {
+  display: inline-flex; gap: 10px; flex-wrap: wrap; justify-self: end;
+}
+.copy-cat-fetch-hint {
+  color: var(--muted); font-size: 10px; font-style: italic; justify-self: end;
+}
+.sub-chk {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; color: var(--muted); cursor: pointer;
+}
+.sub-chk input { transform: scale(0.85); }
+
+.copy-preview-wrap {
+  display: flex; flex-direction: column; gap: 4px;
+}
+.copy-preview-head {
+  font-size: 10px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: 0.04em; font-weight: 600;
+}
+.copy-preview {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  max-height: 280px;
+  overflow: auto;
+  white-space: pre;
+  color: #cdd6e3;
+}
+.copy-status {
+  font-size: 11px; color: var(--muted); min-height: 14px;
+}
+.copy-status[data-tone="ok"]    { color: #2dd4bf; }
+.copy-status[data-tone="error"] { color: #f87171; }

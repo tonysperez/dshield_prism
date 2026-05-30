@@ -5,6 +5,7 @@
              placeholder="search IOC: IP, session id, sha256, playbook, campaign, cluster #, T1059.003, AS12345, US, or free text" />
       <button type="button" id="settings-btn" title="Filter / display settings" aria-label="settings">⚙</button>
       <button type="button" id="ask-ai-btn" title="Ask the local LLM a question about what's in view">Ask AI</button>
+      <button type="button" id="copy-artifacts-btn" title="Generate a report of the artifacts currently in the graph (ROADMAP #6)">Report</button>
     </form>
     <!-- 3-way spotlight mode (F.2 / UX backlog). Replaces the dual
          "distinctive only" + "hide commodity" checkboxes and threshold
@@ -244,6 +245,123 @@
     </div>
   </div>
 
+  <!-- Copy artifacts modal (ROADMAP #6, Phase H). Pure-frontend pull
+       from the in-memory graph state + a single bulk fetch for the
+       session/command detail the graph doesn't keep around. -->
+  <div id="copy-artifacts-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="copy-artifacts-title">
+    <div class="modal-card copy-artifacts-card" role="document">
+      <header class="modal-header">
+        <h2 id="copy-artifacts-title">Report</h2>
+        <button type="button" class="modal-close" id="copy-artifacts-close" aria-label="close">×</button>
+      </header>
+      <section class="modal-body copy-body">
+        <div class="copy-scope-row">
+          <span class="setting-label">Scope:</span>
+          <label class="radio-row"><input type="radio" name="copy-scope" value="highlighted" /><span>Pinned / highlighted only</span></label>
+          <label class="radio-row"><input type="radio" name="copy-scope" value="all" checked /><span>Everything in view</span></label>
+          <label class="radio-row"><input type="checkbox" id="copy-header-toggle" checked /><span>+ report header</span></label>
+          <span id="copy-scope-count" class="copy-scope-count"></span>
+        </div>
+
+        <fieldset class="setting-group">
+          <legend>Categories</legend>
+          <label class="setting-row copy-cat-row">
+            <input type="checkbox" class="copy-cat" data-cat="ips" checked />
+            <span class="copy-cat-label">IPs <span class="copy-cat-count" data-count-cat="ips"></span></span>
+            <span class="copy-cat-opts">
+              <label class="sub-chk"><input type="checkbox" class="copy-opt" data-cat="ips" data-opt="asn" checked /><span>+ ASN</span></label>
+              <label class="sub-chk"><input type="checkbox" class="copy-opt" data-cat="ips" data-opt="country" checked /><span>+ country</span></label>
+              <label class="sub-chk"><input type="checkbox" class="copy-opt" data-cat="ips" data-opt="specificity" checked /><span>+ specificity</span></label>
+              <label class="sub-chk"><input type="checkbox" class="copy-opt" data-cat="ips" data-opt="hassh" /><span>+ HASSH</span></label>
+              <label class="sub-chk"><input type="checkbox" class="copy-opt" data-cat="ips" data-opt="intel" checked /><span>+ intel verdict</span></label>
+            </span>
+          </label>
+          <label class="setting-row copy-cat-row">
+            <input type="checkbox" class="copy-cat" data-cat="commands" checked />
+            <span class="copy-cat-label">Commands <span class="copy-cat-count" data-count-cat="commands"></span></span>
+            <span class="copy-cat-opts">
+              <label class="sub-chk"><input type="checkbox" class="copy-opt" data-cat="commands" data-opt="text" checked /><span>text</span></label>
+              <label class="sub-chk"><input type="checkbox" class="copy-opt" data-cat="commands" data-opt="sha256" checked /><span>sha256</span></label>
+              <label class="sub-chk"><input type="checkbox" class="copy-opt" data-cat="commands" data-opt="intent" /><span>intent</span></label>
+              <label class="sub-chk"><input type="checkbox" class="copy-opt" data-cat="commands" data-opt="specificity" checked /><span>+ specificity</span></label>
+              <label class="sub-chk"><input type="checkbox" class="copy-opt" data-cat="commands" data-opt="mitre" /><span>+ MITRE on row</span></label>
+            </span>
+          </label>
+          <label class="setting-row copy-cat-row">
+            <input type="checkbox" class="copy-cat" data-cat="sessions" />
+            <span class="copy-cat-label">Session IDs <span class="copy-cat-count" data-count-cat="sessions"></span></span>
+          </label>
+          <label class="setting-row copy-cat-row">
+            <input type="checkbox" class="copy-cat" data-cat="credentials" />
+            <span class="copy-cat-label">Credentials <span class="copy-cat-count" data-count-cat="credentials"></span></span>
+            <span class="copy-cat-fetch-hint">(bulk-fetched on demand)</span>
+          </label>
+          <label class="setting-row copy-cat-row">
+            <input type="checkbox" class="copy-cat" data-cat="urls" checked />
+            <span class="copy-cat-label">URLs <span class="copy-cat-count" data-count-cat="urls"></span></span>
+            <span class="copy-cat-opts">
+              <label class="sub-chk"><input type="checkbox" class="copy-opt" data-cat="urls" data-opt="intel" checked /><span>+ intel verdict</span></label>
+            </span>
+          </label>
+          <label class="setting-row copy-cat-row">
+            <input type="checkbox" class="copy-cat" data-cat="hashes" checked />
+            <span class="copy-cat-label">File hashes <span class="copy-cat-count" data-count-cat="hashes"></span></span>
+            <span class="copy-cat-opts">
+              <label class="sub-chk"><input type="checkbox" class="copy-opt" data-cat="hashes" data-opt="filename" checked /><span>+ filename / path</span></label>
+              <label class="sub-chk"><input type="checkbox" class="copy-opt" data-cat="hashes" data-opt="attribution" checked /><span>+ dropping cmd</span></label>
+              <label class="sub-chk"><input type="checkbox" class="copy-opt" data-cat="hashes" data-opt="intel" checked /><span>+ intel verdict</span></label>
+            </span>
+          </label>
+          <label class="setting-row copy-cat-row">
+            <input type="checkbox" class="copy-cat" data-cat="analyst_artifacts" checked />
+            <span class="copy-cat-label">Analyst artifacts <span class="copy-cat-count" data-count-cat="analyst_artifacts"></span></span>
+            <span class="copy-cat-opts">
+              <label class="sub-chk"><input type="checkbox" class="copy-opt" data-cat="analyst_artifacts" data-opt="sha256" checked /><span>+ sha256(value)</span></label>
+            </span>
+          </label>
+          <label class="setting-row copy-cat-row">
+            <input type="checkbox" class="copy-cat" data-cat="lifecycle_notes" checked />
+            <span class="copy-cat-label">Lifecycle notes <span class="copy-cat-count" data-count-cat="lifecycle_notes"></span></span>
+            <span class="copy-cat-fetch-hint">(analyst-authored, bulk-fetched on demand)</span>
+          </label>
+          <label class="setting-row copy-cat-row">
+            <input type="checkbox" class="copy-cat" data-cat="mitre" checked />
+            <span class="copy-cat-label">MITRE ATT&amp;CK (aggregate) <span class="copy-cat-count" data-count-cat="mitre"></span></span>
+            <span class="copy-cat-fetch-hint">(unique TTPs across visible commands)</span>
+          </label>
+          <label class="setting-row copy-cat-row">
+            <input type="checkbox" class="copy-cat" data-cat="hassh_agg" checked />
+            <span class="copy-cat-label">HASSH fingerprints (aggregate) <span class="copy-cat-count" data-count-cat="hassh_agg"></span></span>
+            <span class="copy-cat-fetch-hint">(unique SSH client fingerprints across visible IPs)</span>
+          </label>
+          <label class="setting-row copy-cat-row">
+            <input type="checkbox" class="copy-cat" data-cat="session_sequences" />
+            <span class="copy-cat-label">Session sequences <span class="copy-cat-count" data-count-cat="session_sequences"></span></span>
+            <span class="copy-cat-fetch-hint">(ordered commands per visible session, bulk-fetched)</span>
+          </label>
+        </fieldset>
+
+        <div class="copy-format-row">
+          <span class="setting-label">Format:</span>
+          <label class="radio-row"><input type="radio" name="copy-format" value="plain" /><span>Plain text</span></label>
+          <label class="radio-row"><input type="radio" name="copy-format" value="markdown" checked /><span>Markdown table</span></label>
+          <label class="radio-row"><input type="radio" name="copy-format" value="csv" /><span>CSV</span></label>
+          <label class="radio-row"><input type="radio" name="copy-format" value="json" /><span>JSON</span></label>
+        </div>
+
+        <div class="copy-preview-wrap">
+          <div class="copy-preview-head">Preview</div>
+          <pre id="copy-preview" class="copy-preview"></pre>
+        </div>
+        <div id="copy-status" class="copy-status"></div>
+      </section>
+      <footer class="modal-footer">
+        <button type="button" id="copy-clipboard" class="modal-save">Copy to clipboard</button>
+        <button type="button" id="copy-download" class="modal-cancel">Download</button>
+      </footer>
+    </div>
+  </div>
+
   <!-- Highlight-to-create floating button (ROADMAP #5). Appears when the
        analyst selects text inside the detail pane; click opens the
        artifact-rule modal pre-populated with the selection. -->
@@ -305,4 +423,5 @@
   <script src="/static/js/timeline.js"></script>
   <script src="/static/js/app.js"></script>
   <script src="/static/js/artifact_rule_modal.js"></script>
+  <script src="/static/js/copy.js"></script>
 {% endblock %}
