@@ -85,6 +85,82 @@
     table.fnd-table td.trend svg { display: block; vertical-align: middle; }
     table.fnd-table td.trend .trend-empty { color: #4a5470; }
 
+    /* Keyboard-focused row indicator — left accent stripe so it's
+       distinguishable from the multi-select highlight (#16). */
+    table.fnd-table tr.fnd-focus td {
+      box-shadow: inset 3px 0 0 0 #4cc1ff;
+    }
+    /* Keyboard help popover — toggled by `?` or the rail button. */
+    .shortcuts-help-btn {
+      margin-left: auto;
+      cursor: pointer; background: transparent;
+      color: #6b7494; border: 1px solid #25324c;
+      border-radius: 3px;
+      font-size: 11px; font-weight: 600;
+      padding: 0 7px; line-height: 18px;
+    }
+    .shortcuts-help-btn:hover { color: #c8d0e2; border-color: #4cc1ff60; }
+    .shortcuts-help {
+      background: #0e1e35; border: 1px solid #4cc1ff60;
+      border-radius: 5px; padding: 12px 16px; margin-bottom: 12px;
+    }
+    .shortcuts-help[hidden] { display: none; }
+    .shortcuts-help .shortcuts-list {
+      list-style: none; padding: 0; margin: 0;
+      display: grid; grid-template-columns: max-content 1fr;
+      gap: 6px 14px; font-size: 12px;
+    }
+    .shortcuts-help kbd {
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      background: #0a121f; color: #4cc1ff;
+      border: 1px solid #25324c; border-radius: 3px;
+      padding: 1px 6px; font-size: 11px;
+      white-space: nowrap;
+    }
+
+    /* Bulk-action bar — slide-in strip above the table when one or
+       more rows are selected (ROADMAP #17.4). */
+    .bulk-bar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 12px; margin-bottom: 8px;
+      background: #0a1929; border: 1px solid #4cc1ff60;
+      border-radius: 5px;
+      font-size: 12px; color: #c8d0e2;
+    }
+    .bulk-bar[hidden] { display: none; }
+    .bulk-bar.bulk-bar-busy { opacity: 0.5; pointer-events: none; }
+    .bulk-count { font-weight: 600; color: #4cc1ff; }
+    .bulk-sep   { color: #4a5470; }
+    .bulk-btn {
+      font-size: 11px; font-weight: 600;
+      padding: 4px 10px; border-radius: 4px;
+      border: 1px solid; background: transparent;
+      cursor: pointer;
+    }
+    .bulk-btn.bulk-confirm { color: #4ade80; border-color: #4ade8080; }
+    .bulk-btn.bulk-ack     { color: #94a3b8; border-color: #94a3b880; }
+    .bulk-btn.bulk-reject  { color: #ff6464; border-color: #ff646480; }
+    .bulk-btn.bulk-reset   { color: #b9c2db; border-color: #25324c;  }
+    .bulk-btn.bulk-export  { color: #c084fc; border-color: #c084fc80; }
+    .bulk-btn:hover { background: #1a2d4e; }
+    .bulk-clear {
+      margin-left: auto; font-size: 11px;
+      background: transparent; border: 0;
+      color: #6b7494; cursor: pointer; text-decoration: underline;
+    }
+    .bulk-clear:hover { color: #c8d0e2; }
+    /* Selection column — narrow, centered checkbox. */
+    table.fnd-table th.select, table.fnd-table td.select {
+      width: 28px; padding: 4px 6px 4px 10px;
+    }
+    table.fnd-table td.select input,
+    table.fnd-table th.select input { cursor: pointer; }
+    /* Row hover highlight when selected — gentle nudge so the analyst
+       can scan what's currently in the batch. */
+    table.fnd-table tr.fnd-row:has(.fnd-row-select:checked) td {
+      background: #0e1e35;
+    }
+
     /* Next-action chip — the spine (#14). Colour codes the verb; tooltip
        carries the full one-line recommendation. */
     .action-chip {
@@ -114,6 +190,36 @@
     .drawer-next-action .action-text {
       font-size: 12px; color: #c8d0e2;
     }
+
+    /* Drawer notes — audit-trail + free-text annotation pad. */
+    .drawer-notes .notes-list {
+      list-style: none; padding: 0; margin: 4px 0 12px;
+    }
+    .drawer-notes .notes-list li {
+      padding: 6px 0; border-bottom: 1px solid #1a2440;
+    }
+    .drawer-notes .note-text {
+      font-size: 12px; color: #c8d0e2; margin-top: 2px;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .drawer-notes .note-textarea {
+      width: 100%; box-sizing: border-box;
+      background: #0a121f; color: #c8d0e2;
+      border: 1px solid #25324c; border-radius: 4px;
+      font: inherit; font-size: 12px;
+      padding: 6px 8px; margin-top: 6px;
+      resize: vertical;
+    }
+    .drawer-notes .note-textarea:focus { outline: 1px solid #4cc1ff; outline-offset: 0; }
+    .drawer-notes .note-add-btn {
+      margin-top: 6px;
+      background: #0e1e35; color: #4cc1ff; font-weight: 600;
+      font-size: 11px; padding: 4px 12px;
+      border: 1px solid #4cc1ff60; border-radius: 4px;
+      cursor: pointer;
+    }
+    .drawer-notes .note-add-btn:hover:not(:disabled) { background: #1a2d4e; }
+    .drawer-notes .note-add-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
     .fnd-kind-badge {
       font-size: 10px; font-weight: 600; text-transform: uppercase;
@@ -202,6 +308,22 @@
       padding: 2px 8px; font-size: 11px;
     }
     .drawer-close:hover { color: #c8d0e2; }
+    /* Drawer head action row: copy-as-markdown + close, plus a tiny
+       status flash so the analyst sees clipboard writes confirmed. */
+    .drawer-head-actions {
+      float: right;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .drawer-md-btn {
+      cursor: pointer;
+      background: transparent; color: #c084fc;
+      border: 1px solid #c084fc60; border-radius: 4px;
+      padding: 2px 10px; font-size: 11px; font-weight: 600;
+    }
+    .drawer-md-btn:hover { background: #2d1f4e; }
+    .drawer-md-status {
+      font-size: 11px; color: #4ade80; min-width: 0;
+    }
     .drawer-section {
       padding: 12px 16px; border-bottom: 1px solid #1d2840;
     }
@@ -280,7 +402,23 @@
     <section>
       <p class="fnd-section-title" id="inbox-title">Findings
         <span class="fnd-hint">click any row to open the detail drawer; confirming a row in the <em>Confirm</em> category arms drift watch on the artifact</span>
+        <button type="button" id="shortcuts-help-btn" class="shortcuts-help-btn" title="Keyboard shortcuts">?</button>
       </p>
+      <div id="shortcuts-help" class="shortcuts-help" hidden></div>
+      <!-- Bulk-action bar (ROADMAP #17.4). Hidden until at least one row
+           is selected via the checkbox column; offers same-status-for-
+           all over /api/findings/status in one round trip. -->
+      <div id="bulk-bar" class="bulk-bar" hidden>
+        <span id="bulk-count" class="bulk-count">0 selected</span>
+        <span class="bulk-sep">→</span>
+        <button type="button" class="bulk-btn bulk-confirm"  data-status="confirmed">Confirm</button>
+        <button type="button" class="bulk-btn bulk-ack"      data-status="ack">Ack</button>
+        <button type="button" class="bulk-btn bulk-reject"   data-status="rejected">Reject</button>
+        <button type="button" class="bulk-btn bulk-reset"    data-status="new">Reset to new</button>
+        <span class="bulk-sep">·</span>
+        <button type="button" id="bulk-export" class="bulk-btn bulk-export">Copy as markdown</button>
+        <button type="button" id="bulk-clear" class="bulk-clear">clear selection</button>
+      </div>
       <div id="inbox-rows"><em class="fnd-empty">loading…</em></div>
     </section>
 
@@ -289,7 +427,13 @@
   <div id="drawer-backdrop"></div>
   <aside id="drawer" aria-hidden="true">
     <div class="drawer-head">
-      <button class="drawer-close" type="button" aria-label="Close">close</button>
+      <div class="drawer-head-actions">
+        <button id="drawer-md-btn" type="button" class="drawer-md-btn" title="Copy this finding to clipboard as markdown">
+          Copy as markdown
+        </button>
+        <span id="drawer-md-status" class="drawer-md-status"></span>
+        <button class="drawer-close" type="button" aria-label="Close">close</button>
+      </div>
       <div id="drawer-title" style="font-size:13px;font-weight:600;color:#c8d0e2;"></div>
       <div id="drawer-subtitle" class="drawer-meta"></div>
     </div>

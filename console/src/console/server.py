@@ -67,6 +67,21 @@ class FindingStatusRequest(BaseModel):
     note: str = ""
 
 
+class FindingStatusBulkRequest(BaseModel):
+    """POST body for /api/findings/status — bulk path used by the
+    inbox multi-select bar (ROADMAP #17.4)."""
+    ids: list[str]
+    status: str
+    note: str = ""
+
+
+class FindingNoteRequest(BaseModel):
+    """POST body for /api/finding/{id}/note (ROADMAP #17.4 amended).
+    Appends a free-text annotation to the finding's status_history
+    without changing the status."""
+    note: str
+
+
 class ArtifactRuleRequest(BaseModel):
     """POST body for /api/artifact-rule (ROADMAP #5)."""
     kind: str
@@ -395,6 +410,51 @@ def build_app(config_path: str | None = None) -> FastAPI:
             log.exception("finding_status_api failed")
             raise HTTPException(500, f"status mutation failed: {exc}")
         return JSONResponse(updated)
+
+    @app.post("/api/finding/{finding_id}/note")
+    def finding_note_api(finding_id: str, body: FindingNoteRequest) -> JSONResponse:
+        from enrich.findings.writer import add_note
+        try:
+            updated = add_note(
+                es, cfg.findings.indexes.default, finding_id,
+                note=body.note,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except LookupError as exc:
+            raise HTTPException(404, str(exc))
+        except Exception as exc:                            # pragma: no cover
+            log.exception("finding_note_api failed")
+            raise HTTPException(500, f"note append failed: {exc}")
+        return JSONResponse(updated)
+
+    @app.post("/api/findings/status")
+    def findings_bulk_status_api(body: FindingStatusBulkRequest) -> JSONResponse:
+        """Apply the same status (and optional note) to many findings in
+        one round-trip. Drives the inbox multi-select bar. Per-id
+        failures are collected and reported alongside the success
+        count rather than aborting the batch."""
+        from enrich.findings.writer import mutate_status
+        if not body.ids:
+            raise HTTPException(400, "no ids supplied")
+        n_updated = 0
+        errors: list[dict] = []
+        for fid in body.ids:
+            try:
+                mutate_status(
+                    es, cfg.findings.indexes.default, fid,
+                    new_status=body.status, note=body.note,
+                    cfg=cfg,
+                )
+                n_updated += 1
+            except ValueError as exc:
+                errors.append({"id": fid, "error": str(exc)})
+            except LookupError as exc:
+                errors.append({"id": fid, "error": str(exc)})
+            except Exception as exc:                        # pragma: no cover
+                log.exception("findings_bulk_status_api failed for %s", fid)
+                errors.append({"id": fid, "error": f"{exc.__class__.__name__}: {exc}"})
+        return JSONResponse({"n_updated": n_updated, "errors": errors})
 
     # ------------------------------------------------------------------
     # Per-artifact pane — intel + local-observations join

@@ -113,6 +113,9 @@ const state = {
   stream: "",        // "" = all categories; or "drift" | "discovery" | "coverage"
   sort: "last_seen", // reverse-chronological by default — score is uncalibrated
   facets: {},        // {dim: bucket_key} — one active bucket per dim
+  selectedIds: new Set(), // multi-select for bulk status (ROADMAP #17.4)
+  lastRows: [],           // most recent render, indexed by selection ops
+  focusIdx: -1,           // keyboard-focused row index into lastRows (#16)
 };
 
 function parseQuery() {
@@ -317,7 +320,14 @@ function renderInbox(rows) {
     return;
   }
   const table = el("table", {class: "fnd-table"});
+  const headCb = el("input", {type: "checkbox", class: "fnd-select-all", title: "Select all visible"});
+  headCb.addEventListener("change", (e) => {
+    if (e.target.checked) for (const r of rows) state.selectedIds.add(r._id || r.finding_id);
+    else for (const r of rows) state.selectedIds.delete(r._id || r.finding_id);
+    syncSelectionUI(rows);
+  });
   const thead = el("thead", null, [el("tr", null, [
+    el("th", {class: "select"}, [headCb]),
     el("th", null, ["Kind"]),
     el("th", null, ["Artifact"]),
     el("th", null, ["Size"]),
@@ -330,15 +340,30 @@ function renderInbox(rows) {
   ])]);
   table.appendChild(thead);
   const tbody = el("tbody");
-  for (const r of rows) {
+  for (const [rowIdx, r] of rows.entries()) {
+    const fid = r._id || r.finding_id;
     const tr = el("tr", {
       class: "fnd-row",
+      "data-fid": fid,
       onclick: (ev) => {
-        // Don't open the drawer when interacting with the status select.
-        if (ev.target.tagName === "SELECT" || ev.target.tagName === "OPTION") return;
-        openDrawer(r._id || r.finding_id);
+        // Don't open the drawer when interacting with the status select
+        // or the selection checkbox.
+        const t = ev.target.tagName;
+        if (t === "SELECT" || t === "OPTION" || t === "INPUT") return;
+        // Click also moves keyboard focus so j/k continue from the
+        // clicked row.
+        state.focusIdx = rowIdx;
+        openDrawer(fid);
       },
     });
+    const cb = el("input", {type: "checkbox", class: "fnd-row-select", "data-fid": fid});
+    cb.checked = state.selectedIds.has(fid);
+    cb.addEventListener("change", (e) => {
+      if (e.target.checked) state.selectedIds.add(fid);
+      else state.selectedIds.delete(fid);
+      syncSelectionUI(rows);
+    });
+    tr.appendChild(el("td", {class: "select"}, [cb]));
     tr.appendChild(el("td", null, [kindBadge(r.kind)]));
     tr.appendChild(el("td", {class: "artifact"}, [artifactLabel(r)]));
     tr.appendChild(el("td", {class: "size"}, [sizeCell(r)]));
@@ -400,6 +425,214 @@ function renderInbox(rows) {
   }
   table.appendChild(tbody);
   body.appendChild(table);
+  state.lastRows = rows;
+  // Clamp a stale focus if a previous row dropped off the page, but
+  // don't auto-focus a row on first paint — the analyst opts into
+  // keyboard nav by pressing j/k or clicking a row.
+  if (state.focusIdx >= rows.length) state.focusIdx = rows.length - 1;
+  syncSelectionUI(rows);
+  syncFocusUI();
+}
+
+function syncFocusUI() {
+  document.querySelectorAll("#inbox-rows tr.fnd-focus").forEach(
+    (tr) => tr.classList.remove("fnd-focus"),
+  );
+  const rows = state.lastRows || [];
+  if (state.focusIdx < 0 || state.focusIdx >= rows.length) return;
+  const fid = rows[state.focusIdx]._id || rows[state.focusIdx].finding_id;
+  const tr = document.querySelector(`#inbox-rows tr.fnd-row[data-fid="${CSS.escape(fid)}"]`);
+  if (tr) {
+    tr.classList.add("fnd-focus");
+    tr.scrollIntoView({block: "nearest", behavior: "smooth"});
+  }
+}
+
+function moveFocus(delta) {
+  const n = state.lastRows.length;
+  if (!n) return;
+  if (state.focusIdx < 0) state.focusIdx = delta > 0 ? 0 : n - 1;
+  else state.focusIdx = Math.max(0, Math.min(n - 1, state.focusIdx + delta));
+  syncFocusUI();
+}
+
+function focusedRow() {
+  if (state.focusIdx < 0 || state.focusIdx >= state.lastRows.length) return null;
+  return state.lastRows[state.focusIdx];
+}
+
+// Apply a status to either the multi-selected batch (when one exists)
+// or to the keyboard-focused row. Routes through the same endpoints
+// the bulk bar + per-row select use, so behaviour stays consistent.
+async function applyStatusShortcut(newStatus) {
+  if (state.selectedIds.size) {
+    await bulkMutateStatus(newStatus);
+    return;
+  }
+  const r = focusedRow();
+  if (!r) return;
+  const fid = r._id || r.finding_id;
+  try {
+    const resp = await fetch(`/api/finding/${encodeURIComponent(fid)}/status`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({status: newStatus}),
+    });
+    if (!resp.ok) {
+      alert(`status mutation failed: ${await resp.text()}`);
+      return;
+    }
+    await refreshAll();
+  } catch (exc) {
+    alert(`status mutation failed: ${exc}`);
+  }
+}
+
+// Cycle the Category facet (all → drift → discovery → coverage → all).
+function cycleStream(delta) {
+  const order = ["", "drift", "discovery", "coverage"];
+  const idx = order.indexOf(state.stream || "");
+  const next = order[((idx < 0 ? 0 : idx) + delta + order.length) % order.length];
+  state.stream = next;
+  pushQuery();
+  refreshAll();
+}
+
+const SHORTCUTS_HELP = [
+  ["j / ↓",     "next row (drawer: advance to next finding)"],
+  ["k / ↑",     "previous row (drawer: advance to previous finding)"],
+  ["Enter",     "open drawer on focused row"],
+  ["c",         "confirm — selection, focused row, or open drawer"],
+  ["a",         "ack — selection, focused row, or open drawer"],
+  ["r",         "reject — selection, focused row, or open drawer"],
+  ["n",         "reset to new — selection, focused row, or open drawer"],
+  ["x / Space", "toggle selection on focused row"],
+  ["[ / ]",     "previous / next category"],
+  ["Escape",    "close drawer · clear selection"],
+  ["?",         "show this help"],
+];
+
+function toggleShortcutsHelp(force) {
+  const pop = document.getElementById("shortcuts-help");
+  if (!pop) return;
+  const show = force != null ? force : pop.hidden;
+  if (show && !pop.dataset.built) {
+    const ul = el("ul", {class: "shortcuts-list"});
+    for (const [k, v] of SHORTCUTS_HELP) {
+      ul.appendChild(el("li", null, [
+        el("kbd", null, [k]),
+        el("span", null, [v]),
+      ]));
+    }
+    pop.appendChild(ul);
+    pop.dataset.built = "1";
+  }
+  pop.hidden = !show;
+}
+
+// When the drawer is open, status + navigation shortcuts auto-advance:
+// the analyst burns through findings without ever closing the drawer.
+// Re-opens whatever row is now focused; closes the drawer when focus
+// runs off the end of the list.
+function _advanceDrawerToFocus() {
+  const r = focusedRow();
+  if (r) openDrawer(r._id || r.finding_id);
+  else closeDrawer();
+}
+
+function handleShortcut(ev) {
+  // Don't hijack typing in any form control (Notes textarea, status
+  // select, etc.).
+  const t = ev.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  const drawer = document.getElementById("drawer");
+  const drawerOpen = drawer && drawer.classList.contains("open");
+
+  const k = ev.key;
+  if (k === "?") { ev.preventDefault(); toggleShortcutsHelp(); return; }
+  if (k === "Escape") {
+    // Precedence: drawer → help popover → multi-select → keyboard focus.
+    // Each Escape unwinds one layer of state so the analyst can back
+    // all the way out without grabbing the mouse.
+    if (drawerOpen) {
+      ev.preventDefault();
+      closeDrawer();
+      return;
+    }
+    const help = document.getElementById("shortcuts-help");
+    if (help && !help.hidden) {
+      ev.preventDefault();
+      toggleShortcutsHelp(false);
+      return;
+    }
+    if (state.selectedIds.size) {
+      ev.preventDefault();
+      state.selectedIds.clear();
+      syncSelectionUI();
+      return;
+    }
+    if (state.focusIdx >= 0) {
+      ev.preventDefault();
+      state.focusIdx = -1;
+      syncFocusUI();
+      return;
+    }
+    return;
+  }
+
+  if (k === "j" || k === "ArrowDown") {
+    ev.preventDefault();
+    moveFocus(1);
+    if (drawerOpen) _advanceDrawerToFocus();
+    return;
+  }
+  if (k === "k" || k === "ArrowUp") {
+    ev.preventDefault();
+    moveFocus(-1);
+    if (drawerOpen) _advanceDrawerToFocus();
+    return;
+  }
+  if (k === "Enter") {
+    if (drawerOpen) return;  // let Enter activate focused buttons inside the drawer
+    const r = focusedRow();
+    if (r) { ev.preventDefault(); openDrawer(r._id || r.finding_id); }
+    return;
+  }
+  if (k === "x" || k === " ") {
+    if (drawerOpen) return;
+    const r = focusedRow();
+    if (!r) return;
+    ev.preventDefault();
+    const fid = r._id || r.finding_id;
+    if (state.selectedIds.has(fid)) state.selectedIds.delete(fid);
+    else state.selectedIds.add(fid);
+    syncSelectionUI(state.lastRows);
+    return;
+  }
+  // Status shortcuts. Outside the drawer: mutate + the refresh
+  // naturally surfaces the next item at the same focus index. Inside
+  // the drawer: mutate then auto-advance the drawer to the new
+  // focused row so the analyst doesn't break their flow.
+  if (k === "c" || k === "a" || k === "r" || k === "n") {
+    ev.preventDefault();
+    const map = {c: "confirmed", a: "ack", r: "rejected", n: "new"};
+    const p = applyStatusShortcut(map[k]);
+    if (drawerOpen) p.then(_advanceDrawerToFocus);
+    return;
+  }
+  if (k === "[") {
+    if (drawerOpen) return;
+    ev.preventDefault();
+    cycleStream(-1);
+    return;
+  }
+  if (k === "]") {
+    if (drawerOpen) return;
+    ev.preventDefault();
+    cycleStream(1);
+    return;
+  }
 }
 
 // Single fetch — drives both the inbox rows and the rail (status,
@@ -432,6 +665,155 @@ async function refreshAll() {
   renderStreamChips(data.stream_counts || {});
   renderFacets(data.facet_counts || {});
   renderInbox(data.rows || []);
+}
+
+// Keep checkboxes, the bulk bar, and the select-all header in sync with
+// state.selectedIds. Called any time a checkbox is toggled or after a
+// full table re-render.
+function syncSelectionUI(rows) {
+  const ids = state.selectedIds;
+  const bar = document.getElementById("bulk-bar");
+  if (bar) {
+    bar.hidden = ids.size === 0;
+    const count = document.getElementById("bulk-count");
+    if (count) count.textContent = `${ids.size} selected`;
+  }
+  // Header "select all" — checked iff every visible row is in the set.
+  const headCb = document.querySelector(".fnd-select-all");
+  if (headCb) {
+    if (rows) {
+      const visible = rows.map(r => r._id || r.finding_id);
+      headCb.checked = visible.length > 0 && visible.every(fid => ids.has(fid));
+      headCb.indeterminate = !headCb.checked && visible.some(fid => ids.has(fid));
+    } else {
+      // Called without the row list (e.g. after "clear selection") —
+      // collapse the header state to match the empty set.
+      headCb.checked = false;
+      headCb.indeterminate = false;
+    }
+  }
+  // Per-row checked state — guard against stale boxes after re-render.
+  document.querySelectorAll(".fnd-row-select").forEach((cb) => {
+    cb.checked = ids.has(cb.dataset.fid);
+  });
+}
+
+// Shared formatter — same shape for the bulk "Copy as markdown" path
+// (which feeds a weekly-report draft) and the drawer's single-row
+// "Copy as markdown" path (which captures one finding for a writeup).
+function findingsToMarkdown(rows) {
+  const now = new Date().toISOString().slice(0, 10);
+  const lines = [
+    rows.length === 1
+      ? `# ${rows[0].kind} — \`${(rows[0].artifact || {}).kind || "?"}:${(rows[0].artifact || {}).value || "?"}\` (${now})`
+      : `# Triage — ${rows.length} findings (${now})`,
+    "",
+  ];
+  for (const r of rows) {
+    const a = r.artifact || {};
+    const ev = r.evidence || {};
+    if (rows.length > 1) {
+      lines.push(`## ${r.kind} — \`${a.kind || "?"}:${a.value || "?"}\``);
+      lines.push("");
+    }
+    const meta = [
+      `**Status:** ${r.status || "?"}`,
+      `**First seen:** ${fmtTs(ev.first_seen || r.first_seen_at)}`,
+      `**Last seen:**  ${fmtTs(ev.last_seen  || r.last_seen_at)}`,
+    ];
+    if (r.score != null) meta.push(`**Score:** ${fmtScore(r.score)}`);
+    lines.push(meta.join("  \n"));
+    lines.push("");
+    if (r.narrative) {
+      lines.push(`> ${r.narrative.replace(/\n+/g, " ")}`);
+      lines.push("");
+    }
+    const action = nextAction(r);
+    if (action) {
+      lines.push(`**Next action:** ${ACTION_VERB_LABEL[action.verb] || action.verb} — ${action.text}`);
+      lines.push("");
+    }
+    const history = r.status_history || [];
+    if (history.length) {
+      lines.push(`**Notes:**`);
+      for (const h of history) {
+        const verb = h.from === h.to ? "note" : `${h.from || "?"} → ${h.to || "?"}`;
+        const note = h.note ? `: ${h.note}` : "";
+        lines.push(`- ${fmtTs(h.ts)} (${verb})${note}`);
+      }
+      lines.push("");
+    }
+    if (rows.length > 1) {
+      lines.push("---");
+      lines.push("");
+    }
+  }
+  return lines.join("\n");
+}
+
+// Copy markdown to the clipboard; flash a brief confirmation in the
+// given element so the analyst sees the action took.
+function copyMarkdown(md, feedbackEl, label) {
+  return navigator.clipboard.writeText(md).then(
+    () => {
+      if (!feedbackEl) return;
+      const original = feedbackEl.textContent;
+      feedbackEl.textContent = label;
+      setTimeout(() => {
+        if (feedbackEl.textContent === label) feedbackEl.textContent = original;
+      }, 1500);
+    },
+    (e) => alert(`clipboard write failed: ${e.message}`),
+  );
+}
+
+function exportSelectedAsMarkdown() {
+  const ids = state.selectedIds;
+  if (!ids.size) return;
+  const rows = state.lastRows.filter(r => ids.has(r._id || r.finding_id));
+  if (!rows.length) {
+    alert("Selected rows aren't in the current view — try refreshing or unselecting filters.");
+    return;
+  }
+  copyMarkdown(findingsToMarkdown(rows),
+               document.getElementById("bulk-count"),
+               `copied ${rows.length} as markdown`);
+}
+
+function exportDrawerAsMarkdown(data) {
+  if (!data) return;
+  copyMarkdown(findingsToMarkdown([data]),
+               document.getElementById("drawer-md-status"),
+               "copied to clipboard");
+}
+
+async function bulkMutateStatus(newStatus) {
+  const ids = Array.from(state.selectedIds);
+  if (!ids.length) return;
+  const bar = document.getElementById("bulk-bar");
+  if (bar) bar.classList.add("bulk-bar-busy");
+  try {
+    const r = await fetch("/api/findings/status", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ids, status: newStatus}),
+    });
+    if (!r.ok) {
+      alert(`bulk status mutation failed: ${await r.text()}`);
+      return;
+    }
+    const data = await r.json();
+    if (data.errors && data.errors.length) {
+      alert(`${data.n_updated} updated, ${data.errors.length} failed:\n` +
+            data.errors.slice(0, 5).map(e => `${e.id}: ${e.error}`).join("\n"));
+    }
+    state.selectedIds.clear();
+    await refreshAll();
+  } catch (exc) {
+    alert(`bulk status mutation failed: ${exc}`);
+  } finally {
+    if (bar) bar.classList.remove("bulk-bar-busy");
+  }
 }
 
 async function mutateStatus(fid, newStatus, selEl) {
@@ -779,6 +1161,64 @@ function renderDrawer(data) {
     sec.appendChild(el("a", {href: url, class: "nav-link"}, ["Open in graph →"]));
     body.appendChild(sec);
   }
+
+  // Notes — show status_history annotations and let the analyst append
+  // a free-text note without forcing a status flip (ROADMAP #17.4
+  // amended). Notes double as the writeup substrate; the markdown
+  // export below stitches them into the day's triage report.
+  renderNotesSection(body, data);
+}
+
+function renderNotesSection(body, data) {
+  const fid = data._id || data.finding_id;
+  if (!fid) return;
+  const sec = el("div", {class: "drawer-section drawer-notes"});
+  sec.appendChild(el("h4", null, ["Notes"]));
+
+  const history = (data.status_history || []).slice().reverse();
+  if (history.length) {
+    const ul = el("ul", {class: "notes-list"});
+    for (const h of history) {
+      const li = el("li");
+      const head = el("div", {class: "drawer-meta"}, [
+        fmtTs(h.ts),
+        h.from === h.to ? " · note" : ` · ${h.from || "?"} → ${h.to || "?"}`,
+      ]);
+      li.appendChild(head);
+      if (h.note) li.appendChild(el("div", {class: "note-text"}, [h.note]));
+      ul.appendChild(li);
+    }
+    sec.appendChild(ul);
+  } else {
+    sec.appendChild(el("p", {class: "drawer-meta"}, ["no notes yet"]));
+  }
+
+  const ta = el("textarea", {
+    class: "note-textarea", rows: "2",
+    placeholder: "Add a note (free text). Survives status changes and feeds the markdown export.",
+  });
+  const btn = el("button", {class: "note-add-btn", type: "button"}, ["Add note"]);
+  btn.addEventListener("click", async () => {
+    const text = ta.value.trim();
+    if (!text) return;
+    btn.disabled = true;
+    try {
+      const r = await fetch(`/api/finding/${encodeURIComponent(fid)}/note`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({note: text}),
+      });
+      if (!r.ok) { alert(`add-note failed: ${await r.text()}`); return; }
+      ta.value = "";
+      // Refresh the drawer with the new history entry.
+      await openDrawer(fid);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  sec.appendChild(ta);
+  sec.appendChild(btn);
+  body.appendChild(sec);
 }
 
 // Click-to-pivot (ROADMAP #4): fetch an IP / command cross-cluster footprint
@@ -889,10 +1329,10 @@ function closeDrawer() {
 (function init() {
   parseQuery();
 
-  // Drawer close handlers
+  // Drawer close handlers (Escape lives in handleShortcut so the
+  // precedence chain stays in one place).
   document.querySelector("#drawer .drawer-close").addEventListener("click", closeDrawer);
   document.getElementById("drawer-backdrop").addEventListener("click", closeDrawer);
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
 
   const sortSel = document.getElementById("sort-select");
   sortSel.value = state.sort;
@@ -900,6 +1340,30 @@ function closeDrawer() {
     state.sort = sortSel.value;
     pushQuery();
     refreshAll();
+  });
+
+  // Bulk-action bar wiring — status buttons carry data-status; the
+  // export button uses its own id; "clear selection" empties the set.
+  document.querySelectorAll("#bulk-bar .bulk-btn[data-status]").forEach((btn) => {
+    btn.addEventListener("click", () => bulkMutateStatus(btn.dataset.status));
+  });
+  const exportBtn = document.getElementById("bulk-export");
+  if (exportBtn) exportBtn.addEventListener("click", exportSelectedAsMarkdown);
+  const drawerMdBtn = document.getElementById("drawer-md-btn");
+  if (drawerMdBtn) drawerMdBtn.addEventListener(
+    "click",
+    () => exportDrawerAsMarkdown(window.__drawerData),
+  );
+
+  // Keyboard shortcuts (ROADMAP #17.16). j/k navigate, Enter opens,
+  // c/r/a/n flip status, [ / ] cycle category, ? toggles help.
+  document.addEventListener("keydown", handleShortcut);
+  const helpBtn = document.getElementById("shortcuts-help-btn");
+  if (helpBtn) helpBtn.addEventListener("click", () => toggleShortcutsHelp());
+  const clearBtn = document.getElementById("bulk-clear");
+  if (clearBtn) clearBtn.addEventListener("click", () => {
+    state.selectedIds.clear();
+    syncSelectionUI();
   });
 
   refreshAll();

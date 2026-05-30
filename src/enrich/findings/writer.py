@@ -246,6 +246,41 @@ def mutate_status(
     return src
 
 
+def add_note(
+    es: Elasticsearch,
+    index: str,
+    finding_id_: str,
+    *,
+    note: str,
+) -> dict[str, Any]:
+    """Append a free-text note to a finding without changing its status.
+
+    Records as a status_history entry with `from == to == current_status`
+    so the audit trail stays one structured field. Empty notes are
+    rejected — there's no useful behaviour for adding a blank entry.
+
+    Drives the inbox drawer's "Add note" path (ROADMAP #17.4 amended).
+    """
+    if not note or not note.strip():
+        raise ValueError("note must be non-empty")
+    try:
+        resp = es.get(index=index, id=finding_id_)
+    except Exception as exc:
+        raise LookupError(f"finding not found: {finding_id_}") from exc
+    src = resp.get("_source") or {}
+    current = src.get("status") or "new"
+    history = src.get("status_history") or []
+    history.append({
+        "ts":   _now_iso(),
+        "from": current,
+        "to":   current,
+        "note": note.strip(),
+    })
+    src["status_history"] = history
+    es.index(index=index, id=finding_id_, document=src, refresh="wait_for")
+    return src
+
+
 def _apply_lifecycle_side_effects(es: Elasticsearch, cfg: Any, *, finding: dict[str, Any]) -> None:
     """Dispatch lifecycle writes triggered by a status change. Routes by
     `(kind_classification, status)` per the Findings v2 design table.
