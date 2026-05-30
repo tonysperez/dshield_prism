@@ -417,6 +417,14 @@ main {
 }
 .tab { display: none; padding: 10px 12px; }
 .tab.active { display: block; }
+/* Activity (cross-cluster footprint) sits inside the Summary tab as
+   a sibling block; give it a hairline separator when non-empty so it
+   reads as a section transition rather than a wall of content. */
+#tab-summary > #tab-activity:not(:empty) {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
 
 .actions {
   display: flex;

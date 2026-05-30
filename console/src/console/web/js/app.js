@@ -345,6 +345,10 @@
     try {
       const d = await api(`/api/ioc/${encodeURIComponent(type)}/${encodeURIComponent(id)}`);
       renderDetail(d);
+      // Activity is now an always-visible sub-section inside Summary,
+      // not its own tab — render it alongside the detail. The helper
+      // memoises per node, so re-selecting the same node is free. (#21)
+      renderActivityTab(node);
     } catch (e) {
       renderDetailError(type, id, e.message);
     }
@@ -1113,6 +1117,11 @@
     if (!state.anchor) return;
     const p = new URLSearchParams();
     p.set("ioc", `${state.anchor.type}:${state.anchor.id}`);
+    // Preserve flags the rebuild doesn't otherwise know about. Without
+    // this, ?debug=1 vanishes as soon as the anchor is set and the URL
+    // gets pushState'd back to the bare ioc form.
+    const current = new URLSearchParams(location.search);
+    if (current.get("debug") === "1") p.set("debug", "1");
     // Graph page moved to `/graph` when the findings landing landed.
     // Keep the URL in sync so back/forward + reload stay on /graph
     // instead of redirecting to /findings.
@@ -1858,10 +1867,15 @@
         document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
         btn.classList.add("active");
         $(`#tab-${btn.dataset.tab}`).classList.add("active");
-        // ROADMAP #4 — lazy-populate the Activity tab on first open per node.
-        if (btn.dataset.tab === "activity") renderActivityTab(_currentSelectedNode);
       });
     });
+
+    // Raw JSON tab is hidden by default; ?debug=1 unhides it. (#8)
+    if (new URLSearchParams(location.search).get("debug") === "1") {
+      document.querySelectorAll(
+        "#detail-tabs button[data-tab=\"raw\"], #tab-raw",
+      ).forEach((e) => (e.hidden = false));
+    }
 
     // ------------------------------------------------------------------
     // Ask AI
