@@ -1,0 +1,44 @@
+# Analyst-authored command-grounding notes (ROADMAP #16).
+#
+# Each entry attaches a piece of research the analyst has done to a string
+# fragment that may appear inside a Cowrie command line. When the fragment
+# is present in a command being enriched, the notes are appended to the
+# <<<COMMAND_GROUND_TRUTH>>> block in the LLM prompt — so the model sees the
+# analyst's context instead of guessing.
+#
+# Distinct from #5 (analyst-defined artifacts):
+#   - #5  → pattern match tags a command (artifact stamp for aggregation).
+#   - #16 → pattern match injects notes into the LLM prompt (better
+#           enrichment).
+# Same matching engine, different output.
+#
+# Editing this file flips `llm_config_hash` via `_hash_command_grounding()`
+# in src/enrich/config.py, so the next `re-enrich-stale` re-runs the LLM on
+# affected commands.
+#
+# Schema (one entry per list item):
+#   pattern: str             # the string fragment to match
+#   match_type: str          # literal | substring | regex
+#     - literal:   whitespace/string-boundary match of an exact string
+#                  (works for path-like tokens that start with non-word chars)
+#     - substring: plain "contained anywhere in text" check
+#     - regex:     Python `re.search` with the pattern
+#   case_sensitive: bool     # default false
+#   notes: str               # multi-line analyst research, rendered as-is
+#                            # into the prompt
+
+ - pattern: "D877F783D5D3EF8C"
+   match_type: substring
+   case_sensitive: false
+   notes: |
+     This is the file name used by Telegram to store the user
+     ID and cryptographic keys. "locate D877F783D5D3EF8Cs" is often
+     used when trying to determine if Telegram is installed and misconfigured
+
+ - pattern: "redtail"
+   match_type: substring
+   notes: |
+     RedTail miner family. Typically deployed via a setup.sh dropper that
+     pulls additional staged binaries by architecture name. The presence
+     of `redtail.*` filenames or download URLs containing `redtail` is
+     diagnostic.

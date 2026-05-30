@@ -1,0 +1,4 @@
+description: >-
+  lockr is a cargo-cult command which does not actually exist. It's presense
+  strongly suggests malicious action as it is only called by copy/paste scripts.
+  It's often used simiarly to and in conjunction with the command 'chattr'

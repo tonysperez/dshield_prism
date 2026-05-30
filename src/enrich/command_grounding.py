@@ -49,6 +49,11 @@ _DATA_DIR = Path(__file__).parent / "data" / "commands"
 _CURATED_DIR = _DATA_DIR / "curated"
 _TLDR_BUNDLE = _DATA_DIR / "tldr.json"
 _DENYLIST_PATH = _DATA_DIR / "denylist.yaml"
+_ANALYST_NOTES_PATH = _DATA_DIR / "analyst_notes.yaml"
+
+# Cap on how many analyst notes can render into a single prompt block —
+# defends against a YAML with hundreds of broad-pattern entries.
+_MAX_ANALYST_NOTES_PER_LINE = 8
 
 # Shell tokens that separate independent command segments. We
 # tokenize the line via shlex FIRST (which respects quotes), then
@@ -78,6 +83,7 @@ _MULTICALL_BINARIES = frozenset({"busybox"})
 
 _loaded: Optional[dict[str, dict]] = None
 _loaded_denylist: Optional[dict[str, str]] = None
+_loaded_analyst_notes: Optional[list[dict]] = None
 
 
 def _load_denylist() -> dict[str, str]:
@@ -109,6 +115,109 @@ def list_denied_commands() -> dict[str, str]:
     """Public accessor — used by the Health page (ROADMAP #11.5) to
     bucket denied tokens separately from `needs_def`."""
     return dict(_load_denylist())
+
+
+# ---------------------------------------------------------------------------
+# Analyst-authored grounding notes (ROADMAP #16)
+# ---------------------------------------------------------------------------
+#
+# Distinct from #5 (analyst-defined artifacts):
+#   - #5  → pattern match tags a command (artifact stamp for aggregation).
+#   - #16 → pattern match injects analyst research notes into the
+#           LLM prompt's <<<COMMAND_GROUND_TRUTH>>> block.
+# Reuses the same match-type semantics (literal / substring / regex) by
+# re-using `compile_rule` from `enrich.analyst.artifact_rules` — so a
+# pattern that works as a #5 artifact rule behaves identically here.
+
+def _load_analyst_notes() -> list[dict]:
+    """Return the loaded + validated analyst-notes list.
+
+    Each entry: `{pattern, match_type, case_sensitive, notes, _compiled}`
+    where `_compiled` is a `CompiledRule` ready to run against a command
+    line. Bad entries are skipped with a warning rather than failing the
+    whole load — a typo in one note shouldn't blank the rest.
+
+    Memoised; the cache hash (`_hash_command_grounding`) picks up file
+    edits and routes through `re-enrich-stale` to refresh affected docs.
+    """
+    global _loaded_analyst_notes
+    if _loaded_analyst_notes is not None:
+        return _loaded_analyst_notes
+    out: list[dict] = []
+    if _ANALYST_NOTES_PATH.exists():
+        try:
+            raw = yaml.safe_load(_ANALYST_NOTES_PATH.read_text(encoding="utf-8")) or []
+        except Exception as exc:
+            log.warning("could not load analyst notes (%s): %s", _ANALYST_NOTES_PATH, exc)
+            raw = []
+        if not isinstance(raw, list):
+            log.warning(
+                "analyst notes (%s) must be a YAML list; got %s — ignoring file",
+                _ANALYST_NOTES_PATH, type(raw).__name__,
+            )
+            raw = []
+        # Lazy import — avoids a circular dependency at module load time.
+        from .analyst.artifact_rules import compile_rule
+        for idx, entry in enumerate(raw):
+            if not isinstance(entry, dict):
+                log.warning("analyst note #%d: not a mapping; skipping", idx)
+                continue
+            pattern = (entry.get("pattern") or "").strip()
+            notes = (entry.get("notes") or "").strip()
+            if not pattern or not notes:
+                log.warning(
+                    "analyst note #%d: missing pattern or notes; skipping", idx,
+                )
+                continue
+            try:
+                compiled = compile_rule({
+                    "rule_id": f"note-{idx}",
+                    "kind": "analyst_note",
+                    "match_type": entry.get("match_type", "substring"),
+                    "pattern": pattern,
+                    "case_sensitive": bool(entry.get("case_sensitive", False)),
+                })
+            except Exception as exc:
+                log.warning(
+                    "analyst note #%d (pattern=%r): compile failed: %s",
+                    idx, pattern[:60], exc,
+                )
+                continue
+            out.append({
+                "pattern": pattern,
+                "notes": notes,
+                "_compiled": compiled,
+            })
+    _loaded_analyst_notes = out
+    return out
+
+
+def find_matching_analyst_notes(line: str) -> list[tuple[str, str]]:
+    """Return `[(matched_fragment, notes), ...]` for every active note
+    whose pattern fires on `line`. Capped at `_MAX_ANALYST_NOTES_PER_LINE`.
+
+    The matched fragment is what the rule's `find` returned — typically
+    the pattern itself for literal/substring, or the regex match span for
+    regex. Used in the prompt to tell the LLM which fragment triggered
+    which note (so the model can tie the analyst's research back to the
+    specific bit of the command it's analysing).
+    """
+    if not line:
+        return []
+    notes = _load_analyst_notes()
+    if not notes:
+        return []
+    out: list[tuple[str, str]] = []
+    for entry in notes:
+        hits = entry["_compiled"].find(line)
+        if not hits:
+            continue
+        # One emission per note (the first matched span); a single note
+        # firing many times in one command isn't worth N prompt lines.
+        out.append((hits[0], entry["notes"]))
+        if len(out) >= _MAX_ANALYST_NOTES_PER_LINE:
+            break
+    return out
 
 
 # Header that gets prepended to every denylist.yaml write. The file is
@@ -472,6 +581,19 @@ def build_ground_truth_block(line: str, *, max_chars: int = 6000) -> str:
             summary = tldr_by_os[os_name]
             out_lines.append(f"  {cmd} (tldr/{os_name}) — {summary}")
 
+    # ROADMAP #16 — analyst-authored notes for arbitrary string fragments
+    # (paths, hashes, family markers, opaque identifiers). Run after the
+    # per-command lines so the LLM sees the structural grounding first,
+    # then the analyst's research overlay.
+    for fragment, notes in find_matching_analyst_notes(line):
+        # `\n` inside `notes` is preserved so multi-paragraph research
+        # comes through as written. Indented to nest under the analyst
+        # marker line.
+        indented = notes.replace("\n", "\n      ")
+        out_lines.append(
+            f"  (analyst note matching '{fragment}') —\n      {indented}"
+        )
+
     block = "\n".join(out_lines)
     if len(block) > max_chars:
         # Truncate to the last full line that fits.
@@ -482,9 +604,10 @@ def build_ground_truth_block(line: str, *, max_chars: int = 6000) -> str:
 def reset_loaded_for_tests() -> None:
     """Test helper — drop the memoised data so a smoke test can override
     the data directory at runtime. Never called in production."""
-    global _loaded, _loaded_denylist
+    global _loaded, _loaded_denylist, _loaded_analyst_notes
     _loaded = None
     _loaded_denylist = None
+    _loaded_analyst_notes = None
 
 
 def list_known_commands() -> set[str]:
