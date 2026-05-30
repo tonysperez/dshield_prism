@@ -1138,6 +1138,15 @@
     });
   }
 
+  // Defaults — values matching these are omitted from the URL so a
+  // bare /graph?ioc=… link stays short. Edit here when introducing
+  // a new knob in F.1's URL state envelope.
+  const DEFAULT_LANES = ["geo", "ip", "session", "command", "mitre"];
+  function _lanesAreDefault(visible) {
+    if (visible.size !== DEFAULT_LANES.length) return false;
+    return DEFAULT_LANES.every(l => visible.has(l));
+  }
+
   function updateUrl() {
     if (!state.anchor) return;
     const p = new URLSearchParams();
@@ -1147,6 +1156,21 @@
     // gets pushState'd back to the bare ioc form.
     const current = new URLSearchParams(location.search);
     if (current.get("debug") === "1") p.set("debug", "1");
+
+    // Graph state envelope (ROADMAP #17.5). Every knob that affects the
+    // visible canvas rides in the URL so reload + share-link reproduce
+    // the view exactly.
+    if (state.siblings > 0) p.set("siblings", String(state.siblings));
+    if (!_lanesAreDefault(state.lanesVisible)) {
+      p.set("lanes", Array.from(state.lanesVisible).join(","));
+    }
+    if (localStorage.getItem("prism.spotlightOnly") === "1") p.set("spot", "1");
+    if (localStorage.getItem("prism.spotlightHide") === "1") p.set("sh", "1");
+    const thr = localStorage.getItem("prism.spotlightThreshold");
+    if (thr != null) p.set("st", thr);
+    if (settings.requireLogin    === false) p.set("rl", "0");
+    if (settings.requireCommands === false) p.set("rc", "0");
+
     // Graph page moved to `/graph` when the findings landing landed.
     // Keep the URL in sync so back/forward + reload stay on /graph
     // instead of redirecting to /findings.
@@ -1169,6 +1193,39 @@
     const idx = raw.indexOf(":");
     if (idx < 0) return null;
     return { type: raw.slice(0, idx), id: raw.slice(idx + 1) };
+  }
+
+  // ROADMAP #17.5 — restore the full graph state envelope (siblings,
+  // lanes, spotlight, threshold, session-quality filters) from the URL
+  // before the first anchor fetch so the initial render reflects the
+  // shared link exactly. Returns the params so callers can apply them
+  // to checkboxes / sliders after the DOM is wired.
+  function applyGraphStateFromUrl() {
+    const p = new URLSearchParams(location.search);
+
+    const sib = parseInt(p.get("siblings") || "0", 10);
+    if (Number.isFinite(sib) && sib >= 0 && sib <= 3) state.siblings = sib;
+
+    if (p.has("lanes")) {
+      const v = (p.get("lanes") || "").split(",").map(s => s.trim()).filter(Boolean);
+      state.lanesVisible = new Set(v);
+    }
+
+    if (p.has("spot")) localStorage.setItem("prism.spotlightOnly", p.get("spot") === "1" ? "1" : "0");
+    if (p.has("sh"))   localStorage.setItem("prism.spotlightHide", p.get("sh")   === "1" ? "1" : "0");
+    if (p.has("st")) {
+      const v = parseFloat(p.get("st"));
+      if (isFinite(v) && v >= 0 && v <= 1) {
+        localStorage.setItem("prism.spotlightThreshold", String(v));
+        window.PrismUI.specThreshold = v;
+      }
+    }
+
+    // require_login / require_commands flow through the persisted
+    // settings object so /api callers pick them up via _withFilterParams.
+    if (p.has("rl")) settings.requireLogin    = p.get("rl") !== "0";
+    if (p.has("rc")) settings.requireCommands = p.get("rc") !== "0";
+    return p;
   }
 
   // ---------------------------------------------------------------------
@@ -1229,6 +1286,7 @@
     const prev = state.siblings;
     state.siblings = Math.max(0, Math.min(3, Number(target) || 0));
     $("#siblings-value").textContent = String(state.siblings);
+    updateUrl();
     if (!state.anchor) return;
     // Cancel any in-flight expansion so a wave fired at the old target
     // can't re-introduce nodes we're about to prune.
@@ -1423,6 +1481,7 @@
     if (visible) state.lanesVisible.add(lane);
     else state.lanesVisible.delete(lane);
     Graph.setLaneVisibility(Array.from(state.lanesVisible));
+    updateUrl();
     if (visible) {
       // Re-enabling a lane: invalidate pipeline cache so the auto-trace
       // can backfill the missing nodes on the next refresh, then re-fit
@@ -1734,7 +1793,13 @@
     });
     $("#sets-clear").addEventListener("click", clearSetsFilter);
 
+    // ROADMAP #17.5 — restore the URL state envelope BEFORE wiring
+    // initial UI state so shared links reproduce the view exactly.
+    applyGraphStateFromUrl();
+
     const sibSlider = $("#siblings-slider");
+    sibSlider.value = String(state.siblings);
+    $("#siblings-value").textContent = String(state.siblings);
     sibSlider.addEventListener("input", (e) => {
       $("#siblings-value").textContent = e.target.value;
     });
@@ -1743,6 +1808,7 @@
     });
 
     document.querySelectorAll(".lane-chk input").forEach((chk) => {
+      chk.checked = state.lanesVisible.has(chk.dataset.lane);
       chk.addEventListener("change", (e) => {
         setLaneVisible(e.target.dataset.lane, e.target.checked);
       });
@@ -1765,10 +1831,12 @@
         localStorage.setItem(SPOT_KEY, spotOn.checked ? "1" : "0");
         spotHide.disabled = !spotOn.checked;
         Graph.setSpotlight({on: spotOn.checked, hide: spotHide.checked});
+        updateUrl();
       });
       spotHide.addEventListener("change", () => {
         localStorage.setItem(SPOT_HIDE_KEY, spotHide.checked ? "1" : "0");
         Graph.setSpotlight({on: spotOn.checked, hide: spotHide.checked});
+        updateUrl();
       });
     }
 
@@ -1800,6 +1868,7 @@
         if (window.Graph && typeof window.Graph.setSpotlight === "function") {
           window.Graph.setSpotlight({});
         }
+        updateUrl();
       });
     }
     if (threshReset) {
@@ -1810,6 +1879,7 @@
         if (window.Graph && typeof window.Graph.setSpotlight === "function") {
           window.Graph.setSpotlight({});
         }
+        updateUrl();
       });
     }
 
@@ -1831,9 +1901,12 @@
       settings.requireCommands = newReqCmd;
       saveSettings(settings);
       closeSettings();
-      if (changed && state.anchor) {
-        // Re-anchor to re-fetch with new filter applied to every cached call.
-        anchor(state.anchor.type, state.anchor.id, { skipHistory: true });
+      if (changed) {
+        updateUrl();
+        if (state.anchor) {
+          // Re-anchor to re-fetch with new filter applied to every cached call.
+          anchor(state.anchor.type, state.anchor.id, { skipHistory: true });
+        }
       }
     }
     $("#settings-btn").addEventListener("click", openSettings);
