@@ -57,35 +57,6 @@
       font-size: 11px; padding: 2px 6px;
     }
 
-    /* Accordion sections */
-    .fnd-accordion-head {
-      display: flex; align-items: center; gap: 10px;
-      padding: 8px 12px; cursor: pointer;
-      background: #0e1e35; border: 1px solid #1d2840;
-      border-radius: 5px 5px 0 0;
-    }
-    .fnd-accordion-head .triangle {
-      transition: transform 0.18s; color: #6b7494;
-    }
-    .fnd-accordion.collapsed .triangle { transform: rotate(-90deg); }
-    .fnd-accordion-head .label {
-      font-size: 13px; font-weight: 600; color: #c8d0e2;
-    }
-    .fnd-accordion-head .count {
-      font-size: 11px; color: #6b7494; font-weight: 400;
-    }
-    .fnd-accordion-head .stream-hint {
-      margin-left: auto; font-size: 11px; color: #6b7494;
-    }
-    .fnd-accordion-body {
-      border: 1px solid #1d2840; border-top: 0;
-      border-radius: 0 0 5px 5px; padding: 0;
-    }
-    .fnd-accordion.collapsed .fnd-accordion-body { display: none; }
-    .fnd-stream-drift     .fnd-accordion-head { border-color: #c084fc40; }
-    .fnd-stream-discovery .fnd-accordion-head { border-color: #4cc1ff40; }
-    .fnd-stream-coverage  .fnd-accordion-head { border-color: #25324c; }
-
     /* Findings table */
     table.fnd-table {
       width: 100%; border-collapse: collapse; font-size: 12px;
@@ -230,6 +201,10 @@
         <div id="status-chips" style="display:flex; flex-direction:column; gap:2px;"></div>
       </div>
       <div class="facet-group">
+        <h5>Category</h5>
+        <div id="stream-chips" style="display:flex; flex-direction:column; gap:2px;"></div>
+      </div>
+      <div class="facet-group">
         <h5>Sort</h5>
         <select id="sort-select" class="fnd-status-select">
           <option value="score">score</option>
@@ -243,40 +218,10 @@
     </aside>
 
     <section>
-      <p class="fnd-section-title">Findings — drift, discovery, coverage
-        <span class="fnd-hint">click any row to open the detail drawer; confirming a coverage row enables drift watch on the artifact</span>
+      <p class="fnd-section-title" id="inbox-title">Findings
+        <span class="fnd-hint">click any row to open the detail drawer; confirming a row in the <em>Confirm</em> category arms drift watch on the artifact</span>
       </p>
-
-      <!-- Three accordion sections. Drift + discovery open by default; coverage collapsed. -->
-      <div id="section-drift" class="fnd-accordion fnd-stream-drift">
-        <div class="fnd-accordion-head" data-stream="drift">
-          <span class="triangle">▼</span>
-          <span class="label">Drift in tracked behavior</span>
-          <span class="count" id="count-drift">0</span>
-          <span class="stream-hint">playbooks &amp; campaigns that changed since their anchor</span>
-        </div>
-        <div class="fnd-accordion-body"><div class="fnd-stream-rows"><em class="fnd-empty">loading…</em></div></div>
-      </div>
-
-      <div id="section-discovery" class="fnd-accordion fnd-stream-discovery">
-        <div class="fnd-accordion-head" data-stream="discovery">
-          <span class="triangle">▼</span>
-          <span class="label">New / unknown</span>
-          <span class="count" id="count-discovery">0</span>
-          <span class="stream-hint">first appearances, IPs without a home, intel verdict flips</span>
-        </div>
-        <div class="fnd-accordion-body"><div class="fnd-stream-rows"><em class="fnd-empty">loading…</em></div></div>
-      </div>
-
-      <div id="section-coverage" class="fnd-accordion fnd-stream-coverage collapsed">
-        <div class="fnd-accordion-head" data-stream="coverage">
-          <span class="triangle">▼</span>
-          <span class="label">Coverage / curation</span>
-          <span class="count" id="count-coverage">0</span>
-          <span class="stream-hint">confirm a row here to start tracking drift on it</span>
-        </div>
-        <div class="fnd-accordion-body"><div class="fnd-stream-rows"><em class="fnd-empty">loading…</em></div></div>
-      </div>
+      <div id="inbox-rows"><em class="fnd-empty">loading…</em></div>
     </section>
 
   </main>

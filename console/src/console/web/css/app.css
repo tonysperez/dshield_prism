@@ -156,10 +156,16 @@ body {
   50% { opacity: 1; }
 }
 
-.health { font-size: 11px; color: var(--muted); position: relative; cursor: help; }
+.health { font-size: 11px; color: var(--muted); cursor: help; }
 .health.ok { color: var(--ok); }
 .health.err { color: var(--err); }
-.health[data-tooltip]:hover::after {
+
+/* CSS-rendered tooltip. Set data-tooltip="..." on any element to get
+   a styled popover on hover. Native HTML title= is unreliable on some
+   Linux desktops (Wayland especially); this is independent of the OS
+   tooltip layer. Anchor with position:relative on the host element. */
+[data-tooltip] { position: relative; }
+[data-tooltip]:hover::after {
   content: attr(data-tooltip);
   position: absolute;
   top: 100%;
@@ -177,6 +183,8 @@ body {
   z-index: 1000;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
 }
+/* Tooltips on facet rows / left-anchored chips align left rather than right. */
+.facet-row[data-tooltip]:hover::after { right: auto; left: 0; }
 
 main {
   flex: 1;

@@ -1,17 +1,36 @@
 "use strict";
 
-/* Findings v2 — three-section accordion + slide-in drawer.
+/* Findings inbox — single ranked list + slide-in drawer.
  *
- * Three independent fetches drive the three sections (drift / discovery /
- * coverage). Each row in each section is clickable; clicking opens the
- * detail drawer at /api/finding/{id}/detail. The status select stays
- * inside the row so the analyst can triage without opening the drawer.
+ * One fetch to /api/findings drives the inbox rows and the rail (status
+ * chips + category chips + dynamic facet groups). Each row is clickable;
+ * clicking opens the detail drawer at /api/finding/{id}/detail. The
+ * status select stays inside the row so the analyst can triage without
+ * opening the drawer. The backend still groups findings into three
+ * streams (drift/discovery/coverage); the UI surfaces them as a single
+ * "Category" facet (Changed / New / Confirm).
  *
- * URL state: ?status=new&sort=score survives reloads.
+ * URL state: ?status=new&stream=drift&sort=score survives reloads.
  */
 
 const STATUSES = ["new", "ack", "confirmed", "rejected"];
-const STREAMS = ["drift", "discovery", "coverage"];
+// Display labels for the three backend streams (the API contract still
+// uses drift/discovery/coverage; the UI surfaces them as a Category facet).
+const STREAM_LABEL = {
+  drift: "Changed",
+  discovery: "New",
+  coverage: "Confirm",
+};
+// Triage state machine. Tooltip text per status — surfaced on the
+// facet-rail chips so an analyst doesn't need to read docs to know
+// what each state means.
+const STATUS_TOOLTIP = {
+  all:       "Show findings in every state",
+  new:       "Untriaged — the default for fresh findings",
+  ack:       "Saw it, haven't decided yet",
+  confirmed: "Real signal — arms drift watch on the artifact",
+  rejected:  "Noise — suppress similar in future",
+};
 const FACET_DIMS = ["score_band", "age_band", "ip_band", "intent", "intel_verdict"];
 const FACET_LABEL = {
   score_band:    "Score",
@@ -21,8 +40,18 @@ const FACET_LABEL = {
   intel_verdict: "Intel verdict",
 };
 
+// Tooltip text for the category facet — mirrors the per-section hints
+// the three-accordion layout used to surface.
+const STREAM_TOOLTIP = {
+  all:       "Show every category",
+  drift:     "Changed — playbooks/campaigns that shifted from baseline",
+  discovery: "New — first appearances and intel verdict flips",
+  coverage:  "Confirm — confirm a row to start tracking drift on the artifact",
+};
+
 const state = {
   status: "new",     // single status (chip click), or "all"
+  stream: "",        // "" = all categories; or "drift" | "discovery" | "coverage"
   sort: "score",
   facets: {},        // {dim: bucket_key} — one active bucket per dim
 };
@@ -30,6 +59,7 @@ const state = {
 function parseQuery() {
   const q = new URLSearchParams(location.search);
   if (q.has("status")) state.status = q.get("status");
+  if (q.has("stream")) state.stream = q.get("stream");
   if (q.has("sort")) state.sort = q.get("sort");
   for (const dim of FACET_DIMS) {
     if (q.has(dim)) state.facets[dim] = q.get(dim);
@@ -39,6 +69,7 @@ function parseQuery() {
 function pushQuery() {
   const q = new URLSearchParams();
   q.set("status", state.status);
+  if (state.stream) q.set("stream", state.stream);
   if (state.sort !== "score") q.set("sort", state.sort);
   for (const dim of FACET_DIMS) {
     if (state.facets[dim]) q.set(dim, state.facets[dim]);
@@ -172,6 +203,7 @@ function renderStatusChips(counts) {
       : (counts && counts[s]) || 0;
     const chip = el("span", {
       class: "facet-row" + (state.status === s ? " active" : ""),
+      "data-tooltip": STATUS_TOOLTIP[s] || "",
       onclick: () => {
         state.status = s;
         pushQuery();
@@ -182,19 +214,46 @@ function renderStatusChips(counts) {
   }
 }
 
+function renderStreamChips(counts) {
+  const wrap = document.getElementById("stream-chips");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  // "all" is represented by state.stream === "" so we don't send the
+  // filter; otherwise drift/discovery/coverage map to the backend keys.
+  const entries = [
+    {key: "",          label: "all",     count: Object.values(counts || {}).reduce((a, b) => a + b, 0)},
+    {key: "drift",     label: STREAM_LABEL.drift,     count: (counts && counts.drift)     || 0},
+    {key: "discovery", label: STREAM_LABEL.discovery, count: (counts && counts.discovery) || 0},
+    {key: "coverage",  label: STREAM_LABEL.coverage,  count: (counts && counts.coverage)  || 0},
+  ];
+  for (const e of entries) {
+    const tooltipKey = e.key || "all";
+    const chip = el("span", {
+      class: "facet-row" + (state.stream === e.key ? " active" : ""),
+      "data-tooltip": STREAM_TOOLTIP[tooltipKey] || "",
+      onclick: () => {
+        state.stream = e.key;
+        pushQuery();
+        refreshAll();
+      },
+    }, [e.label, el("span", {class: "count"}, [`${e.count}`])]);
+    wrap.appendChild(chip);
+  }
+}
+
 // ---------------------------------------------------------------------------
-// Stream sections
+// Inbox table
 // ---------------------------------------------------------------------------
 
-function renderStreamRows(stream, rows) {
-  const sec = document.getElementById(`section-${stream}`);
-  const body = sec.querySelector(".fnd-stream-rows");
+function renderInbox(rows) {
+  const body = document.getElementById("inbox-rows");
   body.innerHTML = "";
   if (!rows.length) {
+    const scope = state.stream
+      ? `${(STREAM_LABEL[state.stream] || state.stream).toLowerCase()} `
+      : "";
     body.appendChild(el("p", {class: "fnd-empty"}, [
-      stream === "coverage"
-        ? "no coverage findings — `dshield_prism mine findings` populates these"
-        : `no ${stream} findings match this filter`,
+      `no ${scope}findings match this filter`,
     ]));
     return;
   }
@@ -246,52 +305,36 @@ function renderStreamRows(stream, rows) {
   body.appendChild(table);
 }
 
-async function fetchStream(stream) {
+// Single fetch — drives both the inbox rows and the rail (status,
+// category, dynamic facet groups). The previous code ran four parallel
+// fetches (one per stream + one facet-only); one query is sufficient
+// now that the three accordions are a single ranked list.
+async function fetchInbox() {
   const params = facetParams();
   params.set("status", state.status);
-  params.set("stream", stream);
-  params.set("size", 200);
+  if (state.stream) params.set("stream", state.stream);
+  params.set("size", 500);
   params.set("from", 0);
   params.set("sort", state.sort);
   try {
     const r = await fetch("/api/findings?" + params.toString());
     if (!r.ok) {
-      renderStreamRows(stream, []);
-      return {status_counts: {}, stream_counts: {}};
+      renderInbox([]);
+      return {};
     }
-    const data = await r.json();
-    renderStreamRows(stream, data.rows || []);
-    document.getElementById(`count-${stream}`).textContent =
-      (data.stream_counts && data.stream_counts[stream]) ?? (data.rows || []).length;
-    return data;
-  } catch (exc) {
-    renderStreamRows(stream, []);
-    return {};
-  }
-}
-
-// One fetch (no stream filter) drives the facet rail + status chips, so the
-// rail reflects the entire inbox under the current status + facet selection.
-async function fetchFacets() {
-  const params = facetParams();
-  params.set("status", state.status);
-  params.set("size", 1);  // facets only; rows discarded
-  try {
-    const r = await fetch("/api/findings?" + params.toString());
-    if (!r.ok) return {};
     return await r.json();
-  } catch {
+  } catch (exc) {
+    renderInbox([]);
     return {};
   }
 }
 
 async function refreshAll() {
-  const facetData = await fetchFacets();
-  renderStatusChips(facetData.status_counts || {});
-  renderFacets(facetData.facet_counts || {});
-  for (const s of STREAMS) {
-    await fetchStream(s);
-  }
+  const data = await fetchInbox();
+  renderStatusChips(data.status_counts || {});
+  renderStreamChips(data.stream_counts || {});
+  renderFacets(data.facet_counts || {});
+  renderInbox(data.rows || []);
 }
 
 async function mutateStatus(fid, newStatus, selEl) {
@@ -716,13 +759,6 @@ function closeDrawer() {
 
 (function init() {
   parseQuery();
-
-  // Accordion toggle
-  document.querySelectorAll(".fnd-accordion-head").forEach(h => {
-    h.addEventListener("click", () => {
-      h.parentElement.classList.toggle("collapsed");
-    });
-  });
 
   // Drawer close handlers
   document.querySelector("#drawer .drawer-close").addEventListener("click", closeDrawer);
