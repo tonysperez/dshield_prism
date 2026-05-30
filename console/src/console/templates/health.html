@@ -1,9 +1,6 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>DShield Health</title>
-  <link rel="stylesheet" href="/static/css/app.css" />
+{% extends "_base.html" %}
+{% block title %}DShield Health{% endblock %}
+{% block head_extra %}
   <style>
     /* Health-page layout — sibling of insights.html, shares the topbar
        styles via app.css. ROADMAP #11.5. */
@@ -151,33 +148,9 @@
       border: 1px solid #f8717128;
       border-radius: 6px;
     }
-
-    /* Nav-link style — same as insights.html for visual consistency. */
-    .topbar .nav-link {
-      font-size: 11px;
-      color: #4cc1ff;
-      font-weight: 600;
-      background: #0e1e35;
-      border: 1px solid #4cc1ff28;
-      border-radius: 4px;
-      padding: 3px 10px;
-      text-decoration: none;
-      white-space: nowrap;
-    }
-    .topbar .nav-link:hover { background: #1a2d4e; }
   </style>
-</head>
-<body>
-  <header class="topbar">
-    <a href="/findings" class="brand" style="text-decoration:none;color:inherit;">DShield Console</a>
-    <a href="/findings" class="nav-link">Findings</a>
-    <a href="/graph" class="nav-link">Graph</a>
-    <a href="/insights" class="nav-link">Insights</a>
-    <a href="/compare" class="nav-link">Compare</a>
-    <div style="flex:1"></div>
-    <div id="loading" class="loading hidden" aria-live="polite"></div>
-  </header>
-
+{% endblock %}
+{% block content %}
   <main id="health-main">
 
     <!-- Command grounding section (ROADMAP #11.5) -->
@@ -211,7 +184,7 @@
          module that owns just that block) so the page stays editable. -->
 
   </main>
-
+{% endblock %}
+{% block scripts %}
   <script src="/static/js/health.js" defer></script>
-</body>
-</html>
+{% endblock %}

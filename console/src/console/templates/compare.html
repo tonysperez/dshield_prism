@@ -1,9 +1,6 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>DShield · Compare Clusters</title>
-  <link rel="stylesheet" href="/static/css/app.css" />
+{% extends "_base.html" %}
+{% block title %}DShield · Compare Clusters{% endblock %}
+{% block head_extra %}
   <style>
     #compare-main {
       max-width: 1180px;
@@ -285,19 +282,12 @@
       font-size: 10px;
     }
   </style>
-</head>
-<body>
-  <header class="topbar">
-    <a href="/findings" class="brand" style="text-decoration:none;color:inherit;">DShield Console</a>
-    <a href="/findings" class="nav-link">Findings</a>
-    <a href="/graph" class="nav-link">Graph</a>
-    <a href="/insights" class="nav-link">Insights</a>
-    <a href="/health" class="nav-link">Health</a>
-    <div style="flex:1"></div>
-    <div id="loading" class="loading hidden" aria-live="polite"></div>
-    <div id="health" class="health">…</div>
-  </header>
-
+{% endblock %}
+{% block topbar_meta %}
+  <div id="loading" class="loading hidden" aria-live="polite"></div>
+  <div id="health" class="health">…</div>
+{% endblock %}
+{% block content %}
   <main id="compare-main">
 
     <section>
@@ -345,7 +335,7 @@
     </section>
 
   </main>
-
+{% endblock %}
+{% block scripts %}
   <script src="/static/js/compare.js"></script>
-</body>
-</html>
+{% endblock %}

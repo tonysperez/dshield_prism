@@ -1,6 +1,0 @@
-description: >-
-  In addition to Cisco ISO and Linux, the "/ip" command exists in MikroTik RouterOS.
-  It's used to manage MikroTik IP addressing, routing, NAT, and IP settings.
-flags:
-  "settings": To configure several IPv4 and IPv6 related kernel and system-wide parameters
-  "cloud print": If DDNS is configured, get the device's public IP and public DNS name

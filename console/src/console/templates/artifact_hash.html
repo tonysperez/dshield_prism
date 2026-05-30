@@ -1,9 +1,6 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>DShield Artifact — File hash</title>
-  <link rel="stylesheet" href="/static/css/app.css" />
+{% extends "_base.html" %}
+{% block title %}DShield Artifact — File hash{% endblock %}
+{% block head_extra %}
   <style>
     /* File-hash artifact pane (#2). Mirrors artifact_url.html — verdict from
        the hash providers (MalwareBazaar, ThreatFox, VirusTotal) plus the
@@ -35,19 +32,8 @@
     .cmd-row .cmd-line { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #cdd4e6; word-break: break-all; }
     .cmd-row .cmd-meta { color: #6b7494; font-size: 10px; margin-top: 4px; }
   </style>
-</head>
-<body>
-  <header class="topbar">
-    <a href="/findings" class="brand" style="text-decoration:none;color:inherit;">DShield Console</a>
-    <a href="/findings" class="nav-link">Findings</a>
-    <a href="/graph" class="nav-link">Graph</a>
-    <a href="/insights" class="nav-link">Insights</a>
-    <a href="/compare" class="nav-link">Compare</a>
-    <a href="/health" class="nav-link">Health</a>
-    <div style="flex:1"></div>
-    <div id="loading" class="loading hidden" aria-live="polite"></div>
-  </header>
-
+{% endblock %}
+{% block content %}
   <main id="art-main">
     <div class="art-header">
       <span class="art-kind" id="art-kind">file-hash artifact</span>
@@ -76,7 +62,7 @@
       <div class="providers-grid" id="providers-grid"><em class="empty-hint">loading…</em></div>
     </section>
   </main>
-
+{% endblock %}
+{% block scripts %}
   <script src="/static/js/artifact_hash.js"></script>
-</body>
-</html>
+{% endblock %}

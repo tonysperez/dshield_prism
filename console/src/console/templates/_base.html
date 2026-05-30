@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>{% block title %}DShield Console{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/app.css" />
+  {% block head_extra %}{% endblock %}
+</head>
+<body>
+  <header class="topbar">
+    {% block brand %}
+    <a href="/findings" class="brand" style="text-decoration:none;color:inherit;">DShield Console</a>
+    {% endblock %}
+    {%- for item in nav_items if item.id != active_nav %}
+    <a href="{{ item.href }}" class="nav-link">{{ item.label }}</a>
+    {%- endfor %}
+    {% block topbar_controls %}{% endblock %}
+    {% block topbar_spacer %}<div style="flex:1"></div>{% endblock %}
+    {% block topbar_meta %}
+    <div id="loading" class="loading hidden" aria-live="polite"></div>
+    {% endblock %}
+    {% block topbar_extra %}{% endblock %}
+  </header>
+
+  {% block content %}{% endblock %}
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

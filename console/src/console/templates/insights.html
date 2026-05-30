@@ -1,9 +1,6 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>DShield Insights</title>
-  <link rel="stylesheet" href="/static/css/app.css" />
+{% extends "_base.html" %}
+{% block title %}DShield Insights{% endblock %}
+{% block head_extra %}
   <style>
     /* Insights-specific layout — not shared with the graph page */
 
@@ -257,34 +254,13 @@
 
     /* Section separator */
     .ins-section { }
-
-    /* Nav-link style */
-    .topbar .nav-link {
-      font-size: 11px;
-      color: #4cc1ff;
-      font-weight: 600;
-      background: #0e1e35;
-      border: 1px solid #4cc1ff28;
-      border-radius: 4px;
-      padding: 3px 10px;
-      text-decoration: none;
-      white-space: nowrap;
-    }
-    .topbar .nav-link:hover { background: #1a2d4e; }
   </style>
-</head>
-<body>
-  <header class="topbar">
-    <a href="/findings" class="brand" style="text-decoration:none;color:inherit;">DShield Console</a>
-    <a href="/findings" class="nav-link">Findings</a>
-    <a href="/graph" class="nav-link">Graph</a>
-    <a href="/compare" class="nav-link">Compare</a>
-    <a href="/health" class="nav-link">Health</a>
-    <div style="flex:1"></div>
-    <div id="loading" class="loading hidden" aria-live="polite"></div>
-    <div id="health" class="health">…</div>
-  </header>
-
+{% endblock %}
+{% block topbar_meta %}
+  <div id="loading" class="loading hidden" aria-live="polite"></div>
+  <div id="health" class="health">…</div>
+{% endblock %}
+{% block content %}
   <main id="insights-main">
 
     <section class="ins-section" id="sec-overview">
@@ -348,7 +324,7 @@
     </section>
 
   </main>
-
+{% endblock %}
+{% block scripts %}
   <script src="/static/js/insights.js"></script>
-</body>
-</html>
+{% endblock %}

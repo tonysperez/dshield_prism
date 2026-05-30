@@ -1,9 +1,6 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>DShield Artifact Rules</title>
-  <link rel="stylesheet" href="/static/css/app.css" />
+{% extends "_base.html" %}
+{% block title %}DShield Artifact Rules{% endblock %}
+{% block head_extra %}
   <style>
     /* ROADMAP #5 — analyst-authored artifact-rule management page.
        Mirrors findings.html shape. */
@@ -64,20 +61,13 @@
     .ar-badge-active { color: #4ade80; background: #064e3b; }
     .ar-badge-inactive { color: #94a3b8; background: #1a2440; }
   </style>
-</head>
-<body>
-  <header style="display:flex; align-items:center; padding:8px 16px; border-bottom:1px solid #1a2440; gap:12px;">
-    <h1 style="font-size:14px; margin:0;">DShield Artifact Rules</h1>
-    <small style="color:#6b7494;">analyst-authored extraction (ROADMAP #5)</small>
-    <span style="flex:1;"></span>
-    <a href="/" style="font-size:11px; color:#4cc1ff;">← Findings</a>
-    <a href="/graph" style="font-size:11px; color:#4cc1ff;">Graph</a>
-  </header>
-
+{% endblock %}
+{% block content %}
   <main id="rules-main">
     <div class="rules-header">
       <div class="rules-title">
         Rules <small id="rules-count">…</small>
+        <small>analyst-authored extraction (ROADMAP #5)</small>
       </div>
       <div class="rules-toolbar">
         <button type="button" id="export-json-btn">Export as JSON</button>
@@ -95,7 +85,7 @@
       <p class="rules-empty">loading…</p>
     </div>
   </main>
-
+{% endblock %}
+{% block scripts %}
   <script src="/static/js/artifact_rules.js"></script>
-</body>
-</html>
+{% endblock %}

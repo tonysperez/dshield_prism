@@ -1,9 +1,6 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>DShield Findings</title>
-  <link rel="stylesheet" href="/static/css/app.css" />
+{% extends "_base.html" %}
+{% block title %}DShield Findings{% endblock %}
+{% block head_extra %}
   <style>
     /* Findings v2 — three-section accordion + slide-in drawer.
        Single-page layout, no shared CSS with the graph page. */
@@ -221,27 +218,9 @@
     #facet-rail .facet-row:hover { background: #0e1e35; }
     #facet-rail .facet-row.active { color: #4cc1ff; background: #0a1929; }
     #facet-rail .facet-row .count { color: #4a5470; }
-
-    .topbar .nav-link {
-      font-size: 11px; color: #4cc1ff; font-weight: 600;
-      background: #0e1e35; border: 1px solid #4cc1ff28;
-      border-radius: 4px; padding: 3px 10px;
-      text-decoration: none; white-space: nowrap;
-    }
-    .topbar .nav-link:hover { background: #1a2d4e; }
   </style>
-</head>
-<body>
-  <header class="topbar">
-    <a href="/findings" class="brand" style="text-decoration:none;color:inherit;">DShield Console</a>
-    <a href="/graph" class="nav-link">Graph</a>
-    <a href="/insights" class="nav-link">Insights</a>
-    <a href="/compare" class="nav-link">Compare</a>
-    <a href="/health" class="nav-link">Health</a>
-    <div style="flex:1"></div>
-    <div id="loading" class="loading hidden" aria-live="polite"></div>
-  </header>
-
+{% endblock %}
+{% block content %}
   <main id="findings-main">
 
     <aside id="facet-rail">
@@ -311,7 +290,7 @@
     </div>
     <div id="drawer-body"></div>
   </aside>
-
+{% endblock %}
+{% block scripts %}
   <script src="/static/js/findings.js"></script>
-</body>
-</html>
+{% endblock %}

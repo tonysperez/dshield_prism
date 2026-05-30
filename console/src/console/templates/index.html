@@ -1,17 +1,5 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>DShield Console</title>
-  <link rel="stylesheet" href="/static/css/app.css" />
-</head>
-<body>
-  <header class="topbar">
-    <a href="/findings" class="brand" style="text-decoration:none;color:inherit;">DShield Console</a>
-    <a href="/findings" class="nav-link" title="Findings inbox">Findings</a>
-    <a href="/insights" class="nav-link" title="Insights dashboard">Insights</a>
-    <a href="/compare" class="nav-link" title="Compare two session clusters">Compare</a>
-    <a href="/health" class="nav-link" title="Console + pipeline health">Health</a>
+{% extends "_base.html" %}
+{% block topbar_controls %}
     <form id="search-form" class="search">
       <input id="search-input" type="text" autocomplete="off" spellcheck="false"
              placeholder="search IOC: IP, session id, sha256, playbook, campaign, cluster #, T1059.003, AS12345, US, or free text" />
@@ -44,12 +32,17 @@
         <button type="button" id="spotlight-threshold-reset" class="spot-reset" title="Reset to server-config default" hidden>↺</button>
       </label>
     </div>
+{% endblock %}
+{% block topbar_spacer %}{% endblock %}
+{% block topbar_meta %}
     <div id="loading" class="loading hidden" aria-live="polite"></div>
     <div id="health" class="health">…</div>
+{% endblock %}
+{% block topbar_extra %}
     <!-- Breadcrumb lives in the topbar as a second wrapping row -->
     <div id="breadcrumb" class="breadcrumb-bar"></div>
-  </header>
-
+{% endblock %}
+{% block content %}
   <main>
     <section id="graph-pane" class="mode-prism">
       <!-- Frosted-glass mode toggle — top center of the graph pane -->
@@ -263,10 +256,10 @@
       </footer>
     </div>
   </div>
-
+{% endblock %}
+{% block scripts %}
   <script src="/static/js/graph.js"></script>
   <script src="/static/js/timeline.js"></script>
   <script src="/static/js/app.js"></script>
   <script src="/static/js/artifact_rule_modal.js"></script>
-</body>
-</html>
+{% endblock %}

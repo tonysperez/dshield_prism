@@ -1,9 +1,6 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>DShield Artifact — URL</title>
-  <link rel="stylesheet" href="/static/css/app.css" />
+{% extends "_base.html" %}
+{% block title %}DShield Artifact — URL{% endblock %}
+{% block head_extra %}
   <style>
     /* URL artifact pane (M4). Mirrors artifact_ip.html — shares the
        topbar look via app.css. Adds a "host IP cross-reference"
@@ -120,19 +117,8 @@
       margin-top: 4px;
     }
   </style>
-</head>
-<body>
-  <header class="topbar">
-    <a href="/findings" class="brand" style="text-decoration:none;color:inherit;">DShield Console</a>
-    <a href="/findings" class="nav-link">Findings</a>
-    <a href="/graph" class="nav-link">Graph</a>
-    <a href="/insights" class="nav-link">Insights</a>
-    <a href="/compare" class="nav-link">Compare</a>
-    <a href="/health" class="nav-link">Health</a>
-    <div style="flex:1"></div>
-    <div id="loading" class="loading hidden" aria-live="polite"></div>
-  </header>
-
+{% endblock %}
+{% block content %}
   <main id="art-main">
     <div class="art-header">
       <span class="art-kind" id="art-kind">URL artifact</span>
@@ -176,7 +162,7 @@
       </div>
     </section>
   </main>
-
+{% endblock %}
+{% block scripts %}
   <script src="/static/js/artifact_url.js"></script>
-</body>
-</html>
+{% endblock %}

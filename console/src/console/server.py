@@ -13,9 +13,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from ._config import load_config, load_secrets
@@ -32,6 +33,17 @@ from .models import (
 log = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).parent / "web"
+TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+# Shared navigation. Order is the single source of truth for nav rendering
+# across every page; A.2 will freeze the position and add Rules.
+NAV_ITEMS: list[dict[str, str]] = [
+    {"id": "findings",  "label": "Findings", "href": "/findings"},
+    {"id": "graph",     "label": "Graph",    "href": "/graph"},
+    {"id": "insights",  "label": "Insights", "href": "/insights"},
+    {"id": "compare",   "label": "Compare",  "href": "/compare"},
+    {"id": "health",    "label": "Health",   "href": "/health"},
+]
 
 
 class AskRequest(BaseModel):
@@ -74,6 +86,19 @@ def build_app(config_path: str | None = None) -> FastAPI:
     if WEB_DIR.exists():
         app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
+    templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+    templates.env.globals["nav_items"] = NAV_ITEMS
+
+    def _render(request: Request, name: str, *, active_nav: str,
+                ctx: dict[str, Any] | None = None):
+        page = TEMPLATES_DIR / name
+        if not page.exists():
+            raise HTTPException(500, f"templates/{name} missing")
+        return templates.TemplateResponse(
+            request, name,
+            {"active_nav": active_nav, **(ctx or {})},
+        )
+
     # M5: `/` is the findings page; the graph (original index) moves to
     # `/graph`. The redirect uses a 302 so older bookmarks still resolve
     # to the new landing.
@@ -84,78 +109,51 @@ def build_app(config_path: str | None = None) -> FastAPI:
         return RedirectResponse(url="/findings", status_code=302)
 
     @app.get("/findings")
-    def findings_page() -> FileResponse:
-        page = WEB_DIR / "findings.html"
-        if not page.exists():
-            raise HTTPException(500, "web/findings.html missing")
-        return FileResponse(page)
+    def findings_page(request: Request):
+        return _render(request, "findings.html", active_nav="findings")
 
     @app.get("/graph")
-    def graph_page() -> FileResponse:
-        page = WEB_DIR / "index.html"
-        if not page.exists():
-            raise HTTPException(500, "web/index.html missing")
-        return FileResponse(page)
+    def graph_page(request: Request):
+        return _render(request, "index.html", active_nav="graph")
 
     @app.get("/insights")
-    def insights_page() -> FileResponse:
-        page = WEB_DIR / "insights.html"
-        if not page.exists():
-            raise HTTPException(500, "web/insights.html missing")
-        return FileResponse(page)
+    def insights_page(request: Request):
+        return _render(request, "insights.html", active_nav="insights")
 
     @app.get("/compare")
-    def compare_page() -> FileResponse:
-        page = WEB_DIR / "compare.html"
-        if not page.exists():
-            raise HTTPException(500, "web/compare.html missing")
-        return FileResponse(page)
+    def compare_page(request: Request):
+        return _render(request, "compare.html", active_nav="compare")
 
     @app.get("/health")
-    def health_page() -> FileResponse:
-        page = WEB_DIR / "health.html"
-        if not page.exists():
-            raise HTTPException(500, "web/health.html missing")
-        return FileResponse(page)
+    def health_page(request: Request):
+        return _render(request, "health.html", active_nav="health")
 
     @app.get("/artifact/ip/{value}")
-    def artifact_ip_page(value: str) -> FileResponse:
+    def artifact_ip_page(request: Request, value: str):
         # Page is the same for every IP; the JS fetches the API.
         # Path-parametric so the URL itself encodes the artifact and
         # browser back/forward / linking work.
-        page = WEB_DIR / "artifact_ip.html"
-        if not page.exists():
-            raise HTTPException(500, "web/artifact_ip.html missing")
-        return FileResponse(page)
+        return _render(request, "artifact_ip.html", active_nav="")
 
     @app.get("/artifact/url")
-    def artifact_url_page() -> FileResponse:
+    def artifact_url_page(request: Request):
         # URL artifact pane (M4). The URL value rides as a `?value=`
         # query-string parameter rather than a path parameter — raw
         # URLs contain `://`, `/`, `?`, `#` which collide with path
         # semantics and get mangled by browser path normalisation.
         # The JS reads from `window.location.search`.
-        page = WEB_DIR / "artifact_url.html"
-        if not page.exists():
-            raise HTTPException(500, "web/artifact_url.html missing")
-        return FileResponse(page)
+        return _render(request, "artifact_url.html", active_nav="")
 
     @app.get("/artifact/hash")
-    def artifact_hash_page() -> FileResponse:
+    def artifact_hash_page(request: Request):
         # File-hash artifact pane (#2). Hash rides as `?value=<sha>` for
         # consistency with the URL pane.
-        page = WEB_DIR / "artifact_hash.html"
-        if not page.exists():
-            raise HTTPException(500, "web/artifact_hash.html missing")
-        return FileResponse(page)
+        return _render(request, "artifact_hash.html", active_nav="")
 
     @app.get("/artifact-rules")
-    def artifact_rules_page() -> FileResponse:
+    def artifact_rules_page(request: Request):
         # Analyst-authored artifact-rule management page (ROADMAP #5).
-        page = WEB_DIR / "artifact_rules.html"
-        if not page.exists():
-            raise HTTPException(500, "web/artifact_rules.html missing")
-        return FileResponse(page)
+        return _render(request, "artifact_rules.html", active_nav="")
 
     # ------------------------------------------------------------------
     # API
