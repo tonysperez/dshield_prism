@@ -33,14 +33,12 @@
       </label>
     </div>
 {% endblock %}
-{% block topbar_spacer %}{% endblock %}
+{% block topbar_breadcrumb %}
+    <div id="breadcrumb" class="breadcrumb-bar"></div>
+{% endblock %}
 {% block topbar_meta %}
     <div id="loading" class="loading hidden" aria-live="polite"></div>
     <div id="health" class="health">…</div>
-{% endblock %}
-{% block topbar_extra %}
-    <!-- Breadcrumb lives in the topbar as a second wrapping row -->
-    <div id="breadcrumb" class="breadcrumb-bar"></div>
 {% endblock %}
 {% block content %}
   <main>

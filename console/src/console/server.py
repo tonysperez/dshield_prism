@@ -35,13 +35,16 @@ log = logging.getLogger(__name__)
 WEB_DIR = Path(__file__).parent / "web"
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
-# Shared navigation. Order is the single source of truth for nav rendering
-# across every page; A.2 will freeze the position and add Rules.
+# Shared navigation. Order is the single source of truth; every page
+# renders the same items in the same positions and the active page is
+# marked with aria-current rather than dropped, so neighbouring links
+# don't shift as the analyst tabs around.
 NAV_ITEMS: list[dict[str, str]] = [
     {"id": "findings",  "label": "Findings", "href": "/findings"},
     {"id": "graph",     "label": "Graph",    "href": "/graph"},
     {"id": "insights",  "label": "Insights", "href": "/insights"},
     {"id": "compare",   "label": "Compare",  "href": "/compare"},
+    {"id": "rules",     "label": "Rules",    "href": "/artifact-rules"},
     {"id": "health",    "label": "Health",   "href": "/health"},
 ]
 
@@ -153,7 +156,7 @@ def build_app(config_path: str | None = None) -> FastAPI:
     @app.get("/artifact-rules")
     def artifact_rules_page(request: Request):
         # Analyst-authored artifact-rule management page (ROADMAP #5).
-        return _render(request, "artifact_rules.html", active_nav="")
+        return _render(request, "artifact_rules.html", active_nav="rules")
 
     # ------------------------------------------------------------------
     # API

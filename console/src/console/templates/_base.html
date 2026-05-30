@@ -8,18 +8,26 @@
 </head>
 <body>
   <header class="topbar">
-    {% block brand %}
-    <a href="/findings" class="brand" style="text-decoration:none;color:inherit;">DShield Console</a>
-    {% endblock %}
-    {%- for item in nav_items if item.id != active_nav %}
-    <a href="{{ item.href }}" class="nav-link">{{ item.label }}</a>
-    {%- endfor %}
-    {% block topbar_controls %}{% endblock %}
-    {% block topbar_spacer %}<div style="flex:1"></div>{% endblock %}
-    {% block topbar_meta %}
-    <div id="loading" class="loading hidden" aria-live="polite"></div>
-    {% endblock %}
-    {% block topbar_extra %}{% endblock %}
+    <div class="topbar-row topbar-row-primary">
+      {% block brand %}
+      <a href="/findings" class="brand" style="text-decoration:none;color:inherit;">DShield Console</a>
+      {% endblock %}
+      {%- for item in nav_items %}
+        {%- if item.id == active_nav %}
+      <span class="nav-link nav-link-active" aria-current="page">{{ item.label }}</span>
+        {%- else %}
+      <a href="{{ item.href }}" class="nav-link">{{ item.label }}</a>
+        {%- endif %}
+      {%- endfor %}
+      {% block topbar_controls %}{% endblock %}
+    </div>
+    <div class="topbar-row topbar-row-secondary">
+      {% block topbar_breadcrumb %}{% endblock %}
+      <div class="topbar-row-spacer"></div>
+      {% block topbar_meta %}
+      <div id="loading" class="loading hidden" aria-live="polite"></div>
+      {% endblock %}
+    </div>
   </header>
 
   {% block content %}{% endblock %}

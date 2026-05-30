@@ -36,13 +36,19 @@ body {
 
 .topbar {
   display: flex;
-  flex-wrap: wrap;       /* breadcrumb row wraps below controls */
-  align-items: center;
-  gap: 8px 16px;
-  padding: 8px 12px 8px;  /* breadcrumb row adds more padding when present */
+  flex-direction: column;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
+.topbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+.topbar-row-primary   { padding: 8px 12px; }
+.topbar-row-secondary { padding: 4px 12px 6px; min-height: 22px; }
+.topbar-row-spacer { flex: 1; }
 .brand { font-weight: 600; letter-spacing: 0.5px; color: var(--accent); }
 .nav-link {
   font-size: 11px; color: var(--accent); font-weight: 600;
@@ -51,6 +57,12 @@ body {
   text-decoration: none; white-space: nowrap;
 }
 .nav-link:hover { background: #1a2d4e; }
+/* Active page stays in the nav at the same position, just rendered as
+   non-clickable so neighbouring links don't shift between pages. */
+.nav-link-active {
+  color: #c8d0e2; background: #1a2d4e;
+  border-color: #4cc1ff80; cursor: default;
+}
 
 .search { display: flex; flex: 1; gap: 6px; }
 .search input {
@@ -168,20 +180,17 @@ main {
   background:
     linear-gradient(180deg, #11151e 0%, #0c1018 100%);
 }
-/* Breadcrumb is now a topbar child — spans the full width as a second row.
-   Hidden when empty (JS adds steps dynamically). */
+/* Breadcrumb lives in the topbar's secondary row alongside loading +
+   freshness indicators. Hidden when empty (JS adds steps dynamically). */
 .breadcrumb-bar {
-  flex-basis: 100%;          /* forces a new flex row */
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0;
-  padding: 3px 0 6px;        /* vertical rhythm within the topbar */
   font-size: 11px;
   color: var(--muted);
   min-height: 0;
 }
-.breadcrumb-bar:empty { padding: 0; }  /* collapse when no history */
 .breadcrumb-bar .step {
   color: var(--fg);
   cursor: pointer;
