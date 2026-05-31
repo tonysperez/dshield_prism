@@ -1,0 +1,846 @@
+# Eval-set labels. One block per session_id. Edit by hand and
+# flip `annotated: false -> true` when you've labeled the block.
+# The renderer preserves your edits and backfills any new fields.
+# Validate every ~25 entries with:
+#   console/.venv/bin/python scripts/validate_eval_labels.py \
+#     --labels eval/labels-v1.yaml \
+#     --unlabeled eval/sessions-v1.unlabeled.jsonl
+# Rubric: ./RUBRIC.md
+
+214ece245210:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: mdrfckr key drop with chattr -ia + chmod go= protection, padded with recon
+    (cpuinfo, free, w, top, uname). Persistence is the load-bearing behavior.
+
+5b000089545e:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+90f844d14fac:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+3b2e5055bc42:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+ffa8c067343a:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+cf8d4dfab073:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+7ce3ab084795:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: Single echo|sh wrapper that fans out into a comprehensive sysinfo dump (HOSTNAME/UNAME/PS/NETSTAT/CPU/MEM/CONTAINER/etc).
+    Behaviorally multi-command recon, not a thin probe.
+
+86f07dabfda3:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: scp upload of binary HWdyfHnn — payload delivery half of a fetch+execute
+    pair (companion session 3cf1cbe56aaa runs it).
+
+3cf1cbe56aaa:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: Executes pre-staged HWdyfHnn binary (delivered via scp in 86f07dabfda3).
+    Same playbook as a wget+exec loader, just split across two sessions.
+
+79f205fabb8b:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: Distro identification via /etc/os-release + lsb_release. Two recon commands,
+    no payload.
+
+92bcdfacfa17:
+  annotated: true
+  is_real: false
+  playbook_label: null
+  expected_findings: []
+  notes: 'HTTP request ingested as SSH session — login row shows GET / HTTP/1.1 /
+    Host / User-Agent, command stream is Connection: close. Protocol leakage, not
+    attacker behavior.'
+
+54af761ca552:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+dc24ceb5d684:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: wget Tcp1000gbps.sh + chmod + sh — single-line DDoS tool stager. Fetch+execute
+    payload delivery.
+
+0e53ee12389c:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+67e4d3d56677:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Writes a 4-byte sentinel to /tmp/.config — capability probe testing write
+    access.
+
+b91862395275:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Reads /tmp/.config sentinel — paired follow-up to a prior write probe.
+
+5f9aeb9bcde7:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Lone /ip cloud print — Mikrotik-only probe, no follow-up.
+
+50b5e8a37e12:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: Cascading wget/curl/tftp/ftpget shell-fetch loader targeting /tmp, /var/run,
+    /mnt, /root, /. Classic Mirai-style multi-transport dropper.
+
+c18df23bc9ef:
+  annotated: true
+  is_real: false
+  playbook_label: null
+  expected_findings: []
+  notes: HTTP zgrab scan ingested as SSH session — Login row + command stream are
+    HTTP headers.
+
+3ce213ccca50:
+  annotated: true
+  is_real: false
+  playbook_label: null
+  expected_findings: []
+  notes: HTTP zgrab scan ingested as SSH session — Login row + command stream are
+    HTTP headers.
+
+8e7e561fe3d2:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: 'Mirai multi-arch loader: wget/curl/busybox-wget the proto.{arm7,arm6,arm5,mips,mpsl,x86}
+    payloads from 202.71.14.246 in a single command. Fetch+execute across architectures.'
+
+b172dbe78df5:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: wget+curl the meow/meowarm64 binaries from 35.231.74.47 + chpasswd + useradd
+    admin1/user1 backdoor accounts. Fetch+execute with companion backdoor user creation.
+
+fa77b636c21c:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: Same meow + useradd admin1 loader as b172dbe78df5, wrapped in sudo -S fallback.
+    Same campaign, different staging IP.
+
+3a6984315259:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+0cd59eb2884c:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+18ef9888e797:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+af1ed0f34c26:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: base64 decode capability probe — tests if 'echo dGVzdA== | base64 -d' produces
+    'test'.
+
+d27dd999d6db:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: base64 decode capability probe.
+
+f9be455a0aa5:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: base64 decode capability probe.
+
+7fa7d5e4dfb7:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: base64 decode capability probe.
+
+da2b437c0405:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+515b0890346f:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+cb49184492d3:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+ce8eb7f8c403:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+0850700df1c2:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+5452a0bcfeaf:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+66fc5dfa3b95:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+868dde54feed:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+10f4c2a31687:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: mdrfckr key drop with chattr -ia + chmod go= protection. Same playbook as
+    214ece245210 without the recon padding.
+
+5c0e931a97ff:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: Truncated session — chattr -ia attempt then cpuinfo probe, no key write captured.
+    Initial chattr move matches the mdrfckr persistence stager.
+
+90966e4c8caf:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+
+8f348c23ec8a:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+
+96a06d33ee19:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+
+627507a0a5f1:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: mdrfckr key drop followed by passwd-change attempt — both are persistence
+    moves, key drop is the load-bearing behavior.
+
+9e193fea9adb:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+
+9be286e22ed6:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+
+6cd0e2f440a2:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+
+2f71fc930e22:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+
+628cd6cffa92:
+  annotated: true
+  is_real: true
+  playbook_label: shell_wrapper_only
+  expected_findings: []
+  notes: echo "bash --help; ls /proc/1/; cat /proc/1/mounts; cat /proc/cpuinfo; echo
+    __<nonce>" | sh — single wrapped capability+container probe, no follow-up.
+
+ddc47bc7063b:
+  annotated: true
+  is_real: true
+  playbook_label: shell_wrapper_only
+  expected_findings: []
+  notes: ''
+
+'763274873566':
+  annotated: true
+  is_real: true
+  playbook_label: shell_wrapper_only
+  expected_findings: []
+  notes: ''
+
+ce20cabca044:
+  annotated: true
+  is_real: true
+  playbook_label: shell_wrapper_only
+  expected_findings: []
+  notes: ''
+
+7a1ccb928832:
+  annotated: true
+  is_real: true
+  playbook_label: shell_wrapper_only
+  expected_findings: []
+  notes: ''
+
+cd2d53b8a23f:
+  annotated: true
+  is_real: true
+  playbook_label: shell_wrapper_only
+  expected_findings: []
+  notes: echo "cat /proc/1/mounts && ls /proc/1/; curl2; ps aux; ps" | sh — sister
+    wrapper variant to the bash --help probe.
+
+865df5165d6e:
+  annotated: true
+  is_real: true
+  playbook_label: shell_wrapper_only
+  expected_findings: []
+  notes: ''
+
+96733fe731dc:
+  annotated: true
+  is_real: true
+  playbook_label: shell_wrapper_only
+  expected_findings: []
+  notes: ''
+
+67ae6770ea19:
+  annotated: true
+  is_real: true
+  playbook_label: shell_wrapper_only
+  expected_findings: []
+  notes: ''
+
+7adea332235d:
+  annotated: true
+  is_real: true
+  playbook_label: shell_wrapper_only
+  expected_findings: []
+  notes: ''
+
+06a431513bf9:
+  annotated: true
+  is_real: true
+  playbook_label: mirai_busybox_probe
+  expected_findings: []
+  notes: 'Minting new label: classic Mirai loader recon — sh/shell/enable/system/ping
+    plus /bin/busybox cat /proc/self/exe to fingerprint the binary. Not a true single
+    command nor a full recon dump; it is the distinctive pre-payload behavior of Mirai-family
+    droppers.'
+
+6c40791514b8:
+  annotated: true
+  is_real: true
+  playbook_label: mirai_busybox_probe
+  expected_findings: []
+  notes: ''
+
+4fac94cbdf8b:
+  annotated: true
+  is_real: true
+  playbook_label: mirai_busybox_probe
+  expected_findings: []
+  notes: ''
+
+f465fc48befd:
+  annotated: true
+  is_real: true
+  playbook_label: mirai_busybox_probe
+  expected_findings: []
+  notes: 'Mirai busybox probe variant: enable/system/shell, then cat /proc/mounts
+    and /bin/busybox HLTEZ token + .s sentinel write/read in /dev/shm. Same behavioral
+    cluster.'
+
+eb07dcf04cdc:
+  annotated: true
+  is_real: true
+  playbook_label: mirai_busybox_probe
+  expected_findings: []
+  notes: ''
+
+25b2684e1931:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: Mikrotik / Telegram-desktop / SMS-spool recon — /ip cloud print, ifconfig,
+    uname, cpuinfo, ps grep miner, ls TelegramDesktop/tdata + /dev/ttyGSM*/qmuxd.
+    Multi-command device-fingerprint recon.
+
+b2bc6e21b94a:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+
+52f7f3389ce0:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+
+f794480d4b57:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+
+72f6e1e1c97d:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+
+28c779e9b7a2:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: nohup $SHELL -c curl/wget/dev-tcp triple-fallback fetch of http://x/linux
+    + chmod + execute with encrypted argument; writes /tmp/.opass. Same campaign as
+    36b9c216a726/3cee1bd188a7/4cb704be48af/642cd958c844.
+
+642cd958c844:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: ''
+
+36b9c216a726:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: ''
+
+3cee1bd188a7:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: ''
+
+4cb704be48af:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: ''
+
+77cfdc29a4fe:
+  annotated: true
+  is_real: false
+  playbook_label: null
+  expected_findings: []
+  notes: Redis RESP protocol leaked into SSH — Login row shows user=*1 / pass=$4 and
+    the command stream is the literal 'PING' word from the RESP frame. Not attacker
+    SSH activity.
+
+d174bb8af9b8:
+  annotated: true
+  is_real: false
+  playbook_label: null
+  expected_findings: []
+  notes: Redis RESP protocol leakage (user=*1, pass=$4, command=PING). Not attacker
+    SSH activity.
+
+8fa89defe1a9:
+  annotated: true
+  is_real: false
+  playbook_label: null
+  expected_findings: []
+  notes: Redis RESP protocol leakage (user=*1, pass=$4, command=PING). Not attacker
+    SSH activity.
+
+71d55e6743a6:
+  annotated: true
+  is_real: false
+  playbook_label: null
+  expected_findings: []
+  notes: Redis RESP protocol leakage (user=*1, pass=$4, command=PING). Not attacker
+    SSH activity.
+
+b98152c8853b:
+  annotated: true
+  is_real: false
+  playbook_label: null
+  expected_findings: []
+  notes: Redis RESP protocol leakage (user=*1, pass=$4, command=PING). Not attacker
+    SSH activity.
+
+5c8fcca79d95:
+  annotated: true
+  is_real: false
+  playbook_label: null
+  expected_findings: []
+  notes: 'HTTP request ingested as SSH session — Login row is HTTP headers, command
+    stream is Accept-Encoding: gzip. Protocol leakage.'
+
+b1f06c96abcc:
+  annotated: true
+  is_real: false
+  playbook_label: null
+  expected_findings: []
+  notes: 'HTTP request ingested as SSH session — Login row is HTTP headers, command
+    stream is Accept-Encoding: gzip. Protocol leakage.'
+
+f3b740099dc1:
+  annotated: true
+  is_real: false
+  playbook_label: null
+  expected_findings: []
+  notes: 'HTTP request ingested as SSH session — Login row is HTTP headers, command
+    stream is Accept-Encoding: gzip. Protocol leakage.'
+
+2d5210187e65:
+  annotated: true
+  is_real: false
+  playbook_label: null
+  expected_findings: []
+  notes: 'HTTP request ingested as SSH session — Login row is HTTP headers, command
+    stream is Accept-Encoding: gzip. Protocol leakage.'
+
+ec61152d5b66:
+  annotated: true
+  is_real: false
+  playbook_label: null
+  expected_findings: []
+  notes: 'HTTP request ingested as SSH session — Login row is HTTP headers, command
+    stream is Accept-Encoding: gzip. Protocol leakage.'
+
+b01794cda610:
+  annotated: true
+  is_real: true
+  playbook_label: mirai_busybox_probe
+  expected_findings: []
+  notes: 'Mirai busybox probe variant: echo SHELL_TEST, /bin/busybox TEST, cat /proc,
+    ./ — sentinel echo + busybox argument probe. Same pre-payload fingerprinting cluster.'
+
+69393f7946a4:
+  annotated: true
+  is_real: true
+  playbook_label: mirai_busybox_probe
+  expected_findings: []
+  notes: ''
+
+e749d0d7ed3c:
+  annotated: true
+  is_real: true
+  playbook_label: mirai_busybox_probe
+  expected_findings: []
+  notes: ''
+
+7e1d61b4dd9b:
+  annotated: true
+  is_real: true
+  playbook_label: mirai_busybox_probe
+  expected_findings: []
+  notes: ''
+
+263867ffff29:
+  annotated: true
+  is_real: true
+  playbook_label: mirai_busybox_probe
+  expected_findings: []
+  notes: ''
+
+359e46d52ef7:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: Multi-stage stager (clean.sh + setup.sh) plus chattr -ia/+ai immutable lock
+    around an rsa-key-20230629 authorized_keys overwrite. Drops a redtail/coinminer
+    payload via the stager. Persistence is the load-bearing behavior.
+
+0d422ddeb7c4:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: Same clean.sh/setup.sh stager + chattr +ai immutable lock + rsa-key-20230629
+    drop as 359e46d52ef7.
+
+7d50ba335c32:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+
+30490d6d9b63:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+
+e8a14ab904fb:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+
+58da06e05d93:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+672e02162f8a:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+e11433b02401:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+df93c2399503:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+1b07e8ea17f1:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+03865c09240d:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+63a4bfc75762:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+cc96363301e4:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+6c0afb878260:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+7c6d0cd5efdd:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: ''
+
+f308bf5f11c0:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+
+e332441ba3ff:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+
+5ce34e23e1d4:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+
+b430cdfd1a91:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+
+9c6773e9071e:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+
+2bcc420dce4a:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: mdrfckr key drop with recon padding (cpuinfo, free, w, top, uname). Persistence
+    is the load-bearing behavior.
+
+7ce296c57fb7:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+
+4f29abcc1f04:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+
+25f9cae94aa3:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+
+aeaf79917916:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+

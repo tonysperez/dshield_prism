@@ -1,0 +1,36 @@
+# ce20cabca044
+
+- **Source IP:** `45.84.107.128` — Sweden — AS214503 QuxLabs AB
+- **SSH client banner:** `SSH-2.0-Go`
+- **HASSH:** `087ab61de4f8afa9ac8f30c1b7c418eb`
+- **Window:** `2026-05-10T21:22:02.138000+00:00` → `2026-05-10T21:22:10.070000+00:00`  (~7.9s)
+
+## Rollup
+
+- **commands:** 2 total (2 unique) · entropy 1.00
+- **novelty_score:** mean 0.069 · max 0.070  *(corpus-relative; limited use disconnected from source corpus)*
+- **intel:** *(no source_ip_intel block on rollup)*
+
+## Login attempts
+
+1 successful · 0 failed
+
+| outcome | user | password |
+|---|---|---|
+| success | `orangepi` | `orangepi` |
+
+## Command stream
+
+| # | offset | action | command_line |
+|---:|---|---|---|
+| 1 | `+00:02.88` | `input` | `echo "bash --help; ls /proc/1/; cat /proc/1/mounts; cat /proc/cpuinfo; echo __1778448124882357587" \| sh` |
+| 2 | `+00:02.88` | `input` | `bash --help; ls /proc/1/; cat /proc/1/mounts; cat /proc/cpuinfo; echo __1778448124882357587 ` |
+| 3 | `+00:02.88` | `input` | `` |
+
+## Artifacts (3)
+
+| kind | value |
+|---|---|
+| `file` | `/proc/1/` |
+| `file` | `/proc/1/mounts` |
+| `file` | `/proc/cpuinfo` |

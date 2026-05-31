@@ -138,6 +138,78 @@ def _has_commands(rollup: dict) -> bool:
     return (enr.get("command_count") or 0) > 0
 
 
+# Top-level keys carrying sensor / Filebeat / Elastic-agent fingerprints
+# that must NEVER reach the public eval set. Stripped wholesale from every
+# ES _source dict before the record is written. Notably absent: `source`
+# (the attacker — the data point we want), `cowrie`, `process`, `user`,
+# `user_agent`, `threat`, `dshield`, `observer`, `event`, `@timestamp`,
+# `file`, `network`, `destination` (port kept; see below).
+_REDACT_TOP_LEVEL_KEYS = frozenset({
+    "agent",          # Filebeat agent ID / hostname
+    "container",      # ingest container hint
+    "data_stream",    # ingest pipeline name
+    "ecs",            # ECS version (harmless but unnecessary)
+    "elastic_agent",  # agent UUID
+    "host",           # SENSOR host: name, id, MAC, internal IPs
+    "input",          # filestream input metadata
+    "log",            # SENSOR filesystem path / inode / fingerprint
+    "metadata",       # ingest pipeline metadata, beats host IP
+    "related",        # related.ip duplicates source.ip but includes dst
+    "tags",           # ingest tags
+    "type",           # input type ("redis-input")
+    "@version",       # logstash artifact
+    "message",        # often quotes dst_ip inline (e.g. "New connection: x → dst")
+})
+
+
+def _redact_event(ev: dict) -> dict:
+    """Strip sensor / Filebeat / Elastic-agent metadata from an ES
+    _source dict. Operates in place and returns the same dict.
+
+    Specifically removes:
+      - Every top-level key in ``_REDACT_TOP_LEVEL_KEYS`` (sensor host
+        identity, ingest pipeline metadata, etc.).
+      - ``destination.ip`` (the sensor's internal honeypot bind IP).
+        ``destination.port`` is kept — 2222 is the standard cowrie
+        listen port and not sensitive.
+      - ``event.original`` (the duplicated raw cowrie JSON; it inlines
+        ``dst_ip`` again and adds nothing the structured fields don't
+        already carry).
+    """
+    if not isinstance(ev, dict):
+        return ev
+    for k in list(ev):
+        if k in _REDACT_TOP_LEVEL_KEYS:
+            del ev[k]
+    dst = ev.get("destination")
+    if isinstance(dst, dict):
+        dst.pop("ip", None)
+    # observer.ip is the SENSOR's listen IP — strip. observer.type
+    # (honeypot) and observer.vendor (Cowrie) are kept as ECS context.
+    obs = ev.get("observer")
+    if isinstance(obs, dict):
+        obs.pop("ip", None)
+    event = ev.get("event")
+    if isinstance(event, dict):
+        event.pop("original", None)
+    return ev
+
+
+def _redact_record(rec: dict) -> dict:
+    """Redact every ES _source carried by an eval-set record: the
+    rollup_doc, every raw event, and every command enrichment. The
+    intel docs (``hash_intel`` / ``url_intel``) are pure CTI-feed
+    output written by `intel refresh` directly (not via Filebeat) and
+    don't carry sensor metadata, so they pass through unmodified."""
+    if isinstance(rec.get("rollup_doc"), dict):
+        _redact_event(rec["rollup_doc"])
+    for ev in rec.get("raw_events") or []:
+        _redact_event(ev)
+    for ev in rec.get("command_enrichments") or []:
+        _redact_event(ev)
+    return rec
+
+
 def _load_playbook_sizes(es, index: str) -> dict[str, int]:
     """Return {playbook_id: rollup-session count} via a terms agg.
 
@@ -400,7 +472,7 @@ def _build_record(es, *, raw_index: str, cmd_index: str,
     )
 
     band, intent, intel = _stratum_key(rollup, playbook_sizes)
-    return {
+    rec = {
         "session_id":          session_id,
         "stratum":             {"size_band": band, "intent": intent, "intel": intel},
         "rollup_doc":          rollup,
@@ -409,6 +481,9 @@ def _build_record(es, *, raw_index: str, cmd_index: str,
         "hash_intel":          hash_intel,
         "url_intel":           url_intel,
     }
+    # Strip sensor / Filebeat / Elastic-agent metadata. The eval set
+    # ships publicly; this is the last gate before write.
+    return _redact_record(rec)
 
 
 def main() -> int:
