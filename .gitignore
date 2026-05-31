@@ -32,4 +32,4 @@ docs
 # needs all three pinned at HEAD to grade against a stable target
 # rather than the live corpus that keeps rotating. Per-run eval
 # dumps under eval/results/ are still derivative — not tracked.
-eval/results/
+eval/results/*.json
