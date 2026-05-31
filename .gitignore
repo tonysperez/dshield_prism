@@ -21,5 +21,15 @@ dist/
 .claude
 CLAUDE.md
 
+scripts/smoke
 docs
 .ruff_cache
+
+# Eval-set scaffolding (brutal-review phase 1). The unlabeled JSONL is
+# heavy (rollup + embeddings + raw events per session) and trivially
+# regeneratable from the live corpus + seed, so it stays out of git.
+# The rendered per-session markdown DOES ship — the labels in
+# `eval/labels-v1.yaml` are anchored to the analyst-visible view, so
+# pinning that view at HEAD is the audit trail for the eval set.
+eval/sessions-v1.unlabeled.jsonl
+eval/results/
