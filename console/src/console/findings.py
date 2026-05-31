@@ -15,6 +15,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
+from enrich.findings.evidence_quality import format_evidence_quality
+
 log = logging.getLogger(__name__)
 
 
@@ -138,7 +140,26 @@ def list_findings(
         rows.append(src)
     total = hits.get("total", {}).get("value", 0) if isinstance(hits.get("total"), dict) else 0
     _attach_inbox_snapshots(es, cfg, rows)
+    _attach_evidence_quality(rows)
     return {"total": total, "rows": rows, "page": {"from": frm, "size": size}}
+
+
+def _attach_evidence_quality(rows: list[dict]) -> None:
+    """Stamp each row with `evidence_quality` — a one-line verdict the
+    inbox + graph orientation card + writeup all consume. Pure-function
+    helper; failures stay silent and leave the field absent rather than
+    fail the whole list.
+    """
+    for r in rows:
+        try:
+            # `_attach_inbox_snapshots` may have stamped lifecycle hints
+            # under `_lifecycle_hint` (see helper below); pass them through.
+            lc = r.pop("_lifecycle_hint", None)
+            verdict = format_evidence_quality(r, lc)
+            if verdict:
+                r["evidence_quality"] = verdict
+        except Exception:
+            continue
 
 
 def _attach_inbox_snapshots(
@@ -189,7 +210,7 @@ def _attach_inbox_snapshots(
                 continue
             resp = es.mget(
                 index=idx, body={"ids": list(by_value.keys())},
-                _source=["snapshots"],
+                _source=["snapshots", "runs_observed", "silent_runs_current"],
             )
         except Exception as exc:
             log.warning("findings: mget snapshots %s failed: %s", idx, exc)
@@ -197,15 +218,23 @@ def _attach_inbox_snapshots(
         for doc in resp.get("docs", []):
             if not doc.get("found"):
                 continue
-            snaps = ((doc.get("_source") or {}).get("snapshots") or [])
+            src = doc.get("_source") or {}
+            snaps = src.get("snapshots") or []
             # Only the session_count rides — the sparkline is the only
             # consumer; everything else stays out of the inbox payload.
             trimmed = [
                 {"session_count": s.get("session_count")}
                 for s in snaps[-max_snaps:]
             ]
+            lc_hint = {
+                "runs_observed":       src.get("runs_observed"),
+                "silent_runs_current": src.get("silent_runs_current"),
+            }
             for row in by_value.get(doc["_id"], []):
                 row["lifecycle_snapshots"] = trimmed
+                # Consumed + popped by _attach_evidence_quality; never
+                # serialized to the client.
+                row["_lifecycle_hint"] = lc_hint
 
 
 def since_summary(es, cfg, *, ts: str) -> dict[str, int]:
@@ -570,6 +599,14 @@ def get_finding_detail(es, cfg, finding_id: str) -> Optional[dict[str, Any]]:
             finding_id, a_kind, a_value, exc,
         )
         out["detail_error"] = str(exc)
+    # Stamp the same evidence-quality verdict the inbox row carries — the
+    # drawer's next-action banner consumes it. Best-effort.
+    try:
+        verdict = format_evidence_quality(out, out.get("lifecycle"))
+        if verdict:
+            out["evidence_quality"] = verdict
+    except Exception:
+        pass
     return out
 
 

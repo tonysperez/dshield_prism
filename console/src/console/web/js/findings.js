@@ -108,10 +108,22 @@ const STREAM_TOOLTIP = {
   coverage:  "Confirm — confirm a row to start tracking drift on the artifact",
 };
 
+// Urgency-band priority for the default "action urgency" sort. Lower
+// numbers float to the top of the inbox. Rows with no action chip
+// (already-decided or kind not covered by ACTION_TEMPLATES) land last.
+// Tie-broken by last_seen desc inside renderInbox().
+const URGENCY_PRIORITY = {
+  investigate:  0,
+  auto_confirm: 1,
+  confirm:      2,
+  ack:          3,
+  reject:       4,
+};
+
 const state = {
   status: "new",     // single status (chip click), or "all"
   stream: "",        // "" = all categories; or "drift" | "discovery" | "coverage"
-  sort: "last_seen", // reverse-chronological by default — score is uncalibrated
+  sort: "urgency",   // action verb first, recency tiebreak — score stays uncalibrated
   facets: {},        // {dim: bucket_key} — one active bucket per dim
   selectedIds: new Set(), // multi-select for bulk status (ROADMAP #17.4)
   lastRows: [],           // most recent render, indexed by selection ops
@@ -135,7 +147,7 @@ function pushQuery() {
   const q = new URLSearchParams();
   q.set("status", state.status);
   if (state.stream) q.set("stream", state.stream);
-  if (state.sort !== "last_seen") q.set("sort", state.sort);
+  if (state.sort !== "urgency") q.set("sort", state.sort);
   if (state.since) q.set("since", state.since);
   for (const dim of FACET_DIMS) {
     if (state.facets[dim]) q.set(dim, state.facets[dim]);
@@ -177,15 +189,8 @@ function fmtScore(s) {
 
 function fmtTs(s) { return s ? s.slice(0, 10) : "—"; }
 
-function kindBadge(kind) {
-  let cls = "fnd-kind-disc";
-  if (kind === "playbook") cls = "fnd-kind-playbook";
-  else if (kind === "campaign") cls = "fnd-kind-campaign";
-  else if (kind && kind.endsWith("_drift")) cls = "fnd-kind-drift";
-  else if (kind === "campaign_growth" || kind === "playbook_resurgence") cls = "fnd-kind-drift";
-  return el("span", {class: `fnd-kind-badge ${cls}`}, [kind || "?"]);
-}
-
+// Used by the drawer title; the inbox row builds its own stacked artifact
+// cell via artifactCell() below.
 function artifactLabel(r) {
   const a = r.artifact || {};
   const ev = r.evidence || {};
@@ -195,14 +200,121 @@ function artifactLabel(r) {
   return a.value;
 }
 
-function sizeCell(r) {
-  const ev = r.evidence || {};
+// Three-line stack: bold title, kind tag, truncated narrative. Replaces
+// the legacy leading kind badge + separate narrative column.
+function artifactCell(r) {
+  const td = el("td", {class: "artifact"});
+  const a = r.artifact || {};
+  const title = el("span", {class: "artifact-title"}, [artifactLabel(r)]);
+  td.appendChild(title);
+  const tag = kindTagLine(r);
+  if (tag) td.appendChild(tag);
+  const narr = (r.narrative || "").trim();
+  if (narr) {
+    const line = el("span", {class: "artifact-narrative"}, [narr]);
+    if (r.narrative_source === "llm") {
+      line.appendChild(el("span", {class: "artifact-narrative-llm"}, ["LLM"]));
+    }
+    td.appendChild(line);
+    td.setAttribute("data-tooltip", narr);
+  }
+  return td;
+}
+
+// "playbook · drift" / "campaign · confirm" / etc. — small muted line
+// that replaces the leading kind badge. Stream label uses the same
+// vocabulary the facet rail exposes (Changed / New / Confirm).
+function kindTagLine(r) {
+  const a = r.artifact || {};
   const parts = [];
-  const sess = ev.session_count ?? ev.member_sessions;
-  const ips = ev.ip_count ?? ev.member_ips;
-  if (sess != null) parts.push(`${sess} sess`);
-  if (ips != null) parts.push(`${ips} IPs`);
-  return parts.length ? parts.join(" · ") : "—";
+  if (a.kind) parts.push(a.kind);
+  const stream = streamForKind(r.kind);
+  const streamLbl = STREAM_LABEL[stream];
+  if (streamLbl) parts.push(streamLbl.toLowerCase());
+  if (!parts.length) return null;
+  const sep = el("span", {class: "kind-sep"}, ["·"]);
+  const span = el("span", {class: "kind-tag"});
+  parts.forEach((p, i) => {
+    if (i) span.appendChild(sep.cloneNode(true));
+    span.appendChild(document.createTextNode(p));
+  });
+  return span;
+}
+
+// Client-side mirror of the backend's findings.stream_for_kind() so
+// the kind tag carries the analyst-vocabulary stream label without an
+// extra fetch.
+function streamForKind(kind) {
+  if (!kind) return "";
+  if (kind === "playbook" || kind === "campaign") return "coverage";
+  if (kind.endsWith("_drift") || kind === "campaign_growth" ||
+      kind === "playbook_resurgence") return "drift";
+  return "discovery";
+}
+
+function evidenceCell(r) {
+  const v = r.evidence_quality;
+  if (v) return el("td", {class: "evidence"}, [v]);
+  return el("td", {class: "evidence"}, [
+    el("span", {class: "evidence-empty"}, ["—"]),
+  ]);
+}
+
+// Collapses today's separate First / Last columns into one human-readable
+// span. "started 2026-05-18" rather than "2026-05-18" so the analyst can
+// read it without remembering which date is which.
+function windowCell(r) {
+  const ev = r.evidence || {};
+  const first = ev.first_seen || r.first_seen_at;
+  const last  = ev.last_seen  || r.last_seen_at;
+  const td = el("td", {class: "window"});
+  if (!first && !last) {
+    td.appendChild(el("span", {class: "window-empty"}, ["—"]));
+    return td;
+  }
+  const span = windowSpanPhrase(first, last);
+  if (span && first) {
+    td.appendChild(document.createTextNode(span + ", "));
+    td.appendChild(el("span", null, ["started " + fmtTs(first)]));
+  } else if (last) {
+    td.appendChild(document.createTextNode(fmtTs(last)));
+  } else {
+    td.appendChild(document.createTextNode(fmtTs(first)));
+  }
+  return td;
+}
+
+function windowSpanPhrase(first, last) {
+  if (!first || !last) return "";
+  const a = new Date(first);
+  const b = new Date(last);
+  const secs = (b - a) / 1000;
+  if (!isFinite(secs) || secs < 0) return "";
+  const days = secs / 86400;
+  if (days >= 1.5) return `${Math.round(days)}d`;
+  const hours = secs / 3600;
+  if (hours >= 1.0) return `${Math.round(hours)}h`;
+  return "today";
+}
+
+// Composite key for the default "action urgency" sort. Stable across
+// re-renders so resort doesn't shuffle ties.
+function urgencyKey(r) {
+  const action = nextAction(r);
+  const band = action ? (URGENCY_PRIORITY[action.verb] ?? 9) : 9;
+  // last_seen desc tiebreaker. Plain string compare works on ISO ts.
+  const ts = ((r.evidence || {}).last_seen) || r.last_seen_at || "";
+  return [band, ts];
+}
+
+function applyUrgencySort(rows) {
+  rows.sort((a, b) => {
+    const ka = urgencyKey(a);
+    const kb = urgencyKey(b);
+    if (ka[0] !== kb[0]) return ka[0] - kb[0];
+    return ka[1] < kb[1] ? 1 : (ka[1] > kb[1] ? -1 : 0);
+  });
+  return rows;
 }
 
 // ---------------------------------------------------------------------------
@@ -314,6 +426,10 @@ function renderStreamChips(counts) {
 function renderInbox(rows) {
   const body = document.getElementById("inbox-rows");
   body.innerHTML = "";
+  // Default sort is action urgency — the row's lead decision floats it
+  // to the top. The server returned them in last_seen order; we resort
+  // client-side so swapping sort modes is a no-fetch toggle.
+  if (state.sort === "urgency") rows = applyUrgencySort(rows.slice());
   if (!rows.length) {
     const scope = state.stream
       ? `${(STREAM_LABEL[state.stream] || state.stream).toLowerCase()} `
@@ -332,30 +448,28 @@ function renderInbox(rows) {
   });
   const thead = el("thead", null, [el("tr", null, [
     el("th", {class: "select"}, [headCb]),
-    el("th", null, ["Kind"]),
+    el("th", null, ["Action"]),
     el("th", null, ["Artifact"]),
-    el("th", null, ["Size"]),
+    el("th", null, ["Evidence"]),
+    el("th", null, ["Window"]),
     el("th", null, ["Trend"]),
-    el("th", null, ["Narrative"]),
-    el("th", null, ["First"]),
-    el("th", null, ["Last"]),
-    el("th", null, ["Next"]),
     el("th", null, ["Status"]),
   ])]);
   table.appendChild(thead);
   const tbody = el("tbody");
   for (const [rowIdx, r] of rows.entries()) {
     const fid = r._id || r.finding_id;
+    const action = nextAction(r);
+    const trClasses = ["fnd-row"];
+    if (action) trClasses.push("urgency-" + action.verb);
     const tr = el("tr", {
-      class: "fnd-row",
+      class: trClasses.join(" "),
       "data-fid": fid,
       onclick: (ev) => {
         // Don't open the drawer when interacting with the status select
         // or the selection checkbox.
         const t = ev.target.tagName;
         if (t === "SELECT" || t === "OPTION" || t === "INPUT") return;
-        // Click also moves keyboard focus so j/k continue from the
-        // clicked row.
         state.focusIdx = rowIdx;
         openDrawer(fid);
       },
@@ -368,12 +482,25 @@ function renderInbox(rows) {
       syncSelectionUI(rows);
     });
     tr.appendChild(el("td", {class: "select"}, [cb]));
-    tr.appendChild(el("td", null, [kindBadge(r.kind)]));
-    tr.appendChild(el("td", {class: "artifact"}, [artifactLabel(r)]));
-    tr.appendChild(el("td", {class: "size"}, [sizeCell(r)]));
-    // Trend — the same lifecycle snapshots the drawer plots, rendered
-    // small so the analyst can scan "is this still moving?" without
-    // opening every row. (#20)
+    // 1. Action — the lead column. The triage decision, always visible,
+    //    no tooltip-gated label.
+    const actCell = el("td", {class: "next-action"});
+    if (action) {
+      actCell.appendChild(el("span", {
+        class: "action-chip action-" + action.verb,
+        title: action.text,
+      }, [ACTION_VERB_LABEL[action.verb] || action.verb]));
+    } else {
+      actCell.appendChild(el("span", {class: "action-empty"}, ["—"]));
+    }
+    tr.appendChild(actCell);
+    // 2. Artifact — stacked: title, kind tag, truncated narrative.
+    tr.appendChild(artifactCell(r));
+    // 3. Evidence — one-line verdict string (item #5).
+    tr.appendChild(evidenceCell(r));
+    // 4. Window — first/last collapsed into one human-readable span.
+    tr.appendChild(windowCell(r));
+    // 5. Trend — the sparkline column survives unchanged.
     const snaps = r.lifecycle_snapshots || [];
     const trendCell = el("td", {class: "trend"});
     const spark = inlineSparkline(snaps, {w: 120, h: 18, stroke: 1.2});
@@ -390,34 +517,8 @@ function renderInbox(rows) {
       trendCell.appendChild(el("span", {class: "trend-empty"}, ["—"]));
     }
     tr.appendChild(trendCell);
-    // Score lives in the drawer only — the inbox triage decision hangs
-    // on intent/intel_verdict/recency, not a numeric facet. (#12 amended)
-    const narrText = r.narrative || "";
-    const narrCell = el("td", {class: "narrative"});
-    narrCell.appendChild(el("span", {class: "narrative-text"}, [narrText]));
-    if (narrText) narrCell.setAttribute("data-tooltip", narrText);
-    if (r.narrative_source === "llm") {
-      narrCell.appendChild(el("span", {class: "narrative-llm-chip"}, ["LLM"]));
-    }
-    tr.appendChild(narrCell);
-    const ev = r.evidence || {};
-    tr.appendChild(el("td", null, [fmtTs(ev.first_seen || r.first_seen_at)]));
-    tr.appendChild(el("td", null, [fmtTs(ev.last_seen || r.last_seen_at)]));
-    // Next-action chip — the spine. Empty cell when the finding is
-    // already confirmed/rejected or no template covers its kind.
-    const actCell = el("td", {class: "next-action"});
-    const action = nextAction(r);
-    if (action) {
-      const chip = el("span", {
-        class: "action-chip action-" + action.verb,
-        "data-tooltip": action.text,
-      }, [ACTION_VERB_LABEL[action.verb] || action.verb]);
-      actCell.appendChild(chip);
-    } else {
-      actCell.appendChild(el("span", {class: "action-empty"}, ["—"]));
-    }
-    tr.appendChild(actCell);
-    const sel = el("select", {class: "fnd-status-select", "data-fid": r._id || r.finding_id});
+    // 6. Status select.
+    const sel = el("select", {class: "fnd-status-select", "data-fid": fid});
     for (const s of STATUSES) {
       const opt = el("option", {value: s}, [s]);
       if (s === r.status) opt.setAttribute("selected", "selected");
@@ -754,7 +855,10 @@ async function fetchInbox() {
   if (state.since)  params.set("since", state.since);
   params.set("size", 500);
   params.set("from", 0);
-  params.set("sort", state.sort);
+  // "urgency" is a client-side resort over a last_seen-ordered fetch;
+  // the server doesn't know about it. Mapping it here keeps the API
+  // contract narrow.
+  params.set("sort", state.sort === "urgency" ? "last_seen" : state.sort);
   try {
     const r = await fetch("/api/findings?" + params.toString());
     if (!r.ok) {
@@ -1072,10 +1176,20 @@ function renderDrawer(data) {
   const action = nextAction(data);
   if (action) {
     const sec = el("div", {class: "drawer-section drawer-next-action"});
-    sec.appendChild(el("span", {
-      class: "action-chip action-" + action.verb,
-    }, [ACTION_VERB_LABEL[action.verb] || action.verb]));
-    sec.appendChild(el("span", {class: "action-text"}, [" " + action.text]));
+    const verbRow = el("div", {class: "drawer-next-verb-row"}, [
+      el("span", {class: "action-chip action-" + action.verb},
+        [ACTION_VERB_LABEL[action.verb] || action.verb]),
+      el("span", {class: "action-text"}, [" " + action.text]),
+    ]);
+    sec.appendChild(verbRow);
+    // The evidence-quality verdict reads as the "why this verb" line —
+    // surfaced right under the chip so the analyst sees the rationale
+    // without scrolling. Item #5.
+    if (data.evidence_quality) {
+      sec.appendChild(el("div", {class: "drawer-next-evidence"}, [
+        data.evidence_quality,
+      ]));
+    }
     body.appendChild(sec);
   }
 

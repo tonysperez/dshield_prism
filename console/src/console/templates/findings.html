@@ -192,34 +192,105 @@
       background: #0e1e35;
     }
 
-    /* Next-action chip — the spine (#14). Colour codes the verb; tooltip
-       carries the full one-line recommendation. */
+    /* Next-action chip — the spine (#14). The lead column of the
+       inbox: the analyst's decision rendered up-front, not as a
+       trailing tooltip. */
     .action-chip {
       display: inline-block;
-      font-size: 10px; font-weight: 600;
+      font-size: 11px; font-weight: 600;
       text-transform: uppercase; letter-spacing: 0.6px;
-      padding: 2px 7px; border-radius: 3px;
+      padding: 3px 9px; border-radius: 3px;
       border: 1px solid; white-space: nowrap;
-      cursor: help;
+      min-width: 78px; text-align: center;
     }
     .action-chip.action-confirm      { color: #4ade80; border-color: #4ade8060; background: #0a2914; }
     .action-chip.action-investigate  { color: #fbbf24; border-color: #fbbf2460; background: #291f0a; }
     .action-chip.action-auto_confirm { color: #4cc1ff; border-color: #4cc1ff80; background: #0a1929; }
     .action-chip.action-ack          { color: #94a3b8; border-color: #94a3b860; background: #14181f; }
     .action-chip.action-reject       { color: #ff6464; border-color: #ff646460; background: #29140a; }
-    table.fnd-table td.next-action  { white-space: nowrap; }
+    table.fnd-table td.next-action  { white-space: nowrap; width: 100px; }
     table.fnd-table td.next-action .action-empty { color: #4a5470; }
 
+    /* Row-left accent stripe colour-keyed to the action verb — gives
+       the inbox a verb-shaped silhouette even before the analyst reads
+       any cell. Mirrors the .fnd-focus inset-shadow pattern (left
+       edge), but the focus stripe and the urgency stripe stack: focus
+       wins on the left, urgency rides via box-shadow inset on the row
+       cells. */
+    table.fnd-table tr.urgency-investigate  td:first-of-type { box-shadow: inset 3px 0 0 0 #fbbf2480; }
+    table.fnd-table tr.urgency-confirm      td:first-of-type { box-shadow: inset 3px 0 0 0 #4ade8080; }
+    table.fnd-table tr.urgency-auto_confirm td:first-of-type { box-shadow: inset 3px 0 0 0 #4cc1ff80; }
+    table.fnd-table tr.urgency-ack          td:first-of-type { box-shadow: inset 3px 0 0 0 #94a3b860; }
+    table.fnd-table tr.urgency-reject       td:first-of-type { box-shadow: inset 3px 0 0 0 #ff646480; }
+    /* Focus stripe takes precedence on the first cell when both classes apply. */
+    table.fnd-table tr.fnd-focus td:first-of-type { box-shadow: inset 3px 0 0 0 #4cc1ff; }
+
+    /* Artifact cell — 3-line stack: title, kind tag, narrative.
+       The kind tag replaces the leading badge (folded inline so it
+       doesn't compete for visual real-estate with the action chip).
+       Narrative truncates to one line; full text is in the drawer. */
+    table.fnd-table td.artifact {
+      max-width: 340px; width: 340px; color: #c8d0e2;
+    }
+    table.fnd-table td.artifact .artifact-title {
+      font-weight: 600;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      display: block;
+    }
+    table.fnd-table td.artifact .artifact-title a { color: #4cc1ff; text-decoration: none; }
+    table.fnd-table td.artifact .artifact-title a:hover { text-decoration: underline; }
+    .kind-tag {
+      font-size: 10px; color: #6b7494;
+      text-transform: lowercase; letter-spacing: 0.4px;
+      margin-top: 1px;
+    }
+    .kind-tag .kind-sep { opacity: 0.5; margin: 0 4px; }
+    .artifact-narrative {
+      font-size: 11px; color: #94a3b8;
+      margin-top: 2px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .artifact-narrative-llm {
+      font-size: 9px; color: #4cc1ff60;
+      border: 1px solid #4cc1ff40; border-radius: 2px;
+      padding: 0 3px; margin-left: 4px;
+      text-transform: uppercase; vertical-align: middle;
+    }
+
+    /* Evidence cell — the one-line evidence_quality verdict. Reads
+       like a confidence statement, not a score. */
+    table.fnd-table td.evidence {
+      font-size: 11px; color: #c8d0e2;
+      white-space: nowrap;
+    }
+    table.fnd-table td.evidence .evidence-empty { color: #4a5470; }
+
+    /* Window cell — collapses first_seen + last_seen into one span. */
+    table.fnd-table td.window {
+      font-size: 11px; color: #94a3b8;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    table.fnd-table td.window .window-empty { color: #4a5470; }
+
     /* Drawer next-action banner — leading section of the drawer,
-       higher emphasis than the inline chip. */
+       higher emphasis than the inline chip. Stacked: verb row over
+       evidence-quality line. */
     .drawer-next-action {
       background: #0e1e35;
       border-left: 3px solid #4cc1ff;
       padding: 12px 16px;
+    }
+    .drawer-next-action .drawer-next-verb-row {
       display: flex; align-items: center; gap: 10px;
     }
     .drawer-next-action .action-text {
       font-size: 12px; color: #c8d0e2;
+    }
+    .drawer-next-evidence {
+      margin-top: 6px; padding-left: 88px;
+      font-size: 11px; color: #94a3b8;
+      font-style: italic;
     }
 
     /* Drawer notes — audit-trail + free-text annotation pad. */
@@ -252,44 +323,12 @@
     .drawer-notes .note-add-btn:hover:not(:disabled) { background: #1a2d4e; }
     .drawer-notes .note-add-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-    .fnd-kind-badge {
-      font-size: 10px; font-weight: 600; text-transform: uppercase;
-      letter-spacing: 0.6px; padding: 1px 6px;
-      border-radius: 3px; border: 1px solid #25324c;
-      display: inline-block;
-    }
-    .fnd-kind-playbook { background: #0a1929; color: #4cc1ff; border-color: #4cc1ff60; }
-    .fnd-kind-campaign { background: #1a0e29; color: #c084fc; border-color: #c084fc60; }
-    .fnd-kind-drift    { background: #29140a; color: #ffa14c; border-color: #ffa14c60; }
-    .fnd-kind-disc     { background: #0a2914; color: #4cffa1; border-color: #4cffa160; }
-
     .fnd-status-select {
       background: #0a121f; color: #b9c2db;
       border: 1px solid #25324c; border-radius: 4px;
       font-size: 11px; padding: 2px 6px;
     }
     .fnd-status-select:focus { outline: 1px solid #4cc1ff; outline-offset: 0; }
-    /* Narrative truncates to a single line with an ellipsis (#24);
-       hovering the cell shows the full text via the [data-tooltip]
-       pattern. The cell is a flex row so the LLM chip stays visible
-       after the truncated text. The 280px cap leaves room for the
-       Next + Status columns at the end of the row on standard
-       desktop widths (~1440px viewport, ~1100px inbox column). */
-    table.fnd-table td.narrative {
-      max-width: 280px; width: 280px; color: #c8d0e2;
-      display: flex; align-items: center; gap: 6px;
-    }
-    table.fnd-table td.narrative .narrative-text {
-      flex: 1; min-width: 0;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    }
-    /* Tooltip on narrative cells allows wrapping — narratives can run
-       a couple of paragraphs and the default single-line tooltip would
-       overflow off-screen. */
-    table.fnd-table td.narrative[data-tooltip]:hover::after {
-      white-space: normal; max-width: 480px;
-      line-height: 1.5;
-    }
     /* Safety net — if a narrow viewport still can't fit the row,
        scroll horizontally rather than clip the Status cell off
        screen. */
@@ -420,6 +459,7 @@
       <div class="facet-group">
         <h5>Sort</h5>
         <select id="sort-select" class="fnd-status-select">
+          <option value="urgency" selected>action urgency</option>
           <option value="last_seen">last seen</option>
           <option value="first_seen">first seen</option>
           <option value="score">score</option>
