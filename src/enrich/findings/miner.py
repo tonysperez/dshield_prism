@@ -163,22 +163,14 @@ def _cluster_to_playbook_map(
 def _mine_playbooks(
     es: Elasticsearch, cfg: AppConfig, run_id: str,
 ) -> list[dict[str, Any]]:
-    """Emit one finding per playbook (or per cluster when naming hasn't
-    yet stamped the latest run).
+    """Emit one finding per playbook.
 
-    Why both: the session rollup carries
-    `dshield.cowrie.enrichment.session.cluster.id` always (filled by the
-    clustering pass), and `playbook_id` only after the naming pass has
-    run AND the rollup hasn't been rebuilt since. The clean signal is
-    `playbook_id` (content-addressed, stable across runs). The fallback
-    is `cluster.id` (run-scoped, label-only) so the page still surfaces
-    behavior groups in deployments where naming is out of sync.
-
-    When a cluster centroid for the latest run carries a `playbook_id`,
-    we use that as the artifact value — triage state persists across
-    re-mines + re-clusters. When it doesn't, we use `cluster:<run_id>:<cluster_id>`,
-    which is unique per cluster pass; the analyst's triage on those
-    findings becomes stale on the next clustering run.
+    Clusters that don't yet carry a `playbook_id` (naming hasn't caught
+    up with the latest cluster pass) are skipped — they'll surface on
+    the next mine cycle once `name playbooks` stamps them, with a stable
+    id from day one. Minting a run-scoped surrogate id was the old
+    behaviour; it produced findings whose triage state died on the next
+    cluster pass, which is exactly the churn this rebuild eliminates.
     """
     sess_idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
     clusters_idx = cfg.elasticsearch.indexes.cowrie.session_clusters
@@ -241,15 +233,10 @@ def _mine_playbooks(
         dominant_intent = intent_buckets[0]["key"] if intent_buckets else ""
 
         pid, name = cmap.get(cid, ("", ""))
-        if pid:
-            # Naming has stamped this cluster — stable artifact id.
-            artifact_value = pid
-            display = name or "(unnamed playbook)"
-        else:
-            # Fallback: cluster-scoped id. Unique per cluster run, so the
-            # finding's triage state ages out on the next clustering pass.
-            artifact_value = f"cluster:{latest_run}:{cid}"
-            display = f"(unnamed cluster {cid})"
+        if not pid:
+            continue
+        artifact_value = pid
+        display = name or "(unnamed playbook)"
 
         # Score: log(1+sessions) * mean_novelty. Prevalence and novelty
         # both matter; the log compresses the long tail so an HDBSCAN

@@ -124,6 +124,54 @@ _LAYER_MAPPINGS = {
 }
 
 
+def _purge_lifecycles(cfg, secrets) -> dict:
+    """Wipe the full lifecycle/findings stack and the anchor index, then
+    re-create each from its mapping file. Used to drop accumulated state
+    after id-scheme migrations or any other corruption that's cheaper to
+    rebuild from upstream than to repair in place.
+
+    Scope:
+      - lifecycle-dshield.cowrie.{playbook,campaign,source_ip}-default
+      - prism.findings (one finding per playbook/campaign/discovery hit)
+      - prism.campaign.cowrie (campaign mining output)
+      - prism.identity.cowrie.playbook_anchor (pinned playbook centroids)
+
+    Out of scope: session_clusters, sessions_rollup, ips_rollup. Those
+    re-stamp themselves on the next backward cycle and rebuilding them is
+    hours of compute; leave them.
+    """
+    from .es_client import init_index, make_client
+
+    es = make_client(cfg.elasticsearch, secrets)
+    cowrie = cfg.elasticsearch.indexes.cowrie
+    f_idx = cfg.findings.indexes
+
+    targets: list[tuple[str, str]] = [
+        (f_idx.playbook_lifecycle,  "setup/es-mappings/lifecycle/playbook.json"),
+        (f_idx.campaign_lifecycle,  "setup/es-mappings/lifecycle/campaign.json"),
+        (f_idx.source_ip_lifecycle, "setup/es-mappings/lifecycle/source_ip.json"),
+        (f_idx.default,             "setup/es-mappings/findings/default.json"),
+        (cowrie.campaigns,          "setup/es-mappings/cowrie/campaigns.json"),
+        (cowrie.playbook_anchors,   "setup/es-mappings/cowrie/playbook_anchors.json"),
+    ]
+
+    out: dict = {"deleted": [], "created": [], "errors": []}
+    for idx, mapping_path in targets:
+        try:
+            if es.indices.exists(index=idx):
+                es.indices.delete(index=idx)
+                out["deleted"].append(idx)
+        except Exception as exc:
+            out["errors"].append({"index": idx, "action": "delete", "error": str(exc)})
+            continue
+        try:
+            init_index(es, mapping_path, idx)
+            out["created"].append(idx)
+        except Exception as exc:
+            out["errors"].append({"index": idx, "action": "create", "error": str(exc)})
+    return out
+
+
 def _wipe_processed(cfg, secrets, source: str) -> dict:
     """Destroy every processed ES index for this source and recreate them
     from their mapping files; clear the SQLite cache + watermark. The raw
@@ -507,6 +555,26 @@ def _build_parser() -> argparse.ArgumentParser:
                              "Combinable with other flags."
                          ))
     p_reset.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
+
+    # purge — destructive ES-index wipes scoped by subject. Currently the
+    # only subject is `lifecycles`, which wipes the three lifecycle indices,
+    # the findings index, the campaigns index, and the playbook anchor
+    # index — then re-creates each from its mapping file. Used to recover
+    # from id-scheme migrations or any other state corruption where the
+    # cheap fix is to rebuild from upstream on the next backward cycle.
+    p_purge = sub.add_parser(
+        "purge",
+        help="Destructive wipe of an ES-index subject. Subjects: lifecycles.",
+    )
+    p_purge.add_argument(
+        "subject",
+        choices=["lifecycles"],
+        help=(
+            "lifecycles: wipe lifecycle/{playbook,campaign,source_ip}, "
+            "findings, campaigns, and playbook_anchor indices."
+        ),
+    )
+    p_purge.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
 
     # init-indexes
     p_init = sub.add_parser(
@@ -962,6 +1030,42 @@ def main(argv: list[str] | None = None) -> int:
         db.close()
         print(json.dumps(result, indent=2))
         return 0
+
+    if args.verb == "purge":
+        if args.subject != "lifecycles":
+            print(f"Unknown purge subject: {args.subject!r}")
+            return 1
+        cowrie = cfg.elasticsearch.indexes.cowrie
+        f_idx = cfg.findings.indexes
+        targets = [
+            f_idx.playbook_lifecycle,
+            f_idx.campaign_lifecycle,
+            f_idx.source_ip_lifecycle,
+            f_idx.default,
+            cowrie.campaigns,
+            cowrie.playbook_anchors,
+        ]
+        print("About to wipe and recreate:")
+        for t in targets:
+            print(f"  - {t}")
+        print(
+            "\nWARNING: the playbook_anchor index will be wiped. Historical "
+            "playbook ids (spb-<hex>) cannot be recovered; the next "
+            "`name playbooks` pass will mint fresh anchors and the new "
+            "ids will not match the pre-purge ids unless cluster membership "
+            "is identical."
+        )
+        if not args.yes:
+            try:
+                resp = input("Proceed? [y/N] ").strip().lower()
+            except EOFError:
+                resp = ""
+            if resp not in ("y", "yes"):
+                print("Aborted.")
+                return 1
+        stats = _purge_lifecycles(cfg, secrets)
+        print(json.dumps(stats, indent=2, default=str))
+        return 0 if not stats.get("errors") else 1
 
     if args.verb == "bootstrap-es":
         from .bootstrap import run_bootstrap

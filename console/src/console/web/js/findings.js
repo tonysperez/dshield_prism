@@ -1202,48 +1202,6 @@ function renderDrawer(data) {
     body.appendChild(sec);
   }
 
-  // Lineage (P2.2) — predecessor lifecycle docs whose anchors this one
-  // inherited. Renders oldest → newest with a chip marking the current id.
-  const lineage = data.lineage || [];
-  if (lineage.length) {
-    const sec = el("div", {class: "drawer-section"});
-    sec.appendChild(el("h4", null, ["Lineage"]));
-    sec.appendChild(el("p", {class: "drawer-meta"}, [
-      `Inherited from ${lineage.length} prior id${lineage.length === 1 ? "" : "s"} ` +
-      `— anchors carried forward across content-hashed id changes.`,
-    ]));
-    const ul = el("ul", {style: "padding-left:18px;margin:0;"});
-    for (const p of lineage) {
-      if (p.missing) {
-        ul.appendChild(el("li", {class: "drawer-meta"}, [
-          `${p.id}  (pruned)`,
-        ]));
-        continue;
-      }
-      const li = el("li", null, [
-        el("code", {style: "font-size:11px;"}, [p.id]),
-      ]);
-      if (p.name) {
-        li.appendChild(el("span", null, ["  " + p.name]));
-      }
-      li.appendChild(el("div", {class: "drawer-meta"}, [
-        `${p.runs_observed ?? 0} runs · ${p.snapshot_count ?? 0} snapshots · ` +
-        `${p.anchors_count ?? 0} anchors · last seen ${fmtTs(p.last_seen)}`,
-      ]));
-      ul.appendChild(li);
-    }
-    // Current id chip
-    if (a.value) {
-      const li = el("li", null, [
-        el("code", {style: "font-size:11px;"}, [a.value]),
-        el("span", {class: "provisional-chip", style: "background:#0a1929;color:#4cc1ff;border-color:#4cc1ff60;"}, ["current"]),
-      ]);
-      ul.appendChild(li);
-    }
-    sec.appendChild(ul);
-    body.appendChild(sec);
-  }
-
   // Anchor history (audit trail)
   const anchors = lc.confirm_anchors || [];
   if (anchors.length) {

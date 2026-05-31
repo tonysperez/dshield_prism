@@ -80,6 +80,13 @@
                           "count":  { "type": "long" }
                         }
                       },
+                      "dominant_playbook_id": { "type": "keyword" },
+                      "playbook_distribution": {
+                        "properties": {
+                          "playbook_id": { "type": "keyword" },
+                          "count":       { "type": "long" }
+                        }
+                      },
                       "embedding": {
                         "type": "dense_vector",
                         "dims": 768,

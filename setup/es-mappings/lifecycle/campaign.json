@@ -1,5 +1,5 @@
 {
-  "_comment": "Campaign lifecycle. One doc per campaign_id (cmp-bhv-<hash> or cmp-inf-<hash>). Same shape as playbook lifecycle; keyed differently and carries campaign_kind. Strict-dynamic. Findings v2 step 1.",
+  "_comment": "Campaign lifecycle. One doc per campaign_id (cmp-bhv-<hash> or cmp-inf-<hash>). Same shape as playbook lifecycle; keyed differently and carries campaign_kind. Strict-dynamic.",
   "settings": {
     "number_of_shards": 1,
     "number_of_replicas": 0,
@@ -17,10 +17,6 @@
       "campaign_kind": {
         "type": "text",
         "fields": { "keyword": { "type": "keyword", "ignore_above": 32 } }
-      },
-      "inherited_from": {
-        "type": "text",
-        "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } }
       },
       "first_seen_ever":     { "type": "date" },
       "last_seen":           { "type": "date" },

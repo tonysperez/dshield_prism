@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
 from elasticsearch import Elasticsearch
@@ -43,57 +43,6 @@ def _read_doc(es: Elasticsearch, index: str, doc_id: str) -> dict:
         return existing.get("_source") or {}
     except Exception:
         return {}
-
-
-def _find_predecessor(
-    es: Elasticsearch,
-    index: str,
-    *,
-    name: Optional[str],
-    name_field: str,
-    current_id: str,
-    id_field: str,
-    max_age_runs: int,
-) -> Optional[dict]:
-    """ROADMAP P2.1 — name-based co-identification.
-
-    Find a lifecycle doc with the same `name` (e.g. `playbook_name`)
-    whose `last_seen` is within `max_age_runs * 6h` of now AND whose
-    id differs from `current_id`. The most-recent match is returned —
-    its `confirm_anchors[]` and `drift_suppressions[]` are inherited
-    by the caller before writing the new doc.
-
-    Returns the predecessor's `_source` or None. Defensive against
-    missing index / empty name / query failures (returns None).
-    """
-    if not name or max_age_runs <= 0:
-        return None
-    if not es.indices.exists(index=index):
-        return None
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(hours=max_age_runs * 6)
-    ).isoformat()
-    try:
-        resp = es.search(
-            index=index, size=1,
-            query={"bool": {
-                "must": [
-                    {"term":  {f"{name_field}.keyword": name}},
-                    {"range": {"last_seen": {"gte": cutoff}}},
-                ],
-                "must_not": [{"term": {id_field: current_id}}],
-            }},
-            sort=[{"last_seen": {"order": "desc"}}],
-            _source=[id_field, "confirm_anchors", "drift_suppressions",
-                     "inherited_from", "last_seen"],
-        )
-        hits = resp.get("hits", {}).get("hits") or []
-        if not hits:
-            return None
-        return hits[0].get("_source") or None
-    except Exception as exc:
-        log.warning("[lifecycle] predecessor lookup on %s failed: %s", index, exc)
-        return None
 
 
 def _apply_snapshot(
@@ -149,55 +98,9 @@ def update_playbook_lifecycle(
     run_id: str,
     snapshot: dict,
     snapshot_cap: int = 30,
-    coidentification_max_age_runs: int = 2,
 ) -> str:
-    """Upsert a single playbook lifecycle doc. Returns the doc id.
-
-    ROADMAP P2.1: when this is the first write for `playbook_id`, look
-    for a same-name predecessor lifecycle doc whose `last_seen` is
-    within `coidentification_max_age_runs * 6h`. If found, inherit its
-    `confirm_anchors[]` and `drift_suppressions[]` and append the old
-    id to `inherited_from[]`. Defends against content-addressed-id
-    churn (membership-change → new id) erasing analyst confirms.
-    """
+    """Upsert a single playbook lifecycle doc. Returns the doc id."""
     doc = _read_doc(es, index, playbook_id)
-    is_new = not doc
-    inherited_from: list[str] = []
-    if is_new and playbook_name:
-        pred = _find_predecessor(
-            es, index,
-            name=playbook_name, name_field="playbook_name",
-            current_id=playbook_id, id_field="playbook_id",
-            max_age_runs=coidentification_max_age_runs,
-        )
-        if pred:
-            # Inherit analyst-managed state. Lifecycle bookkeeping
-            # (first_seen_ever, runs_observed, snapshots) stays fresh
-            # so the doc honestly reflects "this id is new"; the
-            # inherited_from chain is the audit trail. The doc is
-            # fully-initialised here so `_apply_snapshot` skips its
-            # init block but still finds the bookkeeping fields it
-            # increments.
-            ts = snapshot.get("@timestamp") or _now_iso()
-            doc = {
-                "playbook_id":        playbook_id,
-                "first_seen_ever":    ts,
-                "first_run_id":       run_id,
-                "runs_observed":      0,
-                "silent_runs_current": 0,
-                "snapshots":          [],
-                "confirm_anchors":    list(pred.get("confirm_anchors") or []),
-                "drift_suppressions": list(pred.get("drift_suppressions") or []),
-            }
-            prior_chain = list(pred.get("inherited_from") or [])
-            old_id = pred.get("playbook_id")
-            inherited_from = prior_chain + ([old_id] if old_id else [])
-            log.info(
-                "[lifecycle] playbook %s inherits %d anchor(s) + %d suppression(s) from %s (same name: %r)",
-                playbook_id,
-                len(doc["confirm_anchors"]), len(doc["drift_suppressions"]),
-                old_id, playbook_name,
-            )
     extra: dict = {}
     if playbook_name:
         extra["playbook_name"] = playbook_name
@@ -210,12 +113,8 @@ def update_playbook_lifecycle(
         key_value=playbook_id,
         extra_init=extra,
     )
-    # Refresh the human-readable name on every run — it may have been
-    # regenerated by `name playbooks`.
     if playbook_name:
         doc["playbook_name"] = playbook_name
-    if inherited_from:
-        doc["inherited_from"] = inherited_from
     es.index(index=index, id=playbook_id, document=doc, refresh=False)
     return playbook_id
 
@@ -230,45 +129,9 @@ def update_campaign_lifecycle(
     run_id: str,
     snapshot: dict,
     snapshot_cap: int = 30,
-    coidentification_max_age_runs: int = 2,
 ) -> str:
-    """Upsert a single campaign lifecycle doc. Returns the doc id.
-
-    ROADMAP P2.1: same name-based inheritance as `update_playbook_lifecycle`
-    — campaign ids are also content-hashed (over sorted playbook id set)
-    and shift when membership changes.
-    """
+    """Upsert a single campaign lifecycle doc. Returns the doc id."""
     doc = _read_doc(es, index, campaign_id)
-    is_new = not doc
-    inherited_from: list[str] = []
-    if is_new and campaign_name:
-        pred = _find_predecessor(
-            es, index,
-            name=campaign_name, name_field="campaign_name",
-            current_id=campaign_id, id_field="campaign_id",
-            max_age_runs=coidentification_max_age_runs,
-        )
-        if pred:
-            ts = snapshot.get("@timestamp") or _now_iso()
-            doc = {
-                "campaign_id":        campaign_id,
-                "first_seen_ever":    ts,
-                "first_run_id":       run_id,
-                "runs_observed":      0,
-                "silent_runs_current": 0,
-                "snapshots":          [],
-                "confirm_anchors":    list(pred.get("confirm_anchors") or []),
-                "drift_suppressions": list(pred.get("drift_suppressions") or []),
-            }
-            prior_chain = list(pred.get("inherited_from") or [])
-            old_id = pred.get("campaign_id")
-            inherited_from = prior_chain + ([old_id] if old_id else [])
-            log.info(
-                "[lifecycle] campaign %s inherits %d anchor(s) + %d suppression(s) from %s (same name: %r)",
-                campaign_id,
-                len(doc["confirm_anchors"]), len(doc["drift_suppressions"]),
-                old_id, campaign_name,
-            )
     extra: dict = {}
     if campaign_name:
         extra["campaign_name"] = campaign_name
@@ -287,8 +150,6 @@ def update_campaign_lifecycle(
         doc["campaign_name"] = campaign_name
     if campaign_kind:
         doc["campaign_kind"] = campaign_kind
-    if inherited_from:
-        doc["inherited_from"] = inherited_from
     es.index(index=index, id=campaign_id, document=doc, refresh=False)
     return campaign_id
 
@@ -569,7 +430,7 @@ def increment_silent_runs(
     """Bump `silent_runs_current` on every lifecycle doc whose
     `last_run_id` does not equal `current_run_id` — i.e. the ones we
     did NOT touch this run. Used as the silent-run accumulator for
-    `playbook_resurgence` later (step 4).
+    `playbook_resurgence` and the retirement sweep.
 
     Returns the number of docs updated. `0` is fine on first run.
     """
@@ -596,6 +457,36 @@ def increment_silent_runs(
         return int(resp.get("updated") or 0)
     except Exception as exc:
         log.warning("[lifecycle] silent-run bump on %s failed: %s", index, exc)
+        return 0
+
+
+def retire_silent_lifecycles(
+    es: Elasticsearch,
+    index: str,
+    *,
+    threshold: int,
+) -> int:
+    """Hard-delete lifecycle docs whose `silent_runs_current >= threshold`.
+    A retired artifact that later re-emerges mints a fresh lifecycle doc
+    through the normal path — no archive index to consult.
+
+    `threshold <= 0` disables the sweep. Returns the number of docs
+    deleted.
+    """
+    if threshold <= 0:
+        return 0
+    if not es.indices.exists(index=index):
+        return 0
+    try:
+        resp = es.delete_by_query(
+            index=index,
+            body={"query": {"range": {"silent_runs_current": {"gte": threshold}}}},
+            conflicts="proceed",
+            refresh=True,
+        )
+        return int(resp.get("deleted") or 0)
+    except Exception as exc:
+        log.warning("[lifecycle] retirement sweep on %s failed: %s", index, exc)
         return 0
 
 
@@ -861,19 +752,15 @@ def _sweep_provisional_anchors(
 
 def run_track_lifecycles(cfg, secrets, *, dry_run: bool = False) -> dict:
     """End-to-end lifecycle pass: append this-run snapshots for every active
-    playbook, campaign, and source IP; bump `silent_runs_current` on the rest.
-
-    Step 1 scope: snapshots only. Anchors (analyst + provisional) and drift
-    suppressions land in step 2. Drift detectors (step 4) consume the
-    snapshots + anchors this writer produces.
+    playbook, campaign, and source IP; bump `silent_runs_current` on the
+    rest; retire docs whose silent-run count exceeds the per-layer
+    threshold. Drift detectors consume the snapshots + anchors this writer
+    produces.
     """
     from ..es_client import make_client
     es = make_client(cfg.elasticsearch, secrets)
 
     cap = int(cfg.findings.lifecycle.snapshot_cap)
-    coid_runs = int(
-        getattr(cfg.findings.lifecycle, "coidentification_max_age_runs", 2)
-    )
     f_idx = cfg.findings.indexes
     cowrie_idx = cfg.elasticsearch.indexes.cowrie
 
@@ -913,7 +800,6 @@ def run_track_lifecycles(cfg, secrets, *, dry_run: bool = False) -> dict:
                 run_id=run_id,
                 snapshot=snapshot,
                 snapshot_cap=cap,
-                coidentification_max_age_runs=coid_runs,
             )
             stats["playbook"]["updated"] += 1
         except Exception as exc:
@@ -943,7 +829,6 @@ def run_track_lifecycles(cfg, secrets, *, dry_run: bool = False) -> dict:
                 run_id=run_id,
                 snapshot=snapshot,
                 snapshot_cap=cap,
-                coidentification_max_age_runs=coid_runs,
             )
             stats["campaign"]["updated"] += 1
         except Exception as exc:
@@ -1022,6 +907,17 @@ def run_track_lifecycles(cfg, secrets, *, dry_run: bool = False) -> dict:
         stats["playbook"]["silent_bumped"]  = increment_silent_runs(es, f_idx.playbook_lifecycle,  current_run_id=run_id)
         stats["campaign"]["silent_bumped"] = increment_silent_runs(es, f_idx.campaign_lifecycle, current_run_id=run_id)
         stats["source_ip"]["silent_bumped"] = increment_silent_runs(es, f_idx.source_ip_lifecycle, current_run_id=run_id)
+
+        lc_cfg = cfg.findings.lifecycle
+        stats["playbook"]["retired"]  = retire_silent_lifecycles(
+            es, f_idx.playbook_lifecycle,  threshold=int(lc_cfg.retire_silent_runs_playbook),
+        )
+        stats["campaign"]["retired"] = retire_silent_lifecycles(
+            es, f_idx.campaign_lifecycle, threshold=int(lc_cfg.retire_silent_runs_campaign),
+        )
+        stats["source_ip"]["retired"] = retire_silent_lifecycles(
+            es, f_idx.source_ip_lifecycle, threshold=int(lc_cfg.retire_silent_runs_source_ip),
+        )
 
     stats["runtime_seconds"] = round(time.monotonic() - t_start, 2)
     return stats

@@ -202,16 +202,6 @@ class SessionConfig(BaseModel):
     # disables merging (1 cluster = 1 playbook, legacy behaviour). 0.96 is
     # the empirically-tuned default — see scripts/diagnose_centroid_similarity.py.
     playbook_merge_threshold: float = 0.96
-    # ROADMAP #1 — churn-resistant playbook identity. When on, the naming
-    # pass also computes a `stable_playbook_id` (`spb-<16hex>`) by
-    # cosine-matching each playbook centroid to the nearest prior-run
-    # anchor (>= playbook_merge_threshold) and reusing its id, minting a
-    # fresh one only on no-match. Written alongside `playbook_id` on the
-    # cluster docs for observation; no reader keys on it yet. Additive and
-    # safe to leave on. See scripts/measure_playbook_id_churn.py for the
-    # A/B that validated the snap-to-prior approach over the rejected
-    # quantised-centroid hash.
-    stable_identity_dual_write: bool = True
     # ROADMAP #4 — cluster specificity. Max keys stored per centroid in each
     # of `ip_specificity` / `command_specificity`. Set well past realistic
     # cluster sizes so EVERY member IP / command carries a score (so the
@@ -556,18 +546,13 @@ class LifecycleConfig(BaseModel):
     # writes a provisional anchor (used for drift baselining when no
     # analyst has confirmed yet). 8 runs ≈ 2 days at 6h.
     provisional_stable_runs: int = 8
-    # Co-identification window for name-based anchor inheritance. When
-    # `track lifecycles` writes a new playbook/campaign lifecycle doc, it
-    # looks for an existing doc with the same `playbook_name` /
-    # `campaign_name` whose `last_seen` is within this many cluster runs
-    # (assumed 6h cadence). If found, the new doc inherits its
-    # `confirm_anchors[]` and `drift_suppressions[]` plus records the
-    # old id in `inherited_from[]`. Defends against content-addressed-id
-    # churn when a playbook gains/loses a single member session. Default
-    # 2 runs (12h) — catches the next-run-after-id-flip case without
-    # cross-linking genuinely-distinct playbooks that happened to share
-    # a name. ROADMAP P2.1.
-    coidentification_max_age_runs: int = 2
+    # Hard-delete a lifecycle doc once its `silent_runs_current` reaches
+    # this threshold. A re-emerging artifact mints a fresh doc through the
+    # normal path; no archive index. Set to 0 to disable retirement on a
+    # given layer. Defaults at 6h cadence: 120 ≈ 30 days, 28 ≈ 7 days.
+    retire_silent_runs_playbook: int = 120
+    retire_silent_runs_campaign: int = 120
+    retire_silent_runs_source_ip: int = 28
 
 
 class DiscoveryConfig(BaseModel):

@@ -552,10 +552,6 @@ def get_finding_detail(es, cfg, finding_id: str) -> Optional[dict[str, Any]]:
             lc_index = _idx_attr("playbook_lifecycle",
                                  "lifecycle-dshield.cowrie.playbook-default")
             out["lifecycle"] = _fetch_lifecycle(es, lc_index, a_value)
-            out["lineage"] = _fetch_lineage(
-                es, lc_index, out["lifecycle"].get("inherited_from") or [],
-                name_field="playbook_name", id_field="playbook_id",
-            )
             out["top_commands"] = _top_commands_for_playbook(es, cowrie_idx, a_value)
             out["top_ips"] = _top_ips_for_playbook(es, cowrie_idx, a_value)
             out["convergent_campaigns"] = _convergent_campaigns(es, cowrie_idx, a_value)
@@ -564,10 +560,6 @@ def get_finding_detail(es, cfg, finding_id: str) -> Optional[dict[str, Any]]:
             lc_index = _idx_attr("campaign_lifecycle",
                                  "lifecycle-dshield.cowrie.campaign-default")
             out["lifecycle"] = _fetch_lifecycle(es, lc_index, a_value)
-            out["lineage"] = _fetch_lineage(
-                es, lc_index, out["lifecycle"].get("inherited_from") or [],
-                name_field="campaign_name", id_field="campaign_id",
-            )
         elif a_kind == "ip":
             lc_index = _idx_attr("source_ip_lifecycle",
                                  "lifecycle-dshield.cowrie.source_ip-default")
@@ -578,48 +570,6 @@ def get_finding_detail(es, cfg, finding_id: str) -> Optional[dict[str, Any]]:
             finding_id, a_kind, a_value, exc,
         )
         out["detail_error"] = str(exc)
-    return out
-
-
-def _fetch_lineage(
-    es, index: str, predecessor_ids: list[str], *,
-    name_field: str, id_field: str,
-) -> list[dict[str, Any]]:
-    """Materialise the predecessor chain for the detail drawer.
-
-    `predecessor_ids` is the lifecycle doc's `inherited_from[]` (oldest →
-    newest). Returns a list of summary dicts in the same order, with
-    `missing=True` on any predecessor that's been deleted/pruned.
-
-    Findings v2 P2.2 — drives the lineage section in the drawer so the
-    analyst can see "this playbook was previously known as A, B, C" and
-    confirm that their inherited anchor still applies.
-    """
-    if not predecessor_ids:
-        return []
-    out: list[dict[str, Any]] = []
-    try:
-        if not es.indices.exists(index=index):
-            return [{"id": pid, "missing": True} for pid in predecessor_ids]
-    except Exception:
-        pass
-    for pid in predecessor_ids:
-        try:
-            r = es.get(index=index, id=pid)
-            src = r.get("_source") or {}
-            snaps = src.get("snapshots") or []
-            out.append({
-                "id":             pid,
-                "name":           src.get(name_field),
-                "first_seen":     src.get("first_seen_ever"),
-                "last_seen":      src.get("last_seen"),
-                "runs_observed":  src.get("runs_observed"),
-                "silent_runs":    src.get("silent_runs_current"),
-                "snapshot_count": len(snaps),
-                "anchors_count":  len(src.get("confirm_anchors") or []),
-            })
-        except Exception:
-            out.append({"id": pid, "missing": True})
     return out
 
 

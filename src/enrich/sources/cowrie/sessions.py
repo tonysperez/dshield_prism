@@ -82,61 +82,51 @@ _SESSION_PLAYBOOK_NAME_SCRIPT = (
 _PLAYBOOK_ID_HASH_LEN = 16
 
 
-def _make_playbook_id(member_session_ids: Iterable[str]) -> str:
-    """The canonical playbook primary key. Format: `sescl-<16-hex>`.
+def _compute_seed_id(member_session_ids: Iterable[str]) -> str:
+    """Reproducible internal seed for anchor assignment. Format: `sescl-<16-hex>`.
 
-    The hex is the first `_PLAYBOOK_ID_HASH_LEN` chars of the SHA-256 of
-    the playbook's member session ids, sorted and joined with newline.
-    Two `cluster sessions` runs that produce the same membership for a
-    playbook yield byte-identical ids — so downstream pivots (campaign
-    miner especially, since campaign ids hash a sorted playbook-id set)
-    don't churn across re-clusterings.
+    SHA-256 of the playbook's member session ids, sorted and joined with
+    newline. Used only to feed `_mint_playbook_id` when a centroid has no
+    anchor match — two runs with identical membership and no prior anchor
+    yield the same fresh id. The seed is also stored on the anchor doc as
+    `seed_playbook_id` for audit ("this anchor was first minted from this
+    exact membership"); nothing else reads it.
 
-    A playbook may map to one or more HDBSCAN clusters depending on
-    `session.playbook_merge_threshold`. Membership here is the *union of
-    session ids across every constituent cluster*, not a per-cluster value.
-    Empty membership raises — outlier clusters carry no playbook_id and
-    are filtered out by the caller before we reach this point.
-
-    The LLM `playbook_name` is a display label only and may legitimately
-    duplicate across playbooks.
+    Empty membership raises — outlier clusters are filtered upstream.
     """
     sids = sorted(set(s for s in member_session_ids if s))
     if not sids:
-        raise ValueError("_make_playbook_id requires at least one session id")
+        raise ValueError("_compute_seed_id requires at least one session id")
     digest = hashlib.sha256("\n".join(sids).encode("utf-8")).hexdigest()
     return f"sescl-{digest[:_PLAYBOOK_ID_HASH_LEN]}"
 
 
 # ===========================================================================
-# Churn-resistant playbook identity (ROADMAP #1)
+# Playbook identity — cosine-anchored
 #
-# `playbook_id` (above) is content-hashed over member session ids, so adding
-# the Nth session mints a brand-new id and resets all longitudinal state.
-# `stable_playbook_id` instead *matches* each run's playbook centroid to the
-# nearest prior anchor and reuses its id — the snap-to-prior approach that
-# beat both the membership hash and the quantised-centroid hash in the A/B
-# (scripts/measure_playbook_id_churn.py). Computed during the naming pass and
-# written alongside `playbook_id` for observation; no reader keys on it yet.
+# Each playbook's `playbook_id` (`spb-<16hex>`) is assigned by matching the
+# playbook's mean-centroid against pinned anchors in the write-once
+# `playbook_anchors` index. A match (cosine >= playbook_merge_threshold)
+# reuses the anchor's id; a miss mints a fresh id from the membership seed
+# and pins a new anchor.
 #
-# The anchor a centroid matches against is PINNED at first mint: each new
-# stable id writes one write-once doc to the `playbook_anchors` index and
-# never updates it. Matching against a fixed reference (rather than the
-# latest run's centroid) is what keeps the id stable — a walking anchor lets
-# transitive chains form (A~B>=thr, B~C>=thr, A~C<thr collapsing under one
-# id). The pass-2 name-merge does NOT touch the stable id: naming is a
-# display concern, cosine identity is a separate axis.
+# Matching against a FIXED reference (not a walking centroid) is what keeps
+# the id stable across membership changes — a walking anchor lets transitive
+# chains form (A~B>=thr, B~C>=thr, A~C<thr collapsing under one id). The
+# pass-2 name-merge does NOT touch the id: naming is a display concern,
+# cosine identity is a separate axis.
 # ===========================================================================
 
-_STABLE_PLAYBOOK_ID_PREFIX = "spb-"
+_PLAYBOOK_ID_PREFIX = "spb-"
 
 
-def _mint_stable_playbook_id(seed_playbook_id: str) -> str:
-    """A fresh stable id for a playbook with no prior anchor match. Seeded
-    from the membership-hash `playbook_id` so first appearances are
-    reproducible (re-running the same run yields the same id)."""
-    digest = hashlib.sha256(seed_playbook_id.encode("utf-8")).hexdigest()
-    return f"{_STABLE_PLAYBOOK_ID_PREFIX}{digest[:_PLAYBOOK_ID_HASH_LEN]}"
+def _mint_playbook_id(seed_id: str) -> str:
+    """Mint a fresh `spb-<16hex>` id from a membership seed. Deterministic:
+    re-running the same membership through `_compute_seed_id` yields the
+    same `spb-` id, so re-pinning an anchor after a purge produces the same
+    canonical id when membership is identical."""
+    digest = hashlib.sha256(seed_id.encode("utf-8")).hexdigest()
+    return f"{_PLAYBOOK_ID_PREFIX}{digest[:_PLAYBOOK_ID_HASH_LEN]}"
 
 
 def _unit_vector(vec) -> "np.ndarray":
@@ -299,74 +289,69 @@ def _persist_cluster_specificity(
     return stats
 
 
-def _load_stable_anchors(
+def _load_playbook_anchors(
     es: Elasticsearch, anchor_idx: str,
 ) -> list[tuple["np.ndarray", str]]:
-    """The pinned first-mint centroid for every existing `stable_playbook_id`,
-    read from the write-once `playbook_anchors` index. Bounded by the number
-    of distinct stable ids. Best-effort: a missing index or query error
-    yields no anchors (everything mints fresh)."""
-    try:
-        resp = es.search(
-            index=anchor_idx,
-            size=10000,
-            query={"exists": {"field": "anchor_centroid"}},
-            _source=["stable_playbook_id", "anchor_centroid"],
-        )
-    except Exception as exc:  # noqa: BLE001 — anchors are best-effort
-        log.warning("Could not load stable-id anchors from %s: %s", anchor_idx, exc)
-        return []
+    """Load every pinned anchor from the write-once `playbook_anchors`
+    index — one `(centroid, playbook_id)` pair per known id. The naming
+    pass needs the full set in memory to match each playbook's centroid
+    against every prior anchor. Raises on query failure: the anchors are
+    load-bearing, silent fallback would mint duplicate ids."""
+    resp = es.search(
+        index=anchor_idx,
+        size=10000,
+        query={"exists": {"field": "anchor_centroid"}},
+        _source=["playbook_id", "anchor_centroid"],
+    )
     anchors: list[tuple["np.ndarray", str]] = []
     for h in resp.get("hits", {}).get("hits", []):
         s = h["_source"]
         cen = s.get("anchor_centroid")
-        spb = s.get("stable_playbook_id") or h.get("_id")
-        if isinstance(cen, list) and cen and spb:
-            anchors.append((_unit_vector(cen), spb))
+        pid = s.get("playbook_id") or h.get("_id")
+        if isinstance(cen, list) and cen and pid:
+            anchors.append((_unit_vector(cen), pid))
     return anchors
 
 
-def _persist_stable_anchor(
-    es: Elasticsearch, anchor_idx: str, spb_id: str,
-    unit: "np.ndarray", seed_playbook_id: str, run_id: str,
+def _persist_playbook_anchor(
+    es: Elasticsearch, anchor_idx: str, playbook_id: str,
+    unit: "np.ndarray", seed_id: str, run_id: str,
 ) -> None:
-    """Write the pinned anchor for a freshly-minted stable id. Idempotent:
-    `_id = spb_id` so re-running the same run overwrites with the identical
-    centroid rather than duplicating. Called only on a mint (no-match),
-    never on reuse, so the anchor stays fixed for the id's lifetime."""
+    """Pin the centroid of a freshly-minted playbook id. Idempotent on
+    `_id = playbook_id`: re-running the same membership through a clean
+    anchor index overwrites with the same centroid rather than
+    duplicating. Called only on a mint (no anchor matched), never on
+    reuse — the anchor stays fixed for the id's lifetime."""
     from datetime import datetime, timezone
-    try:
-        es.index(
-            index=anchor_idx,
-            id=spb_id,
-            document={
-                "stable_playbook_id": spb_id,
-                "anchor_centroid": [float(x) for x in unit],
-                "seed_playbook_id": seed_playbook_id,
-                "first_run_id": run_id,
-                "first_seen": datetime.now(timezone.utc).isoformat(),
-            },
-        )
-    except Exception as exc:  # noqa: BLE001 — best-effort, dual-write phase
-        log.warning("Failed to persist stable anchor %s: %s", spb_id, exc)
+    es.index(
+        index=anchor_idx,
+        id=playbook_id,
+        document={
+            "playbook_id": playbook_id,
+            "anchor_centroid": [float(x) for x in unit],
+            "seed_playbook_id": seed_id,
+            "first_run_id": run_id,
+            "first_seen": datetime.now(timezone.utc).isoformat(),
+        },
+    )
 
 
-def _assign_stable_playbook_id(
+def _assign_playbook_id(
     group_unit: "np.ndarray",
     anchors: list[tuple["np.ndarray", str]],
     threshold: float,
-    seed_playbook_id: str,
+    seed_id: str,
 ) -> str:
     """Reuse the nearest anchor's id when cosine >= threshold; otherwise
-    mint a fresh id. `group_unit` and anchor vectors are unit-normalised,
-    so the dot product is cosine similarity."""
+    mint a fresh id from the membership seed. `group_unit` and anchor
+    vectors are unit-normalised, so the dot product is cosine similarity."""
     import numpy as np
     if anchors:
         sims = np.array([float(a @ group_unit) for a, _ in anchors])
         j = int(np.argmax(sims))
         if float(sims[j]) >= threshold:
             return anchors[j][1]
-    return _mint_stable_playbook_id(seed_playbook_id)
+    return _mint_playbook_id(seed_id)
 
 
 def merge_clusters_into_playbooks(
@@ -1609,24 +1594,15 @@ def _apply_playbook_name(
     stats: dict,
     *,
     log_prefix: str = "playbook",
-    stable_playbook_id: Optional[str] = None,
 ) -> None:
     """Write playbook_id + playbook_name onto the centroid docs and onto
     every member session via update_by_query. Shared by pass-1 initial
-    naming and pass-2 disambiguation rename.
-
-    When `stable_playbook_id` is given (pass-1 only) it is dual-written onto
-    the centroid docs (ROADMAP #1). Pass-2 rename passes None so the
-    churn-resistant id, set at pass-1, is left untouched by a name change.
-    """
+    naming and pass-2 disambiguation rename."""
     script = (
         "ctx._source.playbook_id = params.playbook_id;"
         "ctx._source.playbook_name = params.name;"
     )
     params = {"playbook_id": playbook_id, "name": name}
-    if stable_playbook_id:
-        script += "ctx._source.stable_playbook_id = params.stable_playbook_id;"
-        params["stable_playbook_id"] = stable_playbook_id
     try:
         es.update_by_query(
             index=session_clusters_idx,
@@ -1835,17 +1811,11 @@ def _merge_collision_subgroups(
 
     When two (or more) colliding playbooks share every prevalent feature and
     differ on none (at `playbook_merge_distinctiveness_floor`), forcing distinct
-    names fabricates a difference. Instead we collapse them: recompute the
-    content-addressed `playbook_id` over the union membership, reassign every
-    member cluster + session to it, and keep the shared pass-1 name.
-
-    The churn-resistant `stable_playbook_id` is deliberately NOT touched here
-    (ROADMAP #1): a name merge is a display decision over playbooks that are
-    cosine-DISTINCT lineages (else they'd already share a stable id). Each
-    member cluster keeps the spb it was pinned in pass-1; the merged playbook
-    may therefore carry more than one spb across its members. Re-snapping a
-    combined centroid here would collapse distinct lineages under one id and
-    flip ids whenever a name collision recurs or doesn't.
+    names fabricates a difference. Instead we collapse them under one id: the
+    lex-smallest of the merging spbs wins (deterministic, no centroid math).
+    The losing spbs remain pinned in the anchor index (write-once) but no
+    cluster doc references them after the merge; they age out via the
+    lifecycle retirement sweep.
     """
     renamable = group["renamable"]
     if len(renamable) < 2:
@@ -1879,19 +1849,17 @@ def _merge_collision_subgroups(
             out.extend(merged_pbs)  # defensive — shouldn't happen
             continue
 
-        new_pid = _make_playbook_id(merged_sids)
+        new_pid = min(sub)  # lex-smallest winning spb id
         name = group["name"]  # the shared pass-1 name survives the merge
 
         log.info(
             "Pass-2 merge: %d playbooks %s → %s '%s' (no distinguishing feature "
             "at floor %.2f)", len(sub), sub, new_pid, name, floor,
         )
-        # stable_playbook_id intentionally left untouched (see docstring) —
-        # member clusters keep their pass-1 spb.
         _apply_playbook_name(
             es, session_clusters_idx, sessions_idx, run_id,
             merged_cids, new_pid, name, stats,
-            log_prefix="merge", stable_playbook_id=None,
+            log_prefix="merge",
         )
         stats["collisions_merged"] += 1
         stats["playbooks_merged_away"] += len(sub) - 1
@@ -2212,9 +2180,9 @@ def run_name_playbooks(
     )
 
     # Pull the *full* member session-id set per cluster from the rollup
-    # index — the centroid doc only carries 5 samples, but the playbook id
-    # is content-hashed over the entire membership so identical runs yield
-    # identical ids (see `_make_playbook_id`).
+    # index — the centroid doc only carries 5 samples, but the membership
+    # seed (which feeds anchor mints) is content-hashed over the entire
+    # membership so identical runs yield identical seeds.
     members_by_cid = _fetch_member_session_ids(
         es, sessions_idx, list(centroids_by_cid.keys()), cfg.session.page_size,
     )
@@ -2245,32 +2213,23 @@ def run_name_playbooks(
     # ROADMAP issue #10.
     named_in_run: list[dict] = []
 
-    # Churn-resistant identity (ROADMAP #1). Anchors are pinned at first
-    # mint in the write-once `playbook_anchors` index; we load them once and
-    # match each playbook's centroid against that fixed reference. Ids minted
-    # THIS run are appended to the in-memory list (and persisted) so two
-    # same-run groups on one lineage stay consistent. Readers don't key on
-    # this yet.
-    dual_write_stable_id = cfg.session.stable_identity_dual_write
+    # Playbook identity: each playbook's centroid is matched against the
+    # pinned anchors in the write-once `playbook_anchors` index. A match
+    # reuses the anchor's id; a miss mints a fresh id and pins a new
+    # anchor in the same call. Ids minted THIS run are appended to the
+    # in-memory anchor set so two same-run groups on one lineage stay
+    # consistent.
     anchor_idx = cfg.elasticsearch.indexes.cowrie.playbook_anchors
-    if dual_write_stable_id:
-        try:
-            anchor_index_exists = es.indices.exists(index=anchor_idx)
-        except Exception:  # noqa: BLE001
-            anchor_index_exists = False
-        if not anchor_index_exists:
-            log.warning(
-                "stable_identity_dual_write is on but anchor index %r is "
-                "missing — disabling dual-write for this run. Run "
-                "`init-indexes --source cowrie` to create it.", anchor_idx,
-            )
-            dual_write_stable_id = False
-    stable_anchors = (
-        _load_stable_anchors(es, anchor_idx) if dual_write_stable_id else []
-    )
-    # spb ids already pinned (loaded anchors + minted this run). A returned
-    # id not in this set is a fresh mint → persist its anchor.
-    known_anchor_ids: set[str] = {sid for _, sid in stable_anchors}
+    if not es.indices.exists(index=anchor_idx):
+        raise RuntimeError(
+            f"playbook anchor index {anchor_idx!r} is missing — run "
+            f"`init-indexes --source cowrie` before naming playbooks. "
+            f"The anchor index is load-bearing; assignment cannot proceed."
+        )
+    anchors = _load_playbook_anchors(es, anchor_idx)
+    # Ids already pinned (loaded + minted this run). A returned id not in
+    # this set is a fresh mint → persist its anchor.
+    known_anchor_ids: set[str] = {pid for _, pid in anchors}
 
     try:
         for group_id in sorted(docs_by_group.keys()):
@@ -2348,44 +2307,41 @@ def run_name_playbooks(
                 )
                 continue
 
-            # The prompt's CLUSTER_ID slot now identifies the playbook group;
-            # if it merged multiple HDBSCAN clusters we hand the LLM the
-            # group's playbook_id plus the constituent cluster ids so any
-            # explanation it produces matches reality.
-            #
-            # Playbook id = SHA-256 over the union of member session ids
-            # across every constituent cluster. Stable across cluster runs
-            # when membership doesn't change.
-            playbook_id = _make_playbook_id(member_sids_union)
+            # Membership seed: SHA-256 over the union of member session ids.
+            # Reproducible across runs with identical membership, used only
+            # to feed `_assign_playbook_id` when no anchor matches (and to
+            # record the seed on the resulting anchor doc as audit trail).
+            seed_id = _compute_seed_id(member_sids_union)
 
-            # Churn-resistant identity (ROADMAP #1): snap this playbook's
-            # centroid to its nearest PINNED anchor, else mint. A fresh mint
-            # pins its anchor (write-once) and joins the in-memory set so a
-            # later same-run group on the same lineage reuses it; a reuse adds
-            # nothing (the anchor is already fixed — appending the current
-            # centroid would re-introduce the walking-anchor bug).
-            stable_playbook_id: Optional[str] = None
-            if dual_write_stable_id:
-                group_unit = _playbook_group_centroid(members)
-                if group_unit is not None:
-                    stable_playbook_id = _assign_stable_playbook_id(
-                        group_unit, stable_anchors,
-                        cfg.session.playbook_merge_threshold, playbook_id,
+            # Assign the canonical `spb-` id: match the playbook's centroid
+            # against pinned anchors, else mint fresh + pin. The anchor is
+            # PINNED on mint and never updated, so a walking-centroid chain
+            # (A~B>=thr, B~C>=thr, A~C<thr) can't collapse unrelated
+            # playbooks under one id.
+            group_unit = _playbook_group_centroid(members)
+            if group_unit is not None:
+                playbook_id = _assign_playbook_id(
+                    group_unit, anchors,
+                    cfg.session.playbook_merge_threshold, seed_id,
+                )
+                if playbook_id not in known_anchor_ids:
+                    known_anchor_ids.add(playbook_id)
+                    anchors.append((group_unit, playbook_id))
+                    _persist_playbook_anchor(
+                        es, anchor_idx, playbook_id,
+                        group_unit, seed_id, run_id,
                     )
-                    if stable_playbook_id not in known_anchor_ids:
-                        known_anchor_ids.add(stable_playbook_id)
-                        stable_anchors.append((group_unit, stable_playbook_id))
-                        _persist_stable_anchor(
-                            es, anchor_idx, stable_playbook_id,
-                            group_unit, playbook_id, run_id,
-                        )
-                        stats["stable_id_minted"] += 1
-                    else:
-                        stats["stable_id_reused"] += 1
+                    stats["id_minted"] += 1
                 else:
-                    stable_playbook_id = _mint_stable_playbook_id(playbook_id)
-                    stats["stable_id_no_centroid"] += 1
-                stats["stable_id_assigned"] += 1
+                    stats["id_reused"] += 1
+            else:
+                # No usable member centroid (rare — every member would have
+                # to lack a `centroid` field). Fall back to a pure-seed mint
+                # so the playbook still has an id; no anchor pinned because
+                # we have no centroid to match against later.
+                playbook_id = _mint_playbook_id(seed_id)
+                stats["id_no_centroid"] += 1
+            stats["id_assigned"] += 1
 
             cluster_id_for_prompt = (
                 member_cids[0] if len(member_cids) == 1
@@ -2446,7 +2402,6 @@ def run_name_playbooks(
                 es, session_clusters_idx, sessions_idx,
                 run_id, member_cids, playbook_id, name, stats,
                 log_prefix="playbook",
-                stable_playbook_id=stable_playbook_id,
             )
 
         # -------------------------------------------------------------------

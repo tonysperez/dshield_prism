@@ -1,5 +1,5 @@
 {
-  "_comment": "Playbook lifecycle. One doc per playbook_id (sescl-<16hex>). Carries rolling per-run snapshots, append-only confirm_anchors[] (analyst + provisional), and drift_suppressions[]. Strict-dynamic. Findings v2 step 1.",
+  "_comment": "Playbook lifecycle. One doc per playbook_id (spb-<16hex>, cosine-anchored). Carries rolling per-run snapshots, append-only confirm_anchors[] (analyst + provisional), and drift_suppressions[]. Strict-dynamic.",
   "settings": {
     "number_of_shards": 1,
     "number_of_replicas": 0,
@@ -11,10 +11,6 @@
     "properties": {
       "playbook_id":         { "type": "keyword" },
       "playbook_name": {
-        "type": "text",
-        "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } }
-      },
-      "inherited_from": {
         "type": "text",
         "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } }
       },

@@ -385,48 +385,6 @@ def _suppressed(lc_doc: dict, kind: str, sig: str) -> bool:
     return False
 
 
-def _expand_lineage_snapshots(es: Elasticsearch, lc_index: str, lc: dict) -> dict:
-    """ROADMAP P2.2 — fold predecessor lifecycle snapshots into the current
-    doc's view before detectors run.
-
-    Without this, `_f_resurgence` (and any other detector that walks
-    snapshot timestamps) can't fire across id transitions: after P2.1
-    inheritance the new lc has at most one fresh snapshot, with the
-    silent period buried in the predecessor's `snapshots[]`.
-
-    Returns a shallow-copied `lc` whose `snapshots[]` is the merged
-    chain (oldest-first, deduped by `(@timestamp, run_id)`). Original
-    confirm_anchors / drift_suppressions / id fields are preserved.
-    """
-    inherited = lc.get("inherited_from") or []
-    if not inherited:
-        return lc
-    merged: list[dict] = []
-    seen: set[tuple[str, str]] = set()
-    # Predecessor chain is oldest → newest; iterate in that order.
-    for pred_id in inherited:
-        try:
-            pred = es.get(index=lc_index, id=pred_id)
-            for s in ((pred.get("_source") or {}).get("snapshots") or []):
-                key = (str(s.get("@timestamp") or ""), str(s.get("run_id") or ""))
-                if key in seen:
-                    continue
-                seen.add(key)
-                merged.append(s)
-        except Exception as exc:
-            log.warning("findings.drift: lineage predecessor %s fetch failed: %s", pred_id, exc)
-    # Append the current doc's snapshots last (newest).
-    for s in lc.get("snapshots") or []:
-        key = (str(s.get("@timestamp") or ""), str(s.get("run_id") or ""))
-        if key in seen:
-            continue
-        seen.add(key)
-        merged.append(s)
-    out = dict(lc)
-    out["snapshots"] = merged
-    return out
-
-
 def run_drift(es: Elasticsearch, cfg: Any, run_id: str) -> dict[str, list[dict[str, Any]]]:
     """Mine every drift kind against the latest anchor of each anchored
     playbook (analyst or provisional). Returns `{kind: findings}`.
@@ -471,10 +429,6 @@ def run_drift(es: Elasticsearch, cfg: Any, run_id: str) -> dict[str, list[dict[s
         curr = _aggregate_playbook_state(es, sessions_idx, pid)
         if not curr:
             continue
-        # P2.2: fold predecessor snapshots in so the snapshot-walking
-        # detectors (resurgence in particular) see the full timeline
-        # across id transitions.
-        lc = _expand_lineage_snapshots(es, pb_lc_idx, lc)
 
         command_fired = False
         emitters: list[tuple[str, Optional[dict]]] = []
@@ -523,8 +477,6 @@ def run_drift(es: Elasticsearch, cfg: Any, run_id: str) -> dict[str, list[dict[s
             if not anchors:
                 continue
             anchor = anchors[-1]
-            # P2.2: lineage merge so size_drift sees pre-transition snapshots.
-            lc = _expand_lineage_snapshots(es, cmp_lc_idx, lc)
             snaps = lc.get("snapshots") or []
             if not snaps:
                 continue

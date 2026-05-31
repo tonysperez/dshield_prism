@@ -13,9 +13,16 @@
 # lookup, so entries are stored in lowercase.
 
 
+"avzly": "added via Health page"
 "clulr": "Mirai-family probe identifier passed to busybox. Not a command."
 "enter": "Leaks from the passwd interactive prompt 'Enter new UNIX password:'. Not a command."
 "hltez": "Mirai-family probe identifier passed to busybox. Not a command."
 "hwdyfhnn": "Attacker-generated random payload filename (8-char random ID pattern)."
+"proto.arm5": "added via Health page"
+"proto.arm6": "added via Health page"
+"proto.arm7": "added via Health page"
+"proto.mips": "added via Health page"
+"proto.mpsl": "added via Health page"
+"proto.x86": "added via Health page"
 "satori": "Mirai-family variant identifier passed to busybox. Not a command."
 "zgfwt": "added via Health page"

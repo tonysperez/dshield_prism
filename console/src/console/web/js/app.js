@@ -240,29 +240,6 @@
   // Anchor / expand
   // ---------------------------------------------------------------------
 
-  // Surface a clear notice when a playbook/campaign anchor resolves to
-  // an id that no longer exists in the live corpus — the finding was
-  // minted before a cluster pass re-keyed the playbook. Manifestation of
-  // ROADMAP #1 (playbook + campaign identity stability). Live anchors
-  // are untouched (notice hides itself).
-  function _updateGraphNotice(type, id, graph) {
-    const el = document.getElementById("graph-notice");
-    if (!el) return;
-    const nodes = (graph && graph.nodes) || [];
-    const isDeadId =
-      (type === "playbook" || type === "campaign") &&
-      !graph.error &&
-      nodes.length <= 1;  // anchor only, no member sessions/IPs
-    if (!isDeadId) { el.hidden = true; el.innerHTML = ""; return; }
-    el.innerHTML =
-      `<h4>Anchor not in live corpus</h4>` +
-      `<p>This ${type} id <code>${id.replace(/[<>&]/g, "")}</code> no longer ` +
-      `matches any session in the current rollup. The finding that pointed ` +
-      `here was minted before a cluster pass re-keyed the ${type}.</p>` +
-      `<p class="gn-foot">ROADMAP #1 — playbook + campaign identity stability.</p>`;
-    el.hidden = false;
-  }
-
   async function anchor(type, id, opts = {}) {
     state.anchor = { type, id };
     if (!opts.skipHistory) {
@@ -292,7 +269,6 @@
       api(`/api/ioc/${encodeURIComponent(type)}/${encodeURIComponent(id)}/neighbors?limit=50`).catch((e) => ({ error: e.message })),
     ]);
     const anchorNodeId = nodeIdFor(type, id);
-    _updateGraphNotice(type, id, graph);
     if (graph.error) {
       alert(`Neighbors failed: ${graph.error}`);
     } else {

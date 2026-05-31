@@ -122,6 +122,7 @@ def _fetch_ip_session_docs(
             "dshield.cowrie.enrichment.session.max_novelty_score",
             "dshield.cowrie.enrichment.session.embedding",
             "dshield.cowrie.enrichment.session.credentials",
+            "dshield.cowrie.enrichment.session.playbook_id",
             "cowrie.session_id",
             "cowrie.hassh",
         ],
@@ -167,6 +168,7 @@ def _build_ip_doc(
     as_info: dict = {}
     credentials_set: set[str] = set()
     hassh_counter: Counter = Counter()
+    playbook_counter: Counter = Counter()
 
     for s in sessions:
         en = ((s.get("dshield") or {}).get("cowrie") or {}).get("enrichment", {}).get("session", {})
@@ -232,6 +234,13 @@ def _build_ip_doc(
         if hassh:
             hassh_counter[hassh] += 1
 
+        # Per-IP playbook tally. Modal + full distribution drive
+        # `mine_ip_behavior_shift` (discovery findings) via the source-IP
+        # lifecycle snapshot.
+        pid = en.get("playbook_id")
+        if pid:
+            playbook_counter[pid] += 1
+
     embedding = _mean_pool(embeddings) if embeddings else None
     dominant_intent, intent_distribution = _summarize_intents(intents)
     mean_novelty = round(sum(novelty_scores) / len(novelty_scores), 4) if novelty_scores else None
@@ -275,6 +284,12 @@ def _build_ip_doc(
         ip_block["hassh_distribution"] = [
             {"hassh": h, "count": c}
             for h, c in sorted(hassh_counter.items(), key=lambda kv: (-kv[1], kv[0]))
+        ]
+    if playbook_counter:
+        ip_block["dominant_playbook_id"] = playbook_counter.most_common(1)[0][0]
+        ip_block["playbook_distribution"] = [
+            {"playbook_id": p, "count": c}
+            for p, c in sorted(playbook_counter.items(), key=lambda kv: (-kv[1], kv[0]))
         ]
 
     source_block: dict = {"ip": ip}
