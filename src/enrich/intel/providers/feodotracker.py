@@ -99,6 +99,9 @@ def parse_feodo_response(payload: Any) -> dict[str, dict[str, Any]]:
 class FeodoTrackerProvider(Provider):
     name = "feodotracker"
     handles = frozenset({"ip"})
+    # abuse.ch family — shares infrastructure + cross-references with
+    # MalwareBazaar / ThreatFox / URLhaus.
+    upstream_feeds = frozenset({"abuse.ch"})
     ttl = timedelta(days=1)
     # Bulk download once per refresh window; per-IP lookup is in-memory.
     rate_limit = RateLimit(capacity=1000, refill_per_second=1000.0, daily_budget=None)

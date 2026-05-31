@@ -54,6 +54,13 @@ class IntelSummary:
     clean_provider_count: int
     confidence_max: Optional[int]
     tags: tuple[str, ...]
+    # Names of every provider that voted `malicious=True` on this
+    # artifact. Used by the M3 consensus gate to verify the malicious
+    # votes come from independent upstream feeds (see
+    # `enrich.intel.provider_registry.max_independent_set`). Empty when
+    # no malicious votes exist or when reading an old intel doc whose
+    # `providers.*` block has been pruned.
+    malicious_providers: frozenset[str] = frozenset()
 
     @classmethod
     def from_doc(cls, source: dict) -> Optional["IntelSummary"]:
@@ -66,6 +73,18 @@ class IntelSummary:
         cm = derived.get("consensus_malicious")
         if cm is None:
             return None
+        # Walk the per-provider block to collect names of providers that
+        # voted malicious. We can't read this from `derived` directly
+        # because the rollup only carries the count.
+        providers_block = source.get("providers") or {}
+        malicious_providers: frozenset[str]
+        if isinstance(providers_block, dict):
+            malicious_providers = frozenset(
+                name for name, block in providers_block.items()
+                if isinstance(block, dict) and block.get("malicious") is True
+            )
+        else:
+            malicious_providers = frozenset()
         # Defensive defaults for every field — old intel docs that
         # haven't been touched by `reapply-rules` yet may be missing
         # the M2 rollup additions.
@@ -79,6 +98,7 @@ class IntelSummary:
             confidence_max=(int(derived["confidence_max"])
                             if derived.get("confidence_max") is not None else None),
             tags=tuple(derived.get("tags") or ()),
+            malicious_providers=malicious_providers,
         )
 
 

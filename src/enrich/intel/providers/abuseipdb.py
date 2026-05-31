@@ -124,6 +124,7 @@ def classify_abuseipdb(
 class AbuseIPDBProvider(Provider):
     name = "abuseipdb"
     handles = frozenset({"ip"})
+    upstream_feeds = frozenset({"abuseipdb"})  # community submissions, primary
 
     def __init__(self, provider_cfg, api_key: str) -> None:
         super().__init__(provider_cfg)

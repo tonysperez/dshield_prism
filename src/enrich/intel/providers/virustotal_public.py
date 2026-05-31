@@ -76,6 +76,11 @@ def classify_virustotal(
 class VirusTotalPublicProvider(Provider):
     name = "virustotal_public"
     handles = frozenset({"hash"})
+    # VT aggregates 70+ AV engines and URL scanners, but its verdict is
+    # delivered as a single normalised score — treat as one consensus
+    # identity. (No other provider currently overlaps with VT's pool;
+    # in practice VT pairs cleanly with greynoise, abuseipdb, etc.)
+    upstream_feeds = frozenset({"virustotal"})
 
     def __init__(self, provider_cfg, api_key: str) -> None:
         super().__init__(provider_cfg)

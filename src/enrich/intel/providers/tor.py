@@ -40,6 +40,9 @@ log = logging.getLogger(__name__)
 class TorProvider(Provider):
     name = "tor"
     handles = frozenset({"ip"})
+    # Tor Project's published exit-node list — first-party, no overlap
+    # with any other provider's data.
+    upstream_feeds = frozenset({"tor"})
     ttl = timedelta(days=1)
     rate_limit = RateLimit(capacity=1000, refill_per_second=1000.0, daily_budget=None)
 

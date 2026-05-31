@@ -111,6 +111,9 @@ class ThreatFoxProvider(Provider):
     # URL (M4) + hash (#2). `search_ioc` accepts a hash value as-is. ip/domain
     # remain a future single-line extension.
     handles = frozenset({"url", "hash"})
+    # abuse.ch family — ThreatFox cross-references MalwareBazaar +
+    # URLhaus internally, so it cannot pair with them for consensus.
+    upstream_feeds = frozenset({"abuse.ch"})
 
     def __init__(self, provider_cfg, auth_key: Optional[str] = None) -> None:
         super().__init__(provider_cfg)

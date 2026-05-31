@@ -169,6 +169,13 @@ class Provider(ABC):
     # Class-level descriptors — subclasses override.
     name: str = ""                       # e.g. "tor", "spamhaus", "isc"
     handles: frozenset[str] = frozenset()  # artifact kinds this provider answers
+    # Upstream-feed identities this provider draws from. The M3 consensus
+    # gate requires ≥2 malicious-voting providers with DISJOINT
+    # `upstream_feeds` to suppress cloud escalation — avoiding the
+    # footgun where two abuse.ch wrappers agree because they share an
+    # upstream, not because two independent sources both observed the
+    # artifact. See `enrich.intel.provider_registry`.
+    upstream_feeds: frozenset[str] = frozenset()
     ttl: timedelta = timedelta(days=1)
     rate_limit: RateLimit = field(default_factory=RateLimit)  # type: ignore[assignment]
 

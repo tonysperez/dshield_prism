@@ -15,6 +15,7 @@ from typing import Optional
 from .cache import StateDB
 from .config import CloudConfig
 from .intel.lookup import IntelSummary
+from .intel.provider_registry import max_independent_set
 from .llm.schemas import CommandEnrichment
 
 log = logging.getLogger(__name__)
@@ -209,11 +210,14 @@ def intel_skip_reason(
        `"intel_skip_authoritative_clean"`. ShadowServer-class researchers
        running enumeration commands don't deserve cloud-LLM budget.
 
-    2. **All source IPs have ≥2-provider malicious consensus** AND every
-       triage reason is gateable (no `base64_blob` / `ip_literal` /
-       `rare_tld`) → return `"intel_skip_commodity_consensus"`. The
-       command + attacker combination is well-known commodity activity;
-       the local LLM's enrichment is sufficient.
+    2. **All source IPs have ≥2-INDEPENDENT-provider malicious consensus**
+       AND every triage reason is gateable (no `base64_blob` /
+       `ip_literal` / `rare_tld`) → return
+       `"intel_skip_commodity_consensus"`. "Independent" means the
+       malicious-voting providers' declared upstream feeds are pairwise
+       disjoint — two abuse.ch providers agreeing or FireHOL + ISC
+       (which both carry DShield) DO NOT count as a 2-source consensus.
+       See `enrich.intel.provider_registry`.
 
     3. Otherwise → None. Let the existing escalation rules decide.
 
@@ -227,10 +231,14 @@ def intel_skip_reason(
     # Rule 1: every IP carries an authoritative_clean override.
     if all(s.override_applied == "authoritative_clean" for s in ip_summaries):
         return "intel_skip_authoritative_clean"
-    # Rule 2: every IP has strong-consensus malicious AND the only
-    # escalation reasons are gateable.
+    # Rule 2: every IP has strong-INDEPENDENT consensus AND the only
+    # escalation reasons are gateable. Independence guard added in
+    # phase 2.1 of the brutal-review plan — previously a bare
+    # `malicious_provider_count >= 2` let two abuse.ch wrappers count
+    # as two sources even though they share an upstream.
     all_strong_commodity = all(
-        s.consensus_malicious and s.malicious_provider_count >= 2
+        s.consensus_malicious
+        and max_independent_set(s.malicious_providers) >= 2
         for s in ip_summaries
     )
     if all_strong_commodity and _reasons_are_gateable(triage_reasons):

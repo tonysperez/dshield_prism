@@ -115,6 +115,11 @@ def match_firehol(
 class FireholProvider(Provider):
     name = "firehol"
     handles = frozenset({"ip"})
+    # Level 1 is itself an aggregator merging Spamhaus, DShield, and
+    # other public reputation lists. Declared upstream set blocks
+    # consensus pairing with ISC (which is DShield directly) and with
+    # any future first-party Spamhaus provider.
+    upstream_feeds = frozenset({"firehol", "spamhaus", "dshield"})
     ttl = timedelta(days=1)
     rate_limit = RateLimit(capacity=1000, refill_per_second=1000.0, daily_budget=None)
 

@@ -96,6 +96,10 @@ def confidence_from_reports(reports: int) -> int:
 class ISCProvider(Provider):
     name = "isc"
     handles = frozenset({"ip"})
+    # SANS Internet Storm Center / DShield top-attackers. First-party
+    # collection from DShield's honeypot network; FireHOL Level 1
+    # aggregates DShield so the two cannot independently pair.
+    upstream_feeds = frozenset({"dshield"})
     ttl = timedelta(days=1)
     rate_limit = RateLimit(capacity=1000, refill_per_second=1000.0, daily_budget=None)
 

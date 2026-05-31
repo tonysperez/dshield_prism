@@ -200,6 +200,9 @@ def classify_urlhaus(
 class URLhausProvider(Provider):
     name = "urlhaus"
     handles = frozenset({"url"})
+    # abuse.ch family — shares infrastructure + cross-references with
+    # FeodoTracker / MalwareBazaar / ThreatFox.
+    upstream_feeds = frozenset({"abuse.ch"})
     ttl = timedelta(days=1)
     rate_limit = RateLimit(capacity=1000, refill_per_second=1000.0, daily_budget=None)
 

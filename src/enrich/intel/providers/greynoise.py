@@ -154,6 +154,9 @@ def classify_greynoise(
 class GreyNoiseProvider(Provider):
     name = "greynoise"
     handles = frozenset({"ip"})
+    # First-party scanner network with own classification. RIOT is also
+    # internal to GreyNoise.
+    upstream_feeds = frozenset({"greynoise"})
 
     def __init__(self, provider_cfg, api_key: str) -> None:
         super().__init__(provider_cfg)
