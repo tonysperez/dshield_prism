@@ -61,8 +61,6 @@ def format_evidence_quality(
         "Resurfaced · after 12d silence"
       outlier_burst →
         "Burst · 14 sess / 6 IPs"
-      novel_edge_session →
-        "Novel edge · 1 session"
       campaign_convergence →
         "Overlap · 24 shared IPs"
 
@@ -89,8 +87,6 @@ def format_evidence_quality(
         return _campaign_growth_verdict(ev)
     if kind == "outlier_burst":
         return _outlier_burst_verdict(ev)
-    if kind == "novel_edge_session":
-        return _novel_edge_verdict(ev)
     if kind == "campaign_convergence":
         return _convergence_verdict(ev)
     if kind == "unattributed_active_ip":
@@ -113,22 +109,35 @@ def _membership_verdict(
     ips = _as_int(ev.get("member_ips") or ev.get("ip_count"))
     first_seen = ev.get("first_seen") or finding.get("first_seen_at")
     last_seen = ev.get("last_seen") or finding.get("last_seen_at")
-    window = _window_phrase(first_seen, last_seen)
+    runs = _as_int((lifecycle or {}).get("runs_observed"))
+    return _membership_banded_verdict(sess, ips, first_seen, last_seen, runs)
 
+
+def _membership_banded_verdict(
+    sess: int, ips: int,
+    first_seen: Any, last_seen: Any,
+    runs: int,
+) -> str:
+    """Primitive shared by finding-shaped and anchor-shaped callers.
+
+    Returns one of:
+      "Strong · 47 sess / 19 IPs · 12d · 9 runs"
+      "Moderate · 6 sess / 4 IPs · 2d"
+      "Single-point · 1 sess / 1 IP · today"
+    Or an empty string when there's nothing to say.
+    """
+    window = _window_phrase(first_seen, last_seen)
     if sess <= 1 or ips <= 1:
         band = "Single-point"
     elif sess >= 20 and ips >= 5:
         band = "Strong"
     else:
         band = "Moderate"
-
     parts: list[str] = [band]
     if sess or ips:
         parts.append(f"{sess} sess / {ips} IPs")
     if window:
         parts.append(window)
-
-    runs = _as_int((lifecycle or {}).get("runs_observed"))
     if runs >= 3 and band != "Single-point":
         parts.append(f"{runs} runs")
     return " · ".join(p for p in parts if p)
@@ -221,13 +230,6 @@ def _outlier_burst_verdict(ev: dict[str, Any]) -> str:
     return "Burst"
 
 
-def _novel_edge_verdict(ev: dict[str, Any]) -> str:
-    edge = ev.get("edge_kind") or ev.get("kind") or ""
-    if edge:
-        return f"Novel edge · {edge}"
-    return "Novel edge"
-
-
 def _convergence_verdict(ev: dict[str, Any]) -> str:
     shared = _as_int(ev.get("shared_ip_count") or ev.get("shared_ips"))
     if shared:
@@ -294,3 +296,111 @@ def _window_phrase(first_seen: Any, last_seen: Any) -> str:
     if hours >= 1.0:
         return f"{int(round(hours))}h"
     return "today"
+
+
+# ---------------------------------------------------------------------------
+# Anchor-shaped verdicts (graph anchors / IOCDetail surfaces)
+# ---------------------------------------------------------------------------
+#
+# Findings carry an `evidence` block keyed by finding kind. Graph anchors
+# carry an IOCDetail `summary` keyed by anchor type. Different shapes,
+# same vocabulary. format_anchor_evidence_quality dispatches by anchor
+# type and reuses the same membership-banded primitive as findings.
+#
+# Consumed by:
+#   - The graph orientation card via state.currentDetail.evidence_quality
+#   - The /browse catalog rows (Item C of the analyst-first UX patch)
+#   - Per-IOC artifact pages (/artifact/ip, /artifact/url, /artifact/hash)
+
+
+def format_anchor_evidence_quality(
+    anchor_type: str,
+    summary: dict[str, Any],
+    lifecycle: Optional[dict[str, Any]] = None,
+) -> str:
+    """Anchor-shaped verdict — same vocabulary as findings, different input.
+
+    Examples by anchor type:
+      playbook  →  "Strong · 47 sess / 19 IPs · 12d · 9 runs"
+      campaign  →  "Strong · 275 sess / 73 IPs · 12d"
+      ip        →  "Active · 18 sess / 142 commands · 7d"
+                or "Single-point · 1 session · today"
+      session_cluster  → "19 members · playbook anchored"
+      ip_cluster       → "47 members"
+      command_cluster  → "39 members"
+
+    Returns an empty string when nothing useful applies (e.g. asn,
+    country, mitre anchors — those have their own count surfaces).
+    """
+    if not isinstance(summary, dict):
+        return ""
+    if not anchor_type:
+        return ""
+
+    if anchor_type == "playbook":
+        return _membership_banded_verdict(
+            sess=_as_int(summary.get("session_count")),
+            ips=_as_int(summary.get("ip_count")),
+            first_seen=summary.get("first_seen"),
+            last_seen=summary.get("last_seen"),
+            runs=_as_int((lifecycle or {}).get("runs_observed")),
+        )
+    if anchor_type == "campaign":
+        return _membership_banded_verdict(
+            sess=_as_int(summary.get("session_count")),
+            ips=_as_int(summary.get("ip_count")),
+            first_seen=summary.get("first_seen"),
+            last_seen=summary.get("last_seen"),
+            runs=_as_int((lifecycle or {}).get("runs_observed")),
+        )
+    if anchor_type == "ip":
+        return _ip_anchor_verdict(summary, lifecycle)
+    if anchor_type in ("session_cluster", "ip_cluster", "command_cluster"):
+        return _cluster_anchor_verdict(anchor_type, summary)
+    return ""
+
+
+def _ip_anchor_verdict(
+    summary: dict[str, Any], lifecycle: Optional[dict[str, Any]],
+) -> str:
+    """IPs are single-IP by nature — Strong/Moderate/Single-point doesn't
+    apply the same way. Report activity volume + time window honestly.
+    """
+    sess = _as_int(summary.get("total_sessions"))
+    cmds = _as_int(summary.get("total_commands"))
+    first = summary.get("first_seen")
+    last = summary.get("last_seen")
+    window = _window_phrase(first, last)
+    # Activity band: a one-session probe reads differently from a
+    # 200-session beachhead. Bands intentionally permissive — the analyst
+    # gets a hint, not a final word.
+    if sess <= 1 and cmds <= 1:
+        band = "Single-point"
+    elif sess >= 10 or cmds >= 50:
+        band = "Active"
+    else:
+        band = "Light"
+    parts: list[str] = [band]
+    if sess or cmds:
+        bits = []
+        if sess: bits.append(f"{sess} sess")
+        if cmds: bits.append(f"{cmds} commands")
+        parts.append(" / ".join(bits))
+    if window:
+        parts.append(window)
+    return " · ".join(p for p in parts if p)
+
+
+def _cluster_anchor_verdict(
+    anchor_type: str, summary: dict[str, Any],
+) -> str:
+    """Cluster anchors carry `size`; until per-cluster centroid-cohesion
+    stats land (open audit item), the verdict is honestly just the
+    member count + (for session clusters) whether a playbook anchored.
+    """
+    size = _as_int(summary.get("size"))
+    if not size:
+        return ""
+    if anchor_type == "session_cluster" and summary.get("playbook_name"):
+        return f"{size} members · playbook anchored"
+    return f"{size} members"

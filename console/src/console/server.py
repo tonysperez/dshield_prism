@@ -554,6 +554,25 @@ def build_app(config_path: str | None = None) -> FastAPI:
         except Exception as exc:                       # pragma: no cover
             log.exception("artifact_ip_api failed")
             raise HTTPException(500, f"artifact lookup failed: {exc}")
+        # Stamp the activity verdict (Active / Light / Single-point · counts
+        # · window) so the artifact page carries the same one-line
+        # confidence surface the inbox + graph orientation card do.
+        try:
+            from enrich.findings.evidence_quality import format_anchor_evidence_quality
+            rollup = (data or {}).get("rollup") or {}
+            enr = (((rollup.get("dshield") or {}).get("cowrie") or {})
+                   .get("enrichment") or {}).get("ip") or {}
+            if enr:
+                v = format_anchor_evidence_quality("ip", {
+                    "total_sessions": enr.get("total_sessions"),
+                    "total_commands": enr.get("total_commands"),
+                    "first_seen":     enr.get("first_seen"),
+                    "last_seen":      enr.get("last_seen"),
+                })
+                if v:
+                    data["evidence_quality"] = v
+        except Exception:
+            pass
         return JSONResponse(data)
 
     @app.get("/api/artifact/url")
@@ -1398,22 +1417,54 @@ def build_app(config_path: str | None = None) -> FastAPI:
         if ioc_type == "playbook":
             data = queries.lookup_playbook(es, cfg, ident)
             title = (data.get("name") or ident) if isinstance(data, dict) else ident
-            return IOCDetail(
+            return _attach_anchor_evidence_quality(IOCDetail(
                 type="playbook", id=ident, title=f"playbook: {title}",
                 summary=data, raw=None,
-            )
+            ))
         if ioc_type == "campaign":
             # Multi-session campaign — mined into its own index by
             # `dshield_prism mine campaigns`. Distinct from playbook (which
             # is a named session cluster).
+            #
+            # Tour-mode synthetic campaign: when the analyst is following
+            # the onboarding tour, the campaign id matches the in-repo
+            # tour fixture. The graph builder emits a synthetic neighbor
+            # payload from the same emit helpers as live data; here we
+            # return a matching synthetic IOCDetail so the lookup
+            # doesn't 404. Drives the same orientation card / detail
+            # pane / write-up flow with no ES dependency.
+            from console.graph import TOUR_CAMPAIGN_ID
+            if ident == TOUR_CAMPAIGN_ID:
+                doc = {
+                    "campaign_id":         TOUR_CAMPAIGN_ID,
+                    "name":                "Defense-in-depth SSH persistence",
+                    "kind":                "behaviour",
+                    "session_count":       275,
+                    "ip_count":            73,
+                    "first_seen":          "2026-04-29T00:00:00Z",
+                    "last_seen":           "2026-05-11T00:00:00Z",
+                    "support":             0.93,
+                    "member_playbook_ids": ["spb-tour-keylock", "spb-tour-cronlist"],
+                    "rationale": (
+                        "Two distinct playbooks consistently co-occur across the "
+                        "same source IPs, both installing the same RSA key with "
+                        "overlapping persistence tactics."
+                    ),
+                    "_tour": True,
+                }
+                return _attach_anchor_evidence_quality(IOCDetail(
+                    type="campaign", id=ident,
+                    title="campaign: Defense-in-depth SSH persistence",
+                    summary=doc, raw=None,
+                ))
             doc = queries.lookup_campaign(es, cfg, ident)
             if not doc:
                 raise HTTPException(404, f"campaign not found: {ident}")
             title = doc.get("name") or ident
-            return IOCDetail(
+            return _attach_anchor_evidence_quality(IOCDetail(
                 type="campaign", id=ident, title=f"campaign: {title}",
                 summary=doc, raw=None,
-            )
+            ))
         if ioc_type == "asn":
             return IOCDetail(type="asn", id=ident, title=f"AS{ident}",
                              summary={"asn": ident}, raw=None)
@@ -1691,6 +1742,28 @@ def _build_ask_prompt(question: str, context: dict, nonce: str | None = None) ->
 # Detail builders (pull out the headline fields a human wants to see first)
 # ---------------------------------------------------------------------------
 
+def _attach_anchor_evidence_quality(detail: IOCDetail) -> IOCDetail:
+    """Stamp the one-line evidence-quality verdict on an IOCDetail.
+
+    Called by every anchor-detail builder that benefits from a confidence
+    surface (playbook / campaign / *_cluster / ip). Empty for kinds where
+    a verdict doesn't apply (asn / country / mitre_* / session / command).
+
+    Consumed by the graph orientation card via `state.currentDetail.
+    evidence_quality` and by /browse + per-IOC artifact pages.
+    """
+    try:
+        from enrich.findings.evidence_quality import format_anchor_evidence_quality
+        verdict = format_anchor_evidence_quality(
+            detail.type, detail.summary or {},
+        )
+        if verdict:
+            detail.evidence_quality = verdict
+    except Exception:
+        pass
+    return detail
+
+
 def _detail_ip(ip: str, doc: dict) -> IOCDetail:
     src = doc["_source"]
     geo = (src.get("source") or {}).get("geo") or {}
@@ -1726,7 +1799,9 @@ def _detail_ip(ip: str, doc: dict) -> IOCDetail:
         # An IP's playbook membership is derived from its sessions, not
         # stored on the IP doc — see `_detail_ip_with_playbooks` below.
     }
-    return IOCDetail(type="ip", id=ip, title=ip, summary=summary, raw=src)
+    return _attach_anchor_evidence_quality(
+        IOCDetail(type="ip", id=ip, title=ip, summary=summary, raw=src)
+    )
 
 
 def _detail_ip_with_playbooks(es, cfg, ip: str, doc: dict) -> IOCDetail:
@@ -1838,8 +1913,10 @@ def _detail_cluster(kind: str, cid: str, doc: dict | None) -> IOCDetail:
         "sample_session_ids": src.get("sample_session_ids"),
         "sample_ips": src.get("sample_ips"),
     }
-    return IOCDetail(type=f"{kind}_cluster", id=cid,
-                     title=f"{kind} cluster {cid}", summary=summary, raw=src)
+    return _attach_anchor_evidence_quality(
+        IOCDetail(type=f"{kind}_cluster", id=cid,
+                  title=f"{kind} cluster {cid}", summary=summary, raw=src)
+    )
 
 
 def _table(r: dict, frm: int, size: int) -> TableResponse:

@@ -240,6 +240,15 @@
   // Anchor / expand
   // ---------------------------------------------------------------------
 
+  // Tour campaign id — used by copy.js for the write-up fixture
+  // intercept. The graph + IOCDetail are now served synthetically
+  // by the backend (graph.py:_tour_campaign_graph + server.py
+  // ioc_detail), so the analyst gets the same lane assignment,
+  // bubbling, and cluster overlays as a real campaign anchor.
+  function tourForced() {
+    return new URLSearchParams(location.search).get("tour") === "1";
+  }
+
   async function anchor(type, id, opts = {}) {
     state.anchor = { type, id };
     if (!opts.skipHistory) {
@@ -423,7 +432,11 @@
     let title = d.title || d.id || "";
     let kindTag = d.type;
     let internalId = "";
-    let evidence = "";
+    // Prefer the server-stamped evidence-quality verdict (from
+    // format_anchor_evidence_quality); fall through to per-kind
+    // ad-hoc evidence below for the file/hash case which uses the
+    // intel verdict instead. (Closes Gap 3's confidence half.)
+    let evidence = d.evidence_quality || "";
 
     const push = (label, value) => {
       if (value === null || value === undefined || value === "") return;
@@ -591,9 +604,18 @@
       tag.style.color = "#6b7494";
       countsEl.appendChild(tag);
     }
+    // When the verdict line below already carries counts + window
+    // (playbook/campaign/cluster/ip cases), suppress the duplicate
+    // counts on this line — the kind tag alone is enough above the
+    // verdict. File/hash anchors keep counts since their verdict is
+    // an intel-verdict label, not a count summary.
+    const verdictCarriesCounts = !!summary.evidence
+      && summary.evidence.toLowerCase().includes("·");
     const parts = [];
-    for (const c of summary.counts) parts.push(`${c.value} ${c.label}`);
-    if (summary.windowPhrase) parts.push(summary.windowPhrase);
+    if (!verdictCarriesCounts) {
+      for (const c of summary.counts) parts.push(`${c.value} ${c.label}`);
+      if (summary.windowPhrase) parts.push(summary.windowPhrase);
+    }
     if (parts.length) {
       const sep = document.createElement("span");
       sep.className = "orientation-sep";
@@ -1689,6 +1711,11 @@
     // gets pushState'd back to the bare ioc form.
     const current = new URLSearchParams(location.search);
     if (current.get("debug") === "1") p.set("debug", "1");
+    // Tour mode is a sticky URL flag — preserve it across pushState so
+    // the anchor() intercept can still see it after updateUrl() runs.
+    // (Without this, the tour=1 param gets stripped on first paint and
+    // the campaign fixture intercept never fires.)
+    if (current.get("tour") === "1") p.set("tour", "1");
     // Preserve the inbox return-crumb token across knob changes so the
     // breadcrumb's "← Inbox" hop survives a settings flip.
     if (state.returnToInbox && state.returnToInbox.token) {

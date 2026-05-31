@@ -164,7 +164,7 @@
     const table = el("table", "ins-table");
     const thead = el("thead");
     const hrow = el("tr");
-    for (const h of ["Campaign", "Kind", "IPs", "Sessions", "Members", ""]) hrow.appendChild(th(h));
+    for (const h of ["Campaign", "Kind", "IPs", "Sessions", "Members", "Evidence", ""]) hrow.appendChild(th(h));
     thead.appendChild(hrow);
     table.appendChild(thead);
     const tbody = el("tbody");
@@ -179,6 +179,7 @@
       tr.appendChild(td("", fmt(row.session_count)));
       const mbrs = Array.isArray(row.member_playbook_ids) ? row.member_playbook_ids.length : 0;
       tr.appendChild(td("", row.kind === "behaviour" ? `${mbrs} playbooks` : `${row.support || 0} IPs`));
+      tr.appendChild(td("ins-evidence", row.evidence_quality || "—"));
       tr.appendChild(actionCell("campaign", cid));
       tbody.appendChild(tr);
     }
@@ -195,7 +196,7 @@
     const table = el("table", "ins-table");
     const thead = el("thead");
     const hrow = el("tr");
-    for (const h of ["Playbook", "IPs", "Sessions", "14d", ""]) hrow.appendChild(th(h));
+    for (const h of ["Playbook", "IPs", "Sessions", "Evidence", "14d", ""]) hrow.appendChild(th(h));
     thead.appendChild(hrow);
     table.appendChild(thead);
     const tbody = el("tbody");
@@ -207,6 +208,7 @@
       tr.appendChild(td("", iocLink("playbook", cid, label)));
       tr.appendChild(td("size-badge", fmt(row.ip_count)));
       tr.appendChild(td("", fmt(row.session_count)));
+      tr.appendChild(td("ins-evidence", row.evidence_quality || "—"));
       const sparkCell = document.createElement("td");
       const sparkSvg = renderSparkline(row.daily_14d || []);
       if (sparkSvg) sparkCell.appendChild(sparkSvg);

@@ -38,6 +38,12 @@ class IOCDetail(BaseModel):
     title: str
     summary: dict[str, Any]
     raw: dict[str, Any] | None = None
+    # One-line "how strong is the evidence" verdict (same vocabulary the
+    # inbox row carries). Populated by format_anchor_evidence_quality for
+    # playbook / campaign / *_cluster / ip anchors; empty for kinds where
+    # a verdict doesn't apply (asn, country, mitre_*, session, command).
+    # Consumed by the graph orientation card.
+    evidence_quality: str = ""
 
 
 class TableRow(BaseModel):

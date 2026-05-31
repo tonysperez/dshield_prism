@@ -172,10 +172,22 @@
       setHTML("providers-grid", "");
       return;
     }
+    renderVerdict(data.evidence_quality);
     renderBadges(data);
     renderDerived(data.intel);
     renderRollup(data.rollup);
     renderProviders(data.intel);
+  }
+
+  // One-line activity verdict ("Active · 18 sess / 142 commands · 7d" etc).
+  // Same vocabulary the inbox + graph orientation card carry, so the
+  // analyst learns one mental scale across surfaces.
+  function renderVerdict(verdict) {
+    const host = document.getElementById("art-evidence");
+    if (!host) return;
+    if (!verdict) { host.textContent = ""; host.style.display = "none"; return; }
+    host.textContent = verdict;
+    host.style.display = "";
   }
 
   document.addEventListener("DOMContentLoaded", load);

@@ -673,6 +673,117 @@ def _cluster_anchor(
     return _dedup({"nodes": nodes, "edges": edges})
 
 
+TOUR_CAMPAIGN_ID = "cmp-beh-e6e6e5569e56d396"
+
+
+def _tour_campaign_graph() -> dict:
+    """Synthetic campaign graph for the onboarding tour.
+
+    Builds the same node/edge shape `_campaign_anchor` would, but from
+    constant data — no ES round-trips. Calls the same emit helpers
+    (`_emit_session_cluster_playbook`, `_emit_ip_cluster`) so lane
+    assignment, edge kinds, cluster bubbling, and playbook anchoring
+    all match the real renderer's expectations.
+
+    Returns the same `{nodes, edges}` shape as the live campaign anchor.
+    """
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    camp_id = TOUR_CAMPAIGN_ID
+
+    # Anchor — matches the cnode shape in _campaign_anchor.
+    nodes.append({"data": {
+        "id":            _nid("camp", camp_id),
+        "type":          "campaign",
+        "campaign_id":   camp_id,
+        "campaign_kind": "behaviour",
+        "label":         "Defense-in-depth SSH persistence",
+        "ip_count":      73,
+        "session_count": 275,
+    }})
+
+    # (session_id, playbook_id, playbook_name, source_ip, asn, country)
+    sessions = [
+        ("tour-sess-a01", "spb-tour-keylock",  "SSH Key Injection with chattr Locking", "203.0.113.42",   "64500", "RU"),
+        ("tour-sess-a02", "spb-tour-keylock",  "SSH Key Injection with chattr Locking", "198.51.100.71",  "64501", "CN"),
+        ("tour-sess-a03", "spb-tour-cronlist", "SSH Key Installer: Crontab list",       "192.0.2.55",     "64502", "BR"),
+        ("tour-sess-a04", "spb-tour-cronlist", "SSH Key Installer: Crontab list",       "203.0.113.180",  "64503", "IN"),
+        ("tour-sess-a05", "spb-tour-keylock",  "SSH Key Injection with chattr Locking", "198.51.100.140", "64504", "VN"),
+    ]
+    for sid, pid, pname, ip, asn, cc in sessions:
+        # Session node + session→campaign edge.
+        nodes.append({"data": {
+            "id":            _nid("session", sid),
+            "type":          "session",
+            "label":         sid,
+            "size":          _log_size(3),
+            "playbook_id":   pid,
+            "playbook_name": pname,
+            "novelty":       0.32,
+            "cluster_id":    f"tour-sescl-{pid[-8:]}",
+            "is_outlier":    False,
+        }})
+        edges.append({"data": {
+            "id":     f"{_nid('session', sid)}->{_nid('camp', camp_id)}",
+            "source": _nid("session", sid),
+            "target": _nid("camp", camp_id),
+            "label":  "in_campaign", "kind": "in_campaign",
+        }})
+        # Session cluster + playbook via the same helper the real builder uses.
+        senr = {
+            "playbook_id":   pid,
+            "playbook_name": pname,
+            "cluster":       {"id": f"tour-sescl-{pid[-8:]}"},
+        }
+        _emit_session_cluster_playbook(nodes, edges, sid, senr)
+
+        # Source IP + ip→session edge — same shape as the real builder.
+        nodes.append({"data": {
+            "id":         _nid("ip", ip),
+            "type":       "ip",
+            "label":      ip,
+            "cluster_id": "tour-ipcl-1",
+            "is_outlier": False,
+            "asn":        asn,
+            "country":    cc,
+        }})
+        edges.append({"data": {
+            "id":     f"{_nid('ip', ip)}->{_nid('session', sid)}",
+            "source": _nid("ip", ip),
+            "target": _nid("session", sid),
+            "label":  "saw", "kind": "saw",
+        }})
+        # IP cluster pill via the same helper.
+        ienr = {"cluster": {"id": "tour-ipcl-1"}}
+        _emit_ip_cluster(nodes, edges, ip, ienr)
+
+        # Geo lane — ASN + country nodes wired via canonical edges.
+        nodes.append({"data": {
+            "id":    _nid("asn", asn),
+            "type":  "asn",
+            "label": f"AS{asn}",
+        }})
+        edges.append({"data": {
+            "id":     f"{_nid('ip', ip)}->{_nid('asn', asn)}",
+            "source": _nid("ip", ip),
+            "target": _nid("asn", asn),
+            "label":  "asn", "kind": "asn",
+        }})
+        nodes.append({"data": {
+            "id":    _nid("cc", cc),
+            "type":  "country",
+            "label": cc,
+        }})
+        edges.append({"data": {
+            "id":     f"{_nid('ip', ip)}->{_nid('cc', cc)}",
+            "source": _nid("ip", ip),
+            "target": _nid("cc", cc),
+            "label":  "country", "kind": "country",
+        }})
+
+    return _dedup({"nodes": nodes, "edges": edges})
+
+
 def _campaign_anchor(
     es: Elasticsearch, cfg: AppConfig, campaign_id: str, *, limit: int,
     sf: "queries.SessionFilter | None" = None,
@@ -685,6 +796,8 @@ def _campaign_anchor(
     member session ids and source ips, so the graph build is a direct
     `terms` fetch — no aggregation needed.
     """
+    if campaign_id == TOUR_CAMPAIGN_ID:
+        return _tour_campaign_graph()
     nodes: list[dict] = []
     edges: list[dict] = []
     camp = queries.lookup_campaign(es, cfg, campaign_id)

@@ -5,23 +5,24 @@ Each miner produces findings of one `kind`. The headline pair is
 `ip_behavior_shift` ("actor changed behavior") — both self-anchored
 against per-IP lifecycle history, no analyst confirm required.
 
-This module ships 6 of the 7 designed discovery kinds:
+This module ships 5 active discovery kinds:
 
   - `new_playbook`           — playbook lifecycle `runs_observed == 1`
   - `intel_verdict_flip`     — IP intel verdict transition + recent corpus session
   - `ip_behavior_shift`      — modal playbook flip OR JS distance >= threshold
   - `outlier_burst`          — HDBSCAN-outlier sessions sharing artifacts in 24h
-  - `novel_edge_session`     — top-K novelty within each cluster
   - `campaign_convergence`   — cmp-bhv × cmp-inf member-IP overlap >= threshold
 
-`unattributed_active_ip` was specified in the design but retired before
-ship: a single corpus produced ~2k findings of this kind in one pass
-(every active IP whose sessions landed in HDBSCAN-outlier space), and
-per-IP triage isn't a workflow analysts use. The aggregate signal
-(coverage gap in clustering) is real but belongs on the Insights page,
-not in the findings inbox. The kind is removed; corresponding finding
-docs in the index are tombstoned by the operator (see migration in the
-phase-8 doc).
+Two designed kinds were retired after production cycles. `unattributed_active_ip`
+produced ~2k findings on a single corpus (every active IP whose sessions
+landed in HDBSCAN-outlier space) — the aggregate signal (coverage gap in
+clustering) is real but belongs on Insights, not in the analyst inbox.
+`novel_edge_session` fired top-K per cluster every run, surfacing sessions
+that were structurally unusual within their playbook — high volume, low
+analyst value (the per-session investigation it implied isn't a workflow
+analysts use). Both kinds remain in `DISCOVERY_KINDS` so stragglers in
+`prism.findings` keep routing to the discovery section while the operator
+cleans them up with `delete_by_query`.
 
 All miners read the lifecycle indices produced by `track lifecycles`
 (step 1) and consume snapshots written by the backward chain. Each
@@ -409,92 +410,6 @@ def mine_outlier_burst(es: Elasticsearch, cfg: Any, run_id: str) -> list[dict[st
 
 
 # ---------------------------------------------------------------------------
-# novel_edge_session (P1b follow-up)
-# ---------------------------------------------------------------------------
-
-def mine_novel_edge_session(es: Elasticsearch, cfg: Any, run_id: str) -> list[dict[str, Any]]:
-    """Sessions whose `cluster.novelty_score` is in the top-K per cluster.
-
-    Per-cluster terms agg with a top_hits sub-agg ordered by novelty_score
-    descending, capped at `discovery.novel_edge_top_k_per_cluster` (default
-    3) — approximates the design's "top 1%" without a per-cluster
-    percentile round-trip. Gated by `novel_edge_min_cluster_size` so a
-    cluster of 3 sessions doesn't produce 3 "edge" findings.
-    """
-    cowrie = cfg.elasticsearch.indexes.cowrie
-    sess_idx = cowrie.sessions_rollup
-    if not es.indices.exists(index=sess_idx):
-        return []
-    top_k = int(getattr(getattr(cfg.findings, "discovery", None),
-                        "novel_edge_top_k_per_cluster", 3))
-    min_cl = int(getattr(getattr(cfg.findings, "discovery", None),
-                         "novel_edge_min_cluster_size", 20))
-    cluster_field = "dshield.cowrie.enrichment.session.cluster.id"
-    novelty_field = "dshield.cowrie.enrichment.session.cluster.novelty_score"
-    try:
-        resp = es.search(
-            index=sess_idx, size=0,
-            query={"bool": {
-                "must":     [{"exists": {"field": cluster_field}}],
-                "must_not": [{"term":   {cluster_field: "outlier"}}],
-            }},
-            aggs={"by_cluster": {
-                "terms": {"field": cluster_field, "size": 200,
-                          "min_doc_count": min_cl},
-                "aggs": {
-                    "top": {"top_hits": {
-                        "size":    top_k,
-                        "sort":    [{novelty_field: {"order": "desc"}}],
-                        "_source": ["cowrie.session_id", "source.ip",
-                                     novelty_field,
-                                     "dshield.cowrie.enrichment.session.playbook_id",
-                                     "dshield.cowrie.enrichment.session.playbook_name"],
-                    }},
-                },
-            }},
-        )
-    except Exception as exc:
-        log.warning("findings.discovery: novel_edge_session agg failed: %s", exc)
-        return []
-    buckets = ((resp.get("aggregations") or {}).get("by_cluster") or {}).get("buckets") or []
-    out: list[dict[str, Any]] = []
-    for b in buckets:
-        cl_id = b.get("key")
-        for h in ((b.get("top") or {}).get("hits", {}).get("hits") or []):
-            src = h.get("_source") or {}
-            sid = ((src.get("cowrie") or {}).get("session_id")) or h.get("_id")
-            if not sid:
-                continue
-            enr_sess = (((src.get("dshield") or {}).get("cowrie") or {})
-                        .get("enrichment", {}).get("session", {})) or {}
-            novelty = float((enr_sess.get("cluster") or {}).get("novelty_score") or 0.0)
-            pid = enr_sess.get("playbook_id")
-            pname = enr_sess.get("playbook_name") or "(unnamed)"
-            ip = ((src.get("source") or {}).get("ip"))
-            out.append({
-                "kind": "novel_edge_session",
-                "run_id": run_id,
-                "artifact": {"kind": "session", "value": sid},
-                "score": novelty,
-                "narrative": (
-                    f"Session {sid} sits at the novelty edge of playbook "
-                    f"'{pname}' (novelty {novelty:.2f}) — top-{top_k} within its cluster."
-                ),
-                "evidence": {
-                    "session_id":     sid,
-                    "source_ip":      ip,
-                    "playbook_id":    pid,
-                    "playbook_name":  enr_sess.get("playbook_name"),
-                    "cluster_id":     cl_id,
-                    "novelty_score":  round(novelty, 4),
-                    "cluster_size":   int(b.get("doc_count") or 0),
-                },
-            })
-    out.sort(key=lambda f: f["score"], reverse=True)
-    return out
-
-
-# ---------------------------------------------------------------------------
 # campaign_convergence (P1b follow-up)
 # ---------------------------------------------------------------------------
 
@@ -583,14 +498,12 @@ DISCOVERY_MINERS = {
     "intel_verdict_flip":   mine_intel_verdict_flip,
     "ip_behavior_shift":    mine_ip_behavior_shift,
     "outlier_burst":        mine_outlier_burst,
-    "novel_edge_session":   mine_novel_edge_session,
     "campaign_convergence": mine_campaign_convergence,
 }
 
-# Step 3 follow-up will add: outlier_burst, novel_edge_session,
-# campaign_convergence. `unattributed_active_ip` is in the set so the
+# `unattributed_active_ip` and `novel_edge_session` are in the set so the
 # console's stream classifier still routes any stragglers to the
-# discovery section while the operator tombstones them; the kind has no
+# discovery section while the operator tombstones them; the kinds have no
 # miner here and will produce zero new findings going forward.
 DISCOVERY_KINDS: frozenset[str] = frozenset({
     "new_playbook", "outlier_burst", "novel_edge_session",

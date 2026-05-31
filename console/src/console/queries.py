@@ -1857,6 +1857,21 @@ def insights_summary(
     # empty list is fine if the miner hasn't run yet.
     mined_campaigns = list_campaigns(es, cfg, size=20)
 
+    # Stamp a one-line evidence-quality verdict on every row consumed by
+    # the /browse catalog. Same vocabulary the inbox + graph orientation
+    # card carry, so the analyst learns one mental scale. Best-effort:
+    # failures leave the field absent rather than fail the whole panel.
+    try:
+        from enrich.findings.evidence_quality import format_anchor_evidence_quality
+        for row in playbooks:
+            v = format_anchor_evidence_quality("playbook", row)
+            if v: row["evidence_quality"] = v
+        for row in mined_campaigns:
+            v = format_anchor_evidence_quality("campaign", row)
+            if v: row["evidence_quality"] = v
+    except Exception as exc:
+        log.warning("insights evidence_quality stamping failed: %s", exc)
+
     return {
         "overview": {
             "total_ips":        total_ips,

@@ -575,10 +575,8 @@ class DiscoveryConfig(BaseModel):
     # `outlier_burst`: window + grouping thresholds.
     outlier_burst_window_hours: int = 24
     outlier_burst_min_sessions: int = 5
-    # `novel_edge_session`: per-cluster top-K novel sessions (approximates
-    # the design's "top 1%" — exact percentile would need two ES round-
-    # trips, the top-K approximation gives the same surfacing for clusters
-    # of size <= 300 and a 1% cap above that without the second query).
+    # Vestigial — `novel_edge_session` was retired. Knobs kept on the
+    # model so existing `local.yaml` files keep parsing.
     novel_edge_top_k_per_cluster: int = 3
     novel_edge_min_cluster_size: int = 20
     # `campaign_convergence`: IP overlap ratio between cmp-bhv-X and

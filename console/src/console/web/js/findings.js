@@ -88,7 +88,6 @@ const ACTION_TEMPLATES = {
   // Discovery kinds — first appearances + anomalies
   new_playbook:           {verb: "confirm",     text: "Confirm if this is a real new TTP, reject if it's a one-off"},
   outlier_burst:          {verb: "investigate", text: "Burst activity on a single IP — investigate before it spreads"},
-  novel_edge_session:     {verb: "investigate", text: "Session is structurally unusual — investigate the command sequence"},
   unattributed_active_ip: {verb: "investigate", text: "Orphan IP with no known cluster home — investigate its session history"},
   campaign_convergence:   {verb: "confirm",     text: "Multiple playbooks converging on shared infrastructure — confirm to track"},
   ip_behavior_shift:      {verb: "investigate", text: "IP's behaviour changed from its previous pattern — investigate the shift"},
@@ -1456,17 +1455,18 @@ function renderDrawer(data) {
   if (a.kind === "playbook" || a.kind === "campaign" || a.kind === "ip") {
     const sec = el("div", {class: "drawer-section"});
     if (isTourRow(data)) {
-      // The tour finding's artifact value doesn't exist in any real
-      // corpus, so a graph anchor would 404. Replace with a note
-      // pointing at the real workflow path.
-      sec.appendChild(el("p", {class: "drawer-meta"}, [
-        "On a real finding, this is the pivot into the investigation graph. " +
-        "It anchors the canvas on the playbook / campaign / IP and " +
-        "auto-expands its behavioural neighbourhood.",
-      ]));
+      // Tour finding routes into the synthetic-graph fixture via the
+      // ?tour=1 flag. The graph + write-up surfaces both intercept on
+      // that flag and serve the in-repo fixtures — full workflow demo
+      // without ES or live findings.
+      const link = el("a", {
+        href: `/graph?ioc=${encodeURIComponent(a.kind)}:${encodeURIComponent(a.value)}&tour=1`,
+        class: "nav-link",
+      }, ["Continue tour in the graph →"]);
+      sec.appendChild(link);
       sec.appendChild(el("p", {class: "drawer-meta", style: "margin-top:6px;"}, [
-        "Once you've ingested events with ", el("code", null, ["dshield_prism enrich"]),
-        " + ", el("code", null, ["mine findings"]), ", real findings replace the sample.",
+        "Synthetic graph + canned write-up — no ES, no real findings required. ",
+        "On a real row this same link anchors the canvas on live data.",
       ]));
     } else {
       const link = el("a", {

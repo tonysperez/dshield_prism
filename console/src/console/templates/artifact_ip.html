@@ -35,6 +35,12 @@
     }
 
     .art-badges { display: flex; gap: 8px; flex-wrap: wrap; }
+    /* Evidence verdict — same vocabulary used by the inbox + graph
+       orientation card. Surfaces under the badges. */
+    .art-evidence {
+      font-size: 11px; color: #94a3b8;
+      font-style: italic; margin-top: 2px;
+    }
     .art-badge {
       font-size: 11px;
       padding: 3px 8px;
@@ -110,6 +116,7 @@
       <span class="art-kind" id="art-kind">IP artifact</span>
       <span class="art-value" id="art-value">loading…</span>
       <div class="art-badges" id="art-badges"></div>
+      <div class="art-evidence" id="art-evidence" style="display:none"></div>
     </div>
 
     <!-- Derived consensus block — what the rest of the pipeline reads -->

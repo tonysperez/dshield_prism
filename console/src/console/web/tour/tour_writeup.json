@@ -1,0 +1,37 @@
+{
+  "narrative": "Over the past 12 days a single campaign accounted for 275 sessions originating from 73 source IPs across 35 countries and 57 ASNs. Every session followed the same short sequence: append an attacker-controlled RSA public key to ~/.ssh/authorized_keys, set the immutable bit on the file with chattr +i, and add a crontab entry that re-runs the installer every five minutes.\n\nThe behaviour is consistent with persistent SSH access intended to survive a defender removing the authorized_keys file: the immutable bit blocks ordinary removal until chattr -i is run first, and the cron job re-installs the key once it disappears. The geographic spread (35 countries, 57 ASNs) plus the identical command sequence across every session reads as a botnet rather than a single actor — the same RSA key (sha256:c2c1e9557c5abc30...ae6cbb57) appears across all 73 IPs, tying the operator behind them.\n\nConfidence is moderate. The behavioural fingerprint is distinctive and the cross-IP consistency strong, but external intel verdicts have only landed on 3 of the 73 IPs (all malicious). A second cycle confirming the same membership, or a community signal on the remaining 70 IPs, would push this to high confidence; an absence of either over the next week would suggest the campaign is winding down.\n\nFor defenders: the immutable-bit step is the auditable tell. chattr +i on a file under ~/.ssh is rare in legitimate operations — a single hunt across SSH-exposed hosts (lsattr ~/.ssh/authorized_keys) catches this regardless of whether the key was rotated.",
+  "brief": {
+    "timeframe_phrase": "over the past 12 days",
+    "scale_phrase": "73 source IPs across 35 countries and 57 ASNs, 275 sessions",
+    "what_they_did": "Appended an attacker-controlled RSA public key to ~/.ssh/authorized_keys, set the immutable bit on the file with chattr +i, then added a crontab entry that re-runs the installer every five minutes.",
+    "what_they_wanted": "Persistent SSH access that survives a defender removing the authorized_keys file.",
+    "actor_model": "Likely a botnet — identical command sequence across geographically dispersed IPs, all installing the same RSA key.",
+    "viability_assessment": "Commands are valid bash with correct path assumptions; the chattr-then-crontab sequence requires root, which the attacker presumes from a successful login.",
+    "key_identifiers": [
+      {"label": "shared RSA key", "value": "sha256:c2c1e9557c5abc30b71f1aae0b896e57ac16aba3add335ceebcc1701ae6cbb57", "why_it_matters": "Same key across all 73 IPs ties them to one operator regardless of source-IP rotation."},
+      {"label": "MITRE",          "value": "T1098.004", "why_it_matters": "SSH Authorized Keys — the core persistence technique here."},
+      {"label": "MITRE",          "value": "T1222.002", "why_it_matters": "File and Directory Permissions Modification — the chattr +i counter-hardening step."},
+      {"label": "MITRE",          "value": "T1053.003", "why_it_matters": "Scheduled Task: Cron — the re-install mechanism."}
+    ],
+    "concerning_signals": [
+      "chattr +i prevents the authorized_keys file from being modified without first removing the immutable bit — counter-hardening tactic, not just persistence.",
+      "The crontab entry re-installs the key every five minutes — suggests the attacker expects defenders to scan and remove."
+    ],
+    "evidence_gaps": [
+      "Intel verdict only on 3 of 73 IPs (all malicious) — no signal either way on the remaining 70.",
+      "No second cycle of activity yet — a single 12-day window doesn't tell us whether this campaign is winding down or about to repeat."
+    ],
+    "confidence_band": "moderate",
+    "confidence_reasoning": "Behavioural fingerprint is distinctive and consistent across 73 IPs, but external intel is sparse and the observation window is one cycle.",
+    "defensive_angle": "Hunt for chattr +i on files under ~/.ssh across SSH-exposed hosts. lsattr ~/.ssh/authorized_keys is rare in legitimate use; a single sweep catches this regardless of key rotation."
+  },
+  "redactions": [],
+  "stages": [
+    {"name": "extract", "model": "tour-demo",  "ms": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0},
+    {"name": "narrate", "model": "tour-demo",  "ms": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
+  ],
+  "escalated": false,
+  "total_cost_usd": 0.0,
+  "brief_dropped_identifiers": [],
+  "_tour": true
+}

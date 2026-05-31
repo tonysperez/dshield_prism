@@ -1043,15 +1043,29 @@
     };
     if (btn) btn.disabled = true;
     _updateProgress("extract", []);
-    setS(escalate ? "Generating (extract local → narrate cloud)…"
-                  : "Generating (local)…",
-         escalate ? "cloud" : "neutral");
+    // Tour intercept: when ?tour=1 anchors on the demo campaign, serve
+    // the canned write-up fixture instead of running the LLM pipeline.
+    // The fixture matches the cmp-beh-e6e6e5569e56d396 campaign demoed
+    // by the tour finding. (Punch B of the gap-closure pass.)
+    const search = new URLSearchParams(location.search);
+    const ioc = search.get("ioc") || "";
+    const isTour = search.get("tour") === "1"
+      && ioc === "campaign:cmp-beh-e6e6e5569e56d396";
+    if (isTour) {
+      setS("Generating (tour demo — pre-canned)…", "cloud");
+    } else {
+      setS(escalate ? "Generating (extract local → narrate cloud)…"
+                    : "Generating (local)…",
+           escalate ? "cloud" : "neutral");
+    }
     try {
-      const r = await fetch("/api/writeup", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(body),
-      });
+      const r = isTour
+        ? await fetch("/static/tour/tour_writeup.json")
+        : await fetch("/api/writeup", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(body),
+          });
       if (!r.ok) {
         const txt = await r.text();
         setS(`failed: ${txt.slice(0, 200)}`, "error");
