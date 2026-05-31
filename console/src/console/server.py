@@ -54,6 +54,33 @@ class AskRequest(BaseModel):
     context: dict = {}
 
 
+class WriteupRequest(BaseModel):
+    """POST body for /api/writeup — Item #2 of the analyst-first UX push.
+
+    `anchor` carries the focus of the writeup
+    (`{type, id, name?, kind?, evidence?, window?}`); the client
+    typically pulls these from state.currentDetail so the writeup is
+    grounded on the same anchor metadata the orientation card shows.
+
+    `scope` carries the in-view artifact aggregates the analyst
+    selected in the Report modal — same payload shape `copy.js`
+    already builds for the existing data-dump tab, plus optional
+    `mitre` (aggregate technique chain) and `intel`
+    ({ip,url,hash} → verdict counts).
+
+    `evidence_quality` is the pre-computed one-line verdict from
+    Item #5. Optional — the server falls back to the empty string
+    when the client didn't pre-compute it.
+
+    `escalate` opts into cloud LLM use, gated by
+    `cloud.writeup_daily_budget_usd`. Default False = local LLM.
+    """
+    anchor:           dict = {}
+    scope:            dict = {}
+    evidence_quality: str = ""
+    escalate:         bool = False
+
+
 class DenylistAddRequest(BaseModel):
     """POST body for /api/health/commands/denylist (ROADMAP #11.5)."""
     token: str
@@ -1473,6 +1500,110 @@ def build_app(config_path: str | None = None) -> FastAPI:
         except Exception as e:
             log.exception("ask_llm failed")
             raise HTTPException(500, f"LLM request failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Write-up (Item #2 of the analyst-first UX push). The Report modal's
+    # Write-up tab calls /api/writeup to produce LLM-written prose for
+    # four sections (anchor / evidence / MITRE / confidence). Local LLM
+    # by default; cloud opt-in gated by cloud.writeup_daily_budget_usd
+    # (separate bucket from enrichment escalation).
+    # ------------------------------------------------------------------
+
+    def _load_pipeline_state():
+        """Lazy-load the parent enrich/ config + secrets + state DB.
+
+        Returns (parent_cfg, parent_secrets, db). Any element may be
+        None when the parent config / DB isn't reachable from the
+        process running the console (the `dshield_prism` system user
+        owns the StateDB path; a console run as a different user can't
+        touch it). The local-LLM write-up path doesn't need *any* of
+        these, so the caller decides whether a partial load is fatal.
+        """
+        parent_cfg = parent_secrets = db = None
+        try:
+            from enrich.config import load_config as _parent_load_config
+            from enrich.config import load_secrets as _parent_load_secrets
+            parent_cfg = _parent_load_config(config_path)
+            parent_secrets = _parent_load_secrets(config_path)
+        except Exception as exc:
+            log.debug("parent config load failed (non-fatal): %s", exc)
+        if parent_cfg is not None:
+            try:
+                from enrich.cache import StateDB
+                db = StateDB(parent_cfg.worker.state_db)
+            except Exception as exc:
+                log.debug("StateDB open failed (non-fatal): %s", exc)
+        return parent_cfg, parent_secrets, db
+
+    @app.get("/api/writeup/budget")
+    def writeup_budget() -> JSONResponse:
+        """Cloud-budget snapshot for the modal's opt-in checkbox UI.
+
+        Degrades gracefully when the pipeline state isn't reachable —
+        the local-LLM path doesn't need the budget at all, so a missing
+        StateDB is reported as `cloud_enabled=false` rather than a 500.
+        """
+        from console.writeup import writeup_budget_status
+        parent_cfg, _, db = _load_pipeline_state()
+        if parent_cfg is None or db is None:
+            return JSONResponse({
+                "cap_usd": 0.0, "spent_usd": 0.0, "remaining_usd": 0.0,
+                "enabled": False, "available": False, "cloud_enabled": False,
+            })
+        try:
+            return JSONResponse(writeup_budget_status(db, parent_cfg))
+        except Exception as exc:
+            log.warning("writeup_budget status failed: %s", exc)
+            return JSONResponse({
+                "cap_usd": 0.0, "spent_usd": 0.0, "remaining_usd": 0.0,
+                "enabled": False, "available": False, "cloud_enabled": False,
+                "error": str(exc),
+            })
+        finally:
+            try: db.close()
+            except Exception: pass
+
+    @app.post("/api/writeup")
+    def write_writeup(body: WriteupRequest) -> JSONResponse:
+        if not llm_cfg and not body.escalate:
+            raise HTTPException(503, "local LLM not configured — add an llm: block to local.yaml")
+        parent_cfg, parent_secrets, db = _load_pipeline_state()
+        # Cloud escalation strictly requires the parent state (config +
+        # secrets + writeup_spend bucket). The local path doesn't.
+        if body.escalate and (parent_cfg is None or db is None):
+            raise HTTPException(
+                503,
+                "cloud escalation needs the pipeline's state DB; "
+                "run the console as the dshield_prism user or "
+                "expose cfg.worker.state_db read+write to this user",
+            )
+        try:
+            from console.writeup import generate_writeup
+            result = generate_writeup(
+                cfg=parent_cfg,
+                secrets=parent_secrets,
+                db=db,
+                llm_cfg=llm_cfg,
+                anchor=body.anchor or {},
+                scope=body.scope or {},
+                evidence_quality=body.evidence_quality or "",
+                escalate=body.escalate,
+            )
+            return JSONResponse(result)
+        except RuntimeError as exc:
+            # Budget exhausted / cloud disabled / parse failure — all
+            # surface as 400 with the actual reason so the modal can
+            # render an honest error to the analyst.
+            raise HTTPException(400, str(exc))
+        except HTTPException:
+            raise
+        except Exception as exc:
+            log.exception("writeup failed")
+            raise HTTPException(500, f"writeup failed: {exc}")
+        finally:
+            if db is not None:
+                try: db.close()
+                except Exception: pass
 
     return app
 

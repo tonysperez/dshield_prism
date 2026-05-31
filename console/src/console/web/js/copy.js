@@ -683,7 +683,432 @@
     if (format === "markdown") return renderMarkdown(sections, header);
     if (format === "csv")      return renderCsv(sections, header);
     if (format === "json")     return renderJson(sections, header);
+    // "writeup" is handled out-of-band — it routes through /api/writeup
+    // asynchronously and the result is staged into the preview by
+    // generateWriteup(). See modal wiring at bottom of file.
     return renderPlain(sections, header);
+  }
+
+  // ----- writeup format (Item #2 of the analyst-first UX push) -----------
+  //
+  // The Write-up tab produces LLM-written prose, not flat tables. It calls
+  // /api/writeup with the in-view scope + an anchor descriptor derived
+  // from state.currentDetail, and renders the four returned sections
+  // (anchor / evidence / MITRE / confidence) as a single Markdown
+  // document — followed by an analyst-edit recommendations stub.
+
+  // For the write-up the LLM gets EVERYTHING the Report function
+  // already collates — IPs (with ASN/country/HASSH/intel), commands
+  // (with text/intent/MITRE), sessions, credentials, URLs, file hashes
+  // (with filename + dropping command + intel), analyst-defined
+  // artifacts, lifecycle notes, MITRE aggregate, HASSH aggregate, and
+  // session sequences. The server-side prompt formatter renders the
+  // right blocks based on which keys are populated.
+  //
+  // Why everything: the extract stage is the only place the heavy
+  // attacker-controlled context exists; the narrate stage sees only
+  // the validated brief. So the extract stage needs full context to
+  // do useful synthesis. Letting the analyst's category checkboxes
+  // gate context here would just produce worse syntheses for no
+  // privacy gain.
+  function buildWriteupScope(pulled, fetched) {
+    const scope = {
+      ips: [], commands: [], sessions: [], credentials: [], urls: [],
+      hashes: [], analyst_artifacts: [], lifecycle_notes: [],
+      session_sequences: [],
+      playbooks: [], campaigns: [],
+      mitre: [], intel: {},
+    };
+
+    // ---- IPs ----------------------------------------------------------
+    for (const e of pulled.ips || []) {
+      scope.ips.push({
+        ip:            e.ip,
+        country:       e.country || null,
+        asn:           e.asn || null,
+        specificity:   e.specificity ?? null,
+        intel_verdict: e.intel_verdict || null,
+        hassh:         e.hassh || null,
+      });
+    }
+
+    // ---- Commands -----------------------------------------------------
+    // Combine graph-node attributes (intent, MITRE tags) with bulk-fetched
+    // command_line text. The MITRE tags also feed the aggregate below.
+    for (const c of pulled.commands || []) {
+      const det = (fetched && fetched.commands && fetched.commands[c.sha256]) || {};
+      scope.commands.push({
+        sha256:           c.sha256 || null,
+        command_line:     det.command_line || c.text || "",
+        intent:           det.intent || c.intent || null,
+        mitre_tactics:    c.mitre_tactics || [],
+        mitre_techniques: c.mitre_techniques || [],
+      });
+    }
+
+    // ---- Sessions + credentials + per-session URLs/file_events --------
+    // The bulk endpoint enriches per-session with creds, file_events,
+    // analyst artifacts.
+    const credSeen = new Set();
+    const fileUrlSeen = new Set();
+    const fileHashSeen = new Set();
+    const analystSeen = new Set();
+    for (const s of pulled.sessions || []) {
+      const sid = s.session_id;
+      if (!sid) continue;
+      scope.sessions.push({session_id: sid});
+      const det = (fetched && fetched.sessions && fetched.sessions[sid]) || {};
+      for (const cred of det.credentials || []) {
+        if (cred && !credSeen.has(cred)) {
+          credSeen.add(cred);
+          scope.credentials.push(cred);
+        }
+      }
+      for (const u of det.file_event_urls || []) {
+        if (u && !fileUrlSeen.has(u)) {
+          fileUrlSeen.add(u);
+          scope.urls.push({url: u, source: "file_event"});
+        }
+      }
+      for (const f of det.file_event_files || []) {
+        if (!f) continue;
+        const key = (f.sha256 || "") + "|" + (f.filename || "");
+        if (fileHashSeen.has(key)) continue;
+        fileHashSeen.add(key);
+        scope.hashes.push({
+          sha256:        f.sha256 || null,
+          filename:      f.filename || null,
+          dropping_cmd:  f.dropping_cmd || null,
+          attribution:   f.attribution || null,
+          intel_verdict: f.intel_verdict || null,
+        });
+      }
+      for (const a of det.analyst_artifacts || []) {
+        if (!a) continue;
+        const key = (a.kind || "") + "|" + (a.value || "") + "|" + (a.rule_id || "");
+        if (analystSeen.has(key)) continue;
+        analystSeen.add(key);
+        scope.analyst_artifacts.push({
+          kind:  a.kind || null,
+          value: a.value || null,
+          notes: a.notes || a.rule_notes || null,
+        });
+      }
+    }
+
+    // ---- URLs from pulled.urls (command IOCs etc) ---------------------
+    const urlSeen = new Set(scope.urls.map(u => u.url));
+    for (const u of pulled.urls || []) {
+      const url = typeof u === "string" ? u : (u && u.url);
+      if (url && !urlSeen.has(url)) {
+        urlSeen.add(url);
+        scope.urls.push({url, source: "command_indicator"});
+      }
+    }
+
+    // ---- File hashes from pulled.hashes (covers anything not in file_events)
+    for (const h of pulled.hashes || []) {
+      if (!h || !h.sha256) continue;
+      const key = h.sha256 + "|" + (h.filename || "");
+      if (fileHashSeen.has(key)) continue;
+      fileHashSeen.add(key);
+      scope.hashes.push({
+        sha256:   h.sha256,
+        filename: h.filename || null,
+      });
+    }
+
+    // ---- Lifecycle notes (server-bulk-fetched) ------------------------
+    for (const n of (fetched && fetched.lifecycle_notes) || []) {
+      if (!n) continue;
+      scope.lifecycle_notes.push({
+        anchor_label:   n.anchor_label || n.artifact_label || null,
+        artifact_value: n.artifact_value || null,
+        text:           n.text || n.note || "",
+        ts:             n.ts || null,
+      });
+    }
+
+    // ---- Session sequences (server-bulk-fetched) ----------------------
+    for (const sid of pulled.session_ids || []) {
+      const det = (fetched && fetched.sessions && fetched.sessions[sid]) || {};
+      const seq = det.sequence || det.commands_ordered || det.commands;
+      if (Array.isArray(seq) && seq.length) {
+        scope.session_sequences.push({session_id: sid, commands: seq});
+      }
+    }
+
+    // ---- Playbooks / campaigns ----------------------------------------
+    for (const p of pulled.playbooks || []) {
+      scope.playbooks.push({id: p.playbook_id || p.id, name: p.name || p.playbook_id || p.id});
+    }
+    for (const c of pulled.campaigns || []) {
+      scope.campaigns.push({id: c.campaign_id || c.id, name: c.name || c.campaign_id || c.id});
+    }
+
+    // ---- MITRE aggregate (reuse Report's builder) ---------------------
+    try {
+      const agg = buildMitreAggregate(pulled);
+      scope.mitre = (agg.rows || []).map(([id, type, count]) => {
+        if (type === "tactic") {
+          return {tactic_id: id, technique_id: "", command_count: count};
+        }
+        return {tactic_id: "", technique_id: id, command_count: count};
+      });
+    } catch (_) { scope.mitre = []; }
+
+    // ---- Intel verdict distribution -----------------------------------
+    const ipVerdicts = {};
+    for (const e of pulled.ips || []) {
+      const v = (e.intel_verdict || "unknown").toLowerCase();
+      ipVerdicts[v] = (ipVerdicts[v] || 0) + 1;
+    }
+    const hashVerdicts = {};
+    for (const h of scope.hashes) {
+      if (!h.intel_verdict) continue;
+      const v = h.intel_verdict.toLowerCase();
+      hashVerdicts[v] = (hashVerdicts[v] || 0) + 1;
+    }
+    scope.intel = {ip: ipVerdicts, hash: hashVerdicts, url: {}};
+
+    return scope;
+  }
+
+  // Derive the anchor descriptor from the orientation card / detail pane.
+  // Falls back to a generic "view" handle when no specific anchor exists.
+  // The `evidence` field carries an actual one-line summary of what the
+  // anchor *is*, computed from its IOCDetail summary — counts + time
+  // window in the same vocabulary as the inbox evidence_quality column.
+  function buildWriteupAnchor() {
+    const detail = (window.state && window.state.currentDetail) || null;
+    if (!detail) {
+      const search = new URLSearchParams(location.search);
+      const ioc = search.get("ioc") || "";
+      return {kind: "view", id: ioc, name: ioc || "(no anchor)", evidence: "", window: ""};
+    }
+    const s = detail.summary || {};
+    const name = s.name || s.playbook_name || s.ip || detail.title || detail.id;
+    // Numeric summary for the anchor — same fields the orientation card
+    // uses, formatted as a prose-friendly fragment.
+    const parts = [];
+    const ips      = s.ip_count ?? s.member_ips ?? s.unique_source_ips;
+    const sessions = s.session_count ?? s.member_sessions ?? s.total_sessions ?? s.unique_sessions;
+    const commands = s.total_commands ?? s.command_count ?? s.occurrence_count;
+    if (ips != null)      parts.push(`${ips} IPs`);
+    if (sessions != null) parts.push(`${sessions} sessions`);
+    if (commands != null) parts.push(`${commands} commands`);
+    const evidence = parts.length ? parts.join(", ") : (detail.title || "");
+    let win = "";
+    if (s.first_seen && s.last_seen) {
+      try {
+        const a = new Date(s.first_seen);
+        const b = new Date(s.last_seen);
+        const days = (b - a) / 86400000;
+        if (isFinite(days) && days >= 1.5) win = `${Math.round(days)}d`;
+        else if (isFinite(days) && days > 0) win = "today";
+      } catch (_) { /* leave empty */ }
+      if (!win) win = `${s.first_seen} → ${s.last_seen}`;
+    }
+    return {
+      type:     detail.type,
+      id:       detail.id,
+      kind:     detail.type,
+      name:     name,
+      evidence: evidence,
+      window:   win,
+    };
+  }
+
+  // Render the two-pass writeup response as Markdown. The narrative is
+  // the paste-ready prose; the brief is appended as a collapsible
+  // <details> block for analyst verification.
+  function renderWriteupMarkdown(result, header) {
+    const out = [];
+    if (header && typeof header === "object") {
+      out.push(renderHeaderMarkdown(header).replace(/^/gm, "> ").trimEnd());
+      out.push("");
+    }
+    // Narrative — plain prose, no header injected. The analyst pastes
+    // this into their report and adds their own framing.
+    out.push((result.narrative || "").trim());
+    out.push("");
+
+    // Redactions — flag at end of document if the cite-check stripped
+    // anything. The footnotes themselves are already inline in the
+    // narrative; this is a summary count.
+    const redactions = result.redactions || [];
+    if (redactions.length) {
+      out.push("---");
+      out.push("");
+      out.push(`_The cite-check stripped ${redactions.length} sentence(s) that referenced identifier(s) not in the extracted brief. Inline footnotes show what was removed._`);
+      out.push("");
+    }
+
+    // Collapsible brief — markdown <details> renders in GitHub-flavoured
+    // markdown and the modal preview pre.
+    const b = result.brief;
+    if (b) {
+      out.push("<details>");
+      out.push("<summary>Extracted brief (click to expand)</summary>");
+      out.push("");
+      out.push("```json");
+      out.push(JSON.stringify(b, null, 2));
+      out.push("```");
+      out.push("");
+      out.push("</details>");
+    }
+
+    return out.join("\n").trim();
+  }
+
+  let _lastWriteupText = "";
+
+  // The Write-up requires the bulk-fetched detail across every category
+  // — credentials, file_events, lifecycle notes, session sequences, etc.
+  // Force-tick the categories the writeup consumes before rebuild() runs
+  // so the bulk fetch pulls everything; restore the analyst's previous
+  // checkbox state when done. Returns the prior cat-state for restore.
+  function _ensureFullScopeFetch() {
+    const wanted = ["ips", "commands", "sessions", "credentials", "urls",
+                    "hashes", "analyst_artifacts", "lifecycle_notes",
+                    "mitre", "hassh_agg", "session_sequences"];
+    const prior = {};
+    document.querySelectorAll(".copy-cat").forEach((el) => {
+      const cat = el.dataset.cat;
+      prior[cat] = el.checked;
+      if (wanted.includes(cat)) el.checked = true;
+    });
+    return prior;
+  }
+  function _restoreCatState(prior) {
+    if (!prior) return;
+    document.querySelectorAll(".copy-cat").forEach((el) => {
+      const cat = el.dataset.cat;
+      if (cat in prior) el.checked = !!prior[cat];
+    });
+  }
+
+  // Two-stage progress strip — "① Extracting brief… ② Writing narrative…"
+  function _updateProgress(stage, done) {
+    const el = document.getElementById("writeup-progress");
+    if (!el) return;
+    const stages = [
+      {key: "extract",  label: "Extracting brief"},
+      {key: "narrate",  label: "Writing narrative"},
+    ];
+    const tokens = stages.map((s, i) => {
+      const idx = i + 1;
+      let mark = "○";
+      let cls = "stage-pending";
+      if (done && done.includes(s.key)) { mark = "✓"; cls = "stage-done"; }
+      else if (stage === s.key) { mark = "◐"; cls = "stage-active"; }
+      return `<span class="${cls}">${mark} ${idx}. ${s.label}</span>`;
+    });
+    el.innerHTML = tokens.join("&nbsp;&nbsp;");
+  }
+
+  async function generateWriteup() {
+    const escalateEl = document.getElementById("writeup-escalate");
+    const escalate = !!(escalateEl && escalateEl.checked && !escalateEl.disabled);
+    const statusEl = document.getElementById("writeup-status");
+    const btn = document.getElementById("writeup-generate");
+    const pre = document.getElementById("copy-preview");
+    const setS = (msg, tone = "neutral") => {
+      if (statusEl) {
+        statusEl.textContent = msg || "";
+        statusEl.dataset.tone = tone;
+      }
+    };
+
+    // Force-fetch every category so the LLM gets the full Report
+    // context. Save the prior checkbox state to restore afterwards.
+    const priorCats = _ensureFullScopeFetch();
+    let built;
+    try {
+      built = await rebuild();
+    } finally {
+      _restoreCatState(priorCats);
+    }
+    if (!built) return;
+    const pulled = _lastPulled || {ips: [], commands: [], urls: [],
+      hashes: [], playbooks: [], campaigns: []};
+    const fetched = _lastFetched || {sessions: {}, commands: {}};
+
+    const detail = (window.state && window.state.currentDetail) || {};
+    const body = {
+      anchor:           buildWriteupAnchor(),
+      scope:            buildWriteupScope(pulled, fetched),
+      evidence_quality: detail.evidence_quality || "",
+      escalate:         escalate,
+    };
+    if (btn) btn.disabled = true;
+    _updateProgress("extract", []);
+    setS(escalate ? "Generating (extract local → narrate cloud)…"
+                  : "Generating (local)…",
+         escalate ? "cloud" : "neutral");
+    try {
+      const r = await fetch("/api/writeup", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const txt = await r.text();
+        setS(`failed: ${txt.slice(0, 200)}`, "error");
+        _updateProgress(null, []);
+        return;
+      }
+      _updateProgress("narrate", ["extract"]);
+      const result = await r.json();
+      _updateProgress(null, ["extract", "narrate"]);
+      const headerOn = !!document.getElementById("copy-header-toggle")?.checked;
+      const provHeader = headerOn ? provenance(getScope(), pulled) : null;
+      const text = renderWriteupMarkdown(result, provHeader);
+      _lastWriteupText = text;
+      if (pre) pre.textContent = text || "(empty)";
+      // Status line carries per-stage timing + model + escalation flag.
+      const stages = result.stages || [];
+      const sText = stages.map(s => `${s.name} ${(s.ms/1000).toFixed(1)}s`).join(" + ");
+      const modelTag = result.escalated ? "cloud" : "local";
+      const last = stages[stages.length - 1] || {};
+      setS(`generated (${modelTag} · ${last.model || "?"} · ${sText})`,
+           result.escalated ? "cloud" : "ok");
+    } catch (e) {
+      setS(`failed: ${e.message || e}`, "error");
+      _updateProgress(null, []);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function refreshWriteupBudget() {
+    const cb = document.getElementById("writeup-escalate");
+    const hint = document.getElementById("writeup-budget-hint");
+    if (!cb || !hint) return;
+    try {
+      const r = await fetch("/api/writeup/budget");
+      const s = await r.json();
+      if (!s.cloud_enabled) {
+        cb.disabled = true; cb.checked = false;
+        hint.textContent = "(cloud disabled in config)";
+        return;
+      }
+      if (!s.enabled) {
+        cb.disabled = true; cb.checked = false;
+        hint.textContent = "(cloud.writeup_daily_budget_usd = 0)";
+        return;
+      }
+      if (!s.available) {
+        cb.disabled = true; cb.checked = false;
+        hint.textContent = `(today's budget spent: $${s.spent_usd.toFixed(4)} / $${s.cap_usd.toFixed(2)})`;
+        return;
+      }
+      cb.disabled = false;
+      hint.textContent = `($${s.remaining_usd.toFixed(4)} of $${s.cap_usd.toFixed(2)} remaining today)`;
+    } catch (e) {
+      cb.disabled = true; cb.checked = false;
+      hint.textContent = "(budget check failed)";
+    }
   }
 
   // ----- count helpers (modal labels) -------------------------------------
@@ -862,6 +1287,22 @@
   }
 
   async function doCopy() {
+    // Write-up output is staged into _lastWriteupText by generateWriteup();
+    // re-running rebuild() would clobber it with the table renderer's output.
+    const fmt = getFormat();
+    if (fmt === "writeup") {
+      if (!_lastWriteupText) {
+        setStatus("click Generate write-up first", "error");
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(_lastWriteupText);
+        setStatus(`copied ${_lastWriteupText.length.toLocaleString()} chars`, "ok");
+      } catch (e) {
+        setStatus(`clipboard write failed: ${e.message || e}`, "error");
+      }
+      return;
+    }
     const built = await rebuild();
     if (!built) return;
     try {
@@ -872,21 +1313,55 @@
     }
   }
   async function doDownload() {
-    const built = await rebuild();
-    if (!built) return;
     const fmt = getFormat();
-    const ext = fmt === "markdown" ? "md" : (fmt === "plain" ? "txt" : fmt);
-    const blob = new Blob([built.text], { type: "text/plain;charset=utf-8" });
+    let text;
+    let ext;
+    if (fmt === "writeup") {
+      if (!_lastWriteupText) {
+        setStatus("click Generate write-up first", "error");
+        return;
+      }
+      text = _lastWriteupText;
+      ext = "md";
+    } else {
+      const built = await rebuild();
+      if (!built) return;
+      text = built.text;
+      ext = fmt === "markdown" ? "md" : (fmt === "plain" ? "txt" : fmt);
+    }
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `prism-artifacts-${ts}.${ext}`;
+    a.download = `prism-${fmt === "writeup" ? "writeup" : "artifacts"}-${ts}.${ext}`;
     document.body.appendChild(a);
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
     setStatus(`downloaded ${a.download}`, "ok");
+  }
+
+  // Show/hide the Write-up controls panel + repaint the preview when
+  // the analyst switches format. Called from the format-change event
+  // handler below.
+  function syncWriteupVisibility() {
+    const fmt = getFormat();
+    const panel = document.getElementById("writeup-controls");
+    const pre = document.getElementById("copy-preview");
+    if (panel) panel.toggleAttribute("hidden", fmt !== "writeup");
+    if (fmt === "writeup") {
+      refreshWriteupBudget();
+      // Stage the existing writeup result or the call-to-action hint —
+      // the preview belongs to the writeup format while it's active.
+      if (pre && _lastWriteupText) pre.textContent = _lastWriteupText;
+      else if (pre) pre.textContent = "click Generate write-up to produce LLM prose";
+    } else {
+      // Leaving write-up — clear the preview immediately so the analyst
+      // sees the format switch take effect, then rebuild() (fired by the
+      // calling handler) paints the table-format output a moment later.
+      if (pre) pre.textContent = "rebuilding…";
+    }
   }
 
   function applyPrefsToUI(prefs) {
@@ -924,7 +1399,10 @@
   function openModal() {
     const m = document.getElementById("copy-artifacts-modal");
     if (m) m.classList.remove("hidden");
-    rebuild();
+    // Saved prefs may resume with format=writeup; sync visibility before
+    // the rebuild branch so the writeup controls panel renders.
+    syncWriteupVisibility();
+    if (getFormat() !== "writeup") rebuild();
   }
   function closeModal() {
     const m = document.getElementById("copy-artifacts-modal");
@@ -959,8 +1437,23 @@
     document.querySelectorAll('input[name="copy-format"]').forEach((el) => {
       el.addEventListener("change", () => {
         savePrefs(captureCurrentPrefs());
-        rebuild();
+        syncWriteupVisibility();
+        // Skip rebuild for the writeup format — it routes through
+        // /api/writeup via the Generate button, not via the inline
+        // category builders.
+        if (getFormat() !== "writeup") rebuild();
       });
+    });
+
+    // Write-up controls — only meaningful when the writeup format is
+    // selected; syncWriteupVisibility() shows/hides the panel.
+    const genBtn = document.getElementById("writeup-generate");
+    if (genBtn) genBtn.addEventListener("click", generateWriteup);
+    const escalateCb = document.getElementById("writeup-escalate");
+    if (escalateCb) escalateCb.addEventListener("change", () => {
+      // The selection itself doesn't trigger a fetch — Generate does.
+      // But refresh budget on toggle in case the analyst just refilled.
+      refreshWriteupBudget();
     });
     document.querySelectorAll('input[name="copy-scope"]').forEach((el) => {
       el.addEventListener("change", rebuild);
@@ -982,6 +1475,8 @@
     });
 
     applyPrefsToUI(loadPrefs());
+    // Apply visibility from the (possibly restored) format pref.
+    syncWriteupVisibility();
   }
 
   if (document.readyState === "loading") {

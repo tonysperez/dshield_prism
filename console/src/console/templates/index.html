@@ -62,6 +62,19 @@
         <span class="lg lg-cc">CC</span>
         <span class="lg lg-mitre">MITRE</span>
       </div>
+
+      <!-- Orientation card — top-left corner of the canvas. Stays put
+           through pan/zoom so the analyst's "where am I" anchor never
+           slides off-screen. Populated by renderOrientationCard() from
+           state.currentDetail; hidden until an anchor loads. -->
+      <div id="orientation-card" hidden>
+        <button type="button" id="orientation-title"
+                class="orientation-title-btn"
+                title="Focus the detail pane on this anchor"></button>
+        <div id="orientation-id" class="orientation-id" hidden></div>
+        <div id="orientation-counts" class="orientation-counts"></div>
+        <div id="orientation-evidence" class="orientation-evidence" hidden></div>
+      </div>
     </section>
 
     <aside id="sets-pane">
@@ -341,6 +354,25 @@
           <label class="radio-row"><input type="radio" name="copy-format" value="markdown" checked /><span>Markdown table</span></label>
           <label class="radio-row"><input type="radio" name="copy-format" value="csv" /><span>CSV</span></label>
           <label class="radio-row"><input type="radio" name="copy-format" value="json" /><span>JSON</span></label>
+          <label class="radio-row"><input type="radio" name="copy-format" value="writeup" /><span>Write-up <small class="writeup-tag">(LLM-prose)</small></span></label>
+        </div>
+
+        <!-- Write-up controls — only visible when the Write-up format is
+             selected. Two-pass pipeline: Pass 1 extract (always local,
+             attacker-controlled context never leaves), Pass 2 narrate
+             (local default; cloud opt-in gated by
+             cloud.writeup_daily_budget_usd — cloud only ever sees the
+             small validated brief). -->
+        <div id="writeup-controls" class="writeup-controls" hidden>
+          <div class="writeup-controls-row">
+            <label class="setting-row writeup-cloud-row">
+              <input type="checkbox" id="writeup-escalate" disabled />
+              <span>Cloud LLM for the narrative pass <small id="writeup-budget-hint" class="writeup-budget-hint">(cloud disabled in config)</small></span>
+            </label>
+            <button type="button" id="writeup-generate" class="modal-save writeup-generate-btn">Generate write-up</button>
+          </div>
+          <div id="writeup-progress" class="writeup-progress"></div>
+          <span id="writeup-status" class="writeup-status"></span>
         </div>
 
         <div class="copy-preview-wrap">

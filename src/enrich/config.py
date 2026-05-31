@@ -149,6 +149,12 @@ class CloudConfig(BaseModel):
     max_tokens: int = 1024
     request_timeout: int = 120
     daily_budget_usd: float = 5.0
+    # Separate budget bucket for console-driven write-up generation
+    # (Item #2 of the analyst-first UX push). Default 0.0 = cloud
+    # escalation for write-ups is disabled. Lives in its own bucket so
+    # writeups can't starve the enrichment escalation budget, and the
+    # enrichment storm can't starve the analyst.
+    writeup_daily_budget_usd: float = 0.0
     rpm_limit: int = 10
     triage: CloudTriageConfig = Field(default_factory=CloudTriageConfig)
     pricing: CloudPricingConfig = Field(default_factory=CloudPricingConfig)

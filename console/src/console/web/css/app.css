@@ -317,6 +317,72 @@ body.hide-detail #detail-pane { display: none; }
 .lg-mitre { background: var(--c-mitre); color: #000; }
 
 /* ----------------------------------------------------------------------
+ * Orientation card — top-left canvas overlay. Mirrors the #legend
+ * frosted-glass treatment but inverted (top-left vs bottom-right) so
+ * the analyst's anchor headline never competes with the legend for
+ * the same screen region. (Item #3 of the analyst-first UX push.)
+ * -------------------------------------------------------------------- */
+#orientation-card {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 4;
+  background: rgba(22,26,34,0.9);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  padding: 8px 12px;
+  max-width: 360px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+  font-size: 11px;
+  color: var(--text);
+  pointer-events: auto;
+}
+#orientation-card[hidden] { display: none; }
+.orientation-title-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0 0 2px;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 336px;
+}
+.orientation-title-btn:hover { color: var(--accent); }
+.orientation-id {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 10px;
+  color: #6b7494;
+  margin-bottom: 2px;
+}
+.orientation-counts {
+  color: #c8d0e2;
+  font-variant-numeric: tabular-nums;
+}
+.orientation-counts .orientation-sep {
+  color: #4a5470;
+  margin: 0 4px;
+}
+.orientation-counts .orientation-empty { color: #4a5470; }
+.orientation-evidence {
+  margin-top: 4px;
+  color: #94a3b8;
+  font-style: italic;
+}
+
+/* ----------------------------------------------------------------------
  * Sets sidecar (UpSet-style filter rail)
  * -------------------------------------------------------------------- */
 #sets-pane {
@@ -1435,3 +1501,56 @@ body.hide-detail #detail-reopen { display: block; }
 }
 .copy-status[data-tone="ok"]    { color: #2dd4bf; }
 .copy-status[data-tone="error"] { color: #f87171; }
+
+/* Write-up controls (Item #2). Only the format radio "Write-up"
+   reveals the cloud opt-in + generate button. Generate is async;
+   the preview pane is populated with LLM-written markdown rather
+   than the existing flat tables. */
+.writeup-tag {
+  color: #c084fc; font-size: 10px; margin-left: 2px;
+}
+.writeup-controls {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px 12px; margin: 8px 0;
+  background: #160e29; border: 1px solid #c084fc60;
+  border-radius: 5px;
+  font-size: 12px;
+}
+.writeup-controls[hidden] { display: none; }
+.writeup-controls-row {
+  display: flex; align-items: center; gap: 10px;
+}
+.writeup-cloud-row {
+  margin-right: auto;
+  padding: 0;
+}
+.writeup-progress {
+  font-size: 11px; color: var(--muted);
+  min-height: 14px;
+}
+.writeup-progress .stage-pending { color: #4a5470; }
+.writeup-progress .stage-active  { color: #c084fc; font-weight: 600; }
+.writeup-progress .stage-done    { color: #2dd4bf; }
+.writeup-cloud-row input[type="checkbox"]:disabled + span {
+  color: var(--muted);
+}
+.writeup-budget-hint {
+  color: var(--muted); font-size: 10px; margin-left: 4px;
+}
+.writeup-generate-btn {
+  background: #2d1f4e; color: #c084fc;
+  border: 1px solid #c084fc; border-radius: 4px;
+  font-size: 11px; font-weight: 600;
+  padding: 5px 14px;
+  cursor: pointer;
+}
+.writeup-generate-btn:hover:not(:disabled) { background: #3d2a66; }
+.writeup-generate-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.writeup-status {
+  font-size: 11px; color: var(--muted);
+}
+.writeup-status[data-tone="ok"]    { color: #2dd4bf; }
+.writeup-status[data-tone="error"] { color: #f87171; }
+.writeup-status[data-tone="cloud"] {
+  color: #c084fc; font-weight: 600;
+}

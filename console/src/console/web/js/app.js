@@ -402,8 +402,233 @@
   // ---------------------------------------------------------------------
   // Detail panel
   // ---------------------------------------------------------------------
+  // -------------------------------------------------------------------
+  // Orientation card — top-left canvas overlay (Item #3).
+  //
+  // Answers "what am I looking at and how much of it" without forcing
+  // the analyst to open the detail pane. Subscribes to the same
+  // IOCDetail payload renderDetail() consumes, so no extra fetches.
+  // Survives pan/zoom because it's a DOM overlay, not painted into
+  // the canvas.
+  // -------------------------------------------------------------------
+
+  // Build the three lines of the card from an IOCDetail. Returns
+  // {title, kindTag, internalId, counts: [...], windowPhrase, evidence}.
+  // counts is a list of {label, value} pairs; the renderer joins them
+  // with a separator. windowPhrase is a human span like "12d" / "today".
+  function summarizeAnchor(d) {
+    if (!d || !d.type) return null;
+    const s = d.summary || {};
+    const counts = [];
+    let title = d.title || d.id || "";
+    let kindTag = d.type;
+    let internalId = "";
+    let evidence = "";
+
+    const push = (label, value) => {
+      if (value === null || value === undefined || value === "") return;
+      counts.push({label, value});
+    };
+
+    if (d.type === "playbook") {
+      title = s.name || d.id || "playbook";
+      kindTag = "playbook";
+      internalId = s.id || d.id;
+      push("IPs", s.ip_count);
+      push("sessions", s.session_count);
+      if ((s.last_24h ?? 0) > 0) push("last 24h", s.last_24h);
+      const w = windowPhrase(s.first_seen, s.last_seen);
+      return {title, kindTag, internalId, counts, windowPhrase: w, evidence};
+    }
+    if (d.type === "campaign") {
+      title = s.name || d.id || "campaign";
+      kindTag = s.kind ? `campaign · ${s.kind}` : "campaign";
+      internalId = s.campaign_id || d.id;
+      push("IPs", s.ip_count);
+      push("sessions", s.session_count);
+      const w = windowPhrase(s.first_seen, s.last_seen);
+      return {title, kindTag, internalId, counts, windowPhrase: w, evidence};
+    }
+    if (d.type === "session_cluster") {
+      title = s.playbook_name || `session cluster ${s.cluster_id || d.id}`;
+      kindTag = "session cluster";
+      internalId = s.cluster_id || d.id;
+      push("members", s.size);
+      return {title, kindTag, internalId, counts, windowPhrase: "", evidence};
+    }
+    if (d.type === "command_cluster") {
+      title = `command cluster ${s.cluster_id || d.id}`;
+      kindTag = "command cluster";
+      internalId = s.cluster_id || d.id;
+      push("members", s.size);
+      return {title, kindTag, internalId, counts, windowPhrase: "", evidence};
+    }
+    if (d.type === "ip_cluster") {
+      title = `IP cluster ${s.cluster_id || d.id}`;
+      kindTag = "IP cluster";
+      internalId = s.cluster_id || d.id;
+      push("members", s.size);
+      return {title, kindTag, internalId, counts, windowPhrase: "", evidence};
+    }
+    if (d.type === "ip") {
+      title = s.ip || d.id;
+      // Build a kind suffix so the card carries country + ASN at a glance.
+      const tagParts = ["IP"];
+      if (s.country) tagParts.push(s.country);
+      if (s.asn) tagParts.push("AS" + s.asn);
+      kindTag = tagParts.join(" · ");
+      push("sessions", s.total_sessions);
+      push("commands", s.total_commands);
+      if (s.dominant_intent) push("intent", s.dominant_intent);
+      const w = windowPhrase(s.first_seen, s.last_seen);
+      return {title, kindTag, internalId, counts, windowPhrase: w, evidence};
+    }
+    if (d.type === "session") {
+      title = `session ${s.session_id || d.id}`;
+      kindTag = s.src_ip ? `session · ${s.src_ip}` : "session";
+      push("commands", s.command_count);
+      push("unique", s.unique_commands);
+      if (s.dominant_intent) push("intent", s.dominant_intent);
+      const w = windowPhrase(s.start, s.end);
+      return {title, kindTag, internalId, counts, windowPhrase: w, evidence};
+    }
+    if (d.type === "command" || d.type === "command_hash") {
+      const cmd = s.command_line || "";
+      title = cmd ? truncate(cmd, 48) : `command ${d.id ? d.id.slice(0, 12) : ""}`;
+      kindTag = s.intent ? `command · ${s.intent}` : "command";
+      internalId = s.sha256 || d.id;
+      push("occurrences", s.occurrence_count);
+      push("sessions", s.unique_sessions);
+      push("IPs", s.unique_source_ips);
+      return {title, kindTag, internalId, counts, windowPhrase: "", evidence};
+    }
+    if (d.type === "file" || d.type === "hash") {
+      title = d.title || `file ${(d.id || "").slice(0, 12)}…`;
+      kindTag = "file hash";
+      internalId = s.sha256 || d.id;
+      push("droppers", s.dropper_count);
+      evidence = s.verdict || s.consensus_label || "";
+      return {title, kindTag, internalId, counts, windowPhrase: "", evidence};
+    }
+    if (d.type === "asn") {
+      title = `AS${d.id}`;
+      kindTag = "ASN";
+      return {title, kindTag, internalId, counts, windowPhrase: "", evidence};
+    }
+    if (d.type === "country") {
+      title = d.id;
+      kindTag = "country";
+      return {title, kindTag, internalId, counts, windowPhrase: "", evidence};
+    }
+    if (d.type === "mitre_technique" || d.type === "mitre_tactic") {
+      title = d.id;
+      kindTag = d.type.replace("_", " ");
+      return {title, kindTag, internalId, counts, windowPhrase: "", evidence};
+    }
+    // Fallback: still show title + type so the card never goes blank
+    // for an anchor we forgot to special-case.
+    return {title, kindTag, internalId, counts, windowPhrase: "", evidence};
+  }
+
+  function windowPhrase(first, last) {
+    if (!first || !last) return "";
+    const a = new Date(first);
+    const b = new Date(last);
+    const secs = (b - a) / 1000;
+    if (!isFinite(secs) || secs < 0) return "";
+    const days = secs / 86400;
+    if (days >= 1.5) return `${Math.round(days)}d`;
+    const hours = secs / 3600;
+    if (hours >= 1.0) return `${Math.round(hours)}h`;
+    return "today";
+  }
+
+  function renderOrientationCard(d) {
+    const card = document.getElementById("orientation-card");
+    if (!card) return;
+    const titleEl = document.getElementById("orientation-title");
+    const idEl    = document.getElementById("orientation-id");
+    const countsEl = document.getElementById("orientation-counts");
+    const evEl    = document.getElementById("orientation-evidence");
+    if (!d || !d.type) {
+      card.setAttribute("hidden", "");
+      return;
+    }
+    const summary = summarizeAnchor(d);
+    if (!summary) {
+      card.setAttribute("hidden", "");
+      return;
+    }
+    titleEl.textContent = summary.title || "";
+    titleEl.title = `${summary.kindTag || d.type} — click to focus detail pane`;
+    titleEl.onclick = () => {
+      if (typeof window.__showDetailPane === "function") window.__showDetailPane();
+      const tabs = document.querySelectorAll("#detail-tabs button");
+      for (const b of tabs) {
+        if (b.dataset.tab === "summary") b.click();
+      }
+      const pane = document.getElementById("detail-pane");
+      if (pane && pane.scrollTop !== undefined) pane.scrollTop = 0;
+    };
+
+    // Internal id revealed under ?debug=1 — content-addressed ids
+    // (spb-<16hex>, cmp-bhv-<hash>) are the analyst's escape hatch
+    // back to a stable handle when names drift.
+    if (_isDebugMode() && summary.internalId) {
+      idEl.textContent = summary.internalId;
+      idEl.removeAttribute("hidden");
+    } else {
+      idEl.textContent = "";
+      idEl.setAttribute("hidden", "");
+    }
+
+    countsEl.innerHTML = "";
+    // Inject the kind tag as the first muted segment so the card carries
+    // its "what kind" even when count-list is empty.
+    if (summary.kindTag) {
+      const tag = document.createElement("span");
+      tag.textContent = summary.kindTag;
+      tag.style.color = "#6b7494";
+      countsEl.appendChild(tag);
+    }
+    const parts = [];
+    for (const c of summary.counts) parts.push(`${c.value} ${c.label}`);
+    if (summary.windowPhrase) parts.push(summary.windowPhrase);
+    if (parts.length) {
+      const sep = document.createElement("span");
+      sep.className = "orientation-sep";
+      sep.textContent = "·";
+      countsEl.appendChild(sep.cloneNode(true));
+      parts.forEach((p, i) => {
+        if (i) {
+          const s2 = sep.cloneNode(true);
+          countsEl.appendChild(s2);
+        }
+        const sp = document.createElement("span");
+        sp.textContent = p;
+        countsEl.appendChild(sp);
+      });
+    }
+    if (!summary.counts.length && !summary.windowPhrase) {
+      const empty = document.createElement("span");
+      empty.className = "orientation-empty";
+      empty.textContent = "—";
+      countsEl.appendChild(empty);
+    }
+
+    if (summary.evidence) {
+      evEl.textContent = summary.evidence;
+      evEl.removeAttribute("hidden");
+    } else {
+      evEl.textContent = "";
+      evEl.setAttribute("hidden", "");
+    }
+    card.removeAttribute("hidden");
+  }
+
   function renderDetail(d) {
     state.currentDetail = d;
+    renderOrientationCard(d);
     $("#detail-header").innerHTML =
       `<div class="type">${escapeHtml(d.type)}</div>` +
       `<h2>${escapeHtml(d.title)}</h2>`;
@@ -857,6 +1082,10 @@
     $("#tab-overview").innerHTML = `<div class="kv"><div class="k">error</div><div class="v">${escapeHtml(msg)}</div></div>`;
     $("#tab-related").innerHTML = "";
     $("#raw-json").textContent = "";
+    // Keep the orientation card visible with a minimal "anchored but
+    // lookup failed" surface so the analyst still has the handle
+    // visible top-left, not just an error inside a collapsed pane.
+    renderOrientationCard({type, id, title: id, summary: {}});
   }
 
   async function loadRelated(d, container) {
