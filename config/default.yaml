@@ -182,11 +182,20 @@ command_cluster:
 session:
   # Bump when mean-pool inputs change to force full re-rollup.
   embed_version: "v1"
-  # HDBSCAN params — smaller defaults than commands because session counts are lower.
-  cluster_min_cluster_size: 3
-  # min_samples=1 collapses HDBSCAN's mutual-reachability distance to raw
-  # cosine distance (single-linkage), which on a heavy-duplicate corpus can
-  # let one mega-cluster swallow the bulk. ROADMAP issue #5.
+  # HDBSCAN params. min_cluster_size=5 picked by the brutal-review phase 3.2
+  # sweep (scripts/sweep_hdbscan.py) — gives ARI 0.301 on the v1 labeled
+  # eval set vs. 0.238 at mcs=3 (the previous default) and 0.262 at mcs=8.
+  # The +0.063 lift comes from merging label-fragmented playbooks (notably
+  # the chattr+RSA persistence playbook that was split across 12 cluster
+  # docs at mcs=3) into fewer, more representative clusters. Outlier rate
+  # rises from 16% to 24% as a side effect — sessions that were marginally
+  # cluster-assigned at mcs=3 fall to HDBSCAN noise at mcs=5.
+  cluster_min_cluster_size: 5
+  # min_samples=2 keeps HDBSCAN's mutual-reachability density smoothing on
+  # (min_samples=1 disables it = single-linkage, which can let one mega-
+  # cluster swallow the bulk on a heavy-duplicate corpus — ROADMAP issue
+  # #5). The sweep showed ms=1 and ms=2 produce IDENTICAL clusterings at
+  # mcs=5 on this corpus; keep ms=2 as the safer default.
   cluster_min_samples: 2
   # Weight of the scalar feature block in the session cluster matrix.
   # Scalars: command_count, unique_commands, login_success_rate, mean_novelty_score.

@@ -1,8 +1,8 @@
 {
-  "captured_at": "2026-05-31T20:24:35.136548+00:00",
-  "captured_from": "eval/results/clustering-20260531T200659Z.json",
+  "captured_at": "2026-05-31T22:01:14.704942+00:00",
+  "captured_from": "eval/results/clustering-20260531T220114Z.json",
   "config_at_capture": {
-    "min_cluster_size": 3,
+    "min_cluster_size": 5,
     "min_samples": 2,
     "scalar_weight": 0.05
   },
@@ -21,23 +21,23 @@
   "tolerance_semantic": "Each metric fails the gate when current < baseline - tolerance. Tolerance is an absolute drop, not a relative percentage.",
   "metrics": {
     "ari": {
-      "baseline": 0.238,
+      "baseline": 0.3007,
       "tolerance": 0.05
     },
     "nmi": {
-      "baseline": 0.6521,
+      "baseline": 0.6506,
       "tolerance": 0.05
     },
     "homogeneity": {
-      "baseline": 0.892,
+      "baseline": 0.8375,
       "tolerance": 0.05
     },
     "completeness": {
-      "baseline": 0.5138,
+      "baseline": 0.5319,
       "tolerance": 0.05
     },
     "v_measure": {
-      "baseline": 0.6521,
+      "baseline": 0.6506,
       "tolerance": 0.05
     }
   }
