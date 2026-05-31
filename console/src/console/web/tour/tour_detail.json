@@ -1,0 +1,86 @@
+{
+  "_id": "find-tour-readme-example",
+  "kind": "campaign",
+  "status": "new",
+  "artifact": {
+    "kind": "campaign",
+    "value": "cmp-beh-e6e6e5569e56d396"
+  },
+  "score": 4.72,
+  "narrative": "Defense-in-depth SSH persistence — 73 source IPs across 35 countries and 57 ASNs run an identical combination of two playbooks over 275 sessions and 12 days. Every session installs the same RSA key, locks it immutable with chattr +i, and adds a crontab entry to re-install the key if it disappears.",
+  "narrative_source": "template",
+  "evidence": {
+    "campaign_id": "cmp-beh-e6e6e5569e56d396",
+    "campaign_name": "Defense-in-depth SSH persistence",
+    "playbook_ids": ["spb-tour-keylock", "spb-tour-cronlist"],
+    "member_sessions": 275,
+    "member_ips": 73,
+    "first_seen": "2026-04-29T00:00:00Z",
+    "last_seen":  "2026-05-11T00:00:00Z",
+    "dominant_intent": "persistence",
+    "verdict_curr": "mixed"
+  },
+  "first_seen_at": "2026-04-29T00:00:00Z",
+  "last_seen_at":  "2026-05-11T00:00:00Z",
+  "evidence_quality": "Strong · 275 sess / 73 IPs · 12d · 14 runs",
+  "lifecycle": {
+    "runs_observed": 14,
+    "silent_runs_current": 0,
+    "first_seen_ever": "2026-04-29T00:00:00Z",
+    "snapshots": [
+      {"session_count":  4, "@timestamp": "2026-04-29T06:00:00Z"},
+      {"session_count": 12, "@timestamp": "2026-04-30T06:00:00Z"},
+      {"session_count": 19, "@timestamp": "2026-05-01T06:00:00Z"},
+      {"session_count": 28, "@timestamp": "2026-05-02T06:00:00Z"},
+      {"session_count": 37, "@timestamp": "2026-05-03T06:00:00Z"},
+      {"session_count": 51, "@timestamp": "2026-05-04T06:00:00Z"},
+      {"session_count": 68, "@timestamp": "2026-05-05T06:00:00Z"},
+      {"session_count": 89, "@timestamp": "2026-05-06T06:00:00Z"},
+      {"session_count": 113, "@timestamp": "2026-05-07T06:00:00Z"},
+      {"session_count": 138, "@timestamp": "2026-05-08T06:00:00Z"},
+      {"session_count": 168, "@timestamp": "2026-05-09T06:00:00Z"},
+      {"session_count": 199, "@timestamp": "2026-05-10T06:00:00Z"},
+      {"session_count": 231, "@timestamp": "2026-05-11T06:00:00Z"},
+      {"session_count": 275, "@timestamp": "2026-05-11T18:00:00Z"}
+    ],
+    "confirm_anchors": [],
+    "drift_suppressions": []
+  },
+  "top_commands": [
+    {
+      "command_id": "tour-cmd-1",
+      "command":   "echo 'ssh-rsa AAAAB3NzaC1yc2EAAAA...' >> ~/.ssh/authorized_keys",
+      "description": "Append an attacker-controlled SSH public key to the authorized_keys file — establishes passwordless access on this user account.",
+      "novelty":   0.18,
+      "specificity": 0.94
+    },
+    {
+      "command_id": "tour-cmd-2",
+      "command":   "chattr +i ~/.ssh/authorized_keys",
+      "description": "Set the immutable bit on the authorized_keys file. The file cannot be modified, renamed or deleted — even by root — until chattr -i removes the bit. Counter-hardening against manual key removal.",
+      "novelty":   0.31,
+      "specificity": 0.97
+    },
+    {
+      "command_id": "tour-cmd-3",
+      "command":   "(crontab -l 2>/dev/null; echo '*/5 * * * * /tmp/reinstall_key.sh') | crontab -",
+      "description": "Add a cron entry that re-runs the key-installer every 5 minutes. If the immutable bit is cleared and the key removed, the next cron tick re-installs it.",
+      "novelty":   0.28,
+      "specificity": 0.91
+    }
+  ],
+  "top_ips": [
+    {"ip": "203.0.113.42",  "session_count": 18, "intel_verdict": "malicious", "specificity": 0.86},
+    {"ip": "198.51.100.71", "session_count": 14, "intel_verdict": "unknown",   "specificity": 0.82},
+    {"ip": "192.0.2.55",    "session_count": 11, "intel_verdict": "malicious", "specificity": 0.78}
+  ],
+  "convergent_campaigns": [
+    {
+      "campaign_id":   "cmp-inf-cd57092a675b30ea",
+      "campaign_name": "Shared RSA key infrastructure",
+      "kind":          "infrastructure",
+      "ip_count":      1251
+    }
+  ],
+  "_tour": true
+}

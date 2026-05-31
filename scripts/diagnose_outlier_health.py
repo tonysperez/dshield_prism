@@ -162,7 +162,7 @@ def _audit_outliers(es, label: str, docs_idx: str, cluster_idx: str,
 
     arr = np.array(sims)
     print(f"  outliers w/ embedding:   {len(sims)}")
-    print(f"  max-cosine-to-nearest-centroid:")
+    print("  max-cosine-to-nearest-centroid:")
     print(f"    median: {float(np.median(arr)):.4f}   p25: {float(np.percentile(arr,25)):.4f}"
           f"   p75: {float(np.percentile(arr,75)):.4f}   p90: {float(np.percentile(arr,90)):.4f}"
           f"   max: {float(arr.max()):.4f}")

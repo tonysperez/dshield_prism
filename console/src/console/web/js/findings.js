@@ -16,6 +16,51 @@
 const STATUSES = ["new", "ack", "confirmed", "rejected"];
 
 // ────────────────────────────────────────────────────────────────────────────
+// Onboarding tour finding (Item #4 of the analyst-first UX push).
+//
+// Fresh deploys land on an empty inbox with no idea what Prism actually
+// surfaces. The tour pins one hand-crafted finding at the top of the
+// inbox — the README's cmp-beh-e6e6e5569e56d396 example, rendered as a
+// real-looking row — so a first-time user can see and click through
+// the analyst workflow without ingesting a single event.
+//
+// Trigger: empty inbox + not dismissed, OR ?tour=1 (which overrides
+// dismissal so the analyst can always re-view it).
+// Dismiss: localStorage `prism.tour.dismissed = "1"`.
+// ────────────────────────────────────────────────────────────────────────────
+const TOUR_FINDING_ID  = "find-tour-readme-example";
+const TOUR_ROW_URL     = "/static/tour/tour_row.json";
+const TOUR_DETAIL_URL  = "/static/tour/tour_detail.json";
+const TOUR_DISMISS_KEY = "prism.tour.dismissed";
+let _tourRow = null;  // cached after first fetch
+
+function tourForced() {
+  return new URLSearchParams(location.search).get("tour") === "1";
+}
+function tourDismissed() {
+  try { return localStorage.getItem(TOUR_DISMISS_KEY) === "1"; }
+  catch (_) { return false; }
+}
+function setTourDismissed(v) {
+  try { localStorage.setItem(TOUR_DISMISS_KEY, v ? "1" : "0"); }
+  catch (_) {}
+}
+function isTourRow(row) {
+  if (!row) return false;
+  const fid = row._id || row.finding_id;
+  return row._tour === true || fid === TOUR_FINDING_ID;
+}
+async function loadTourRow() {
+  if (_tourRow) return _tourRow;
+  try {
+    const r = await fetch(TOUR_ROW_URL);
+    if (!r.ok) return null;
+    _tourRow = await r.json();
+    return _tourRow;
+  } catch (_) { return null; }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Next-action templates (ROADMAP #17.14 — the spine of the overhaul).
 //
 // A finding without a suggested next step is a notification, not a triage
@@ -206,6 +251,11 @@ function artifactCell(r) {
   const td = el("td", {class: "artifact"});
   const a = r.artifact || {};
   const title = el("span", {class: "artifact-title"}, [artifactLabel(r)]);
+  if (isTourRow(r)) {
+    title.appendChild(el("span", {class: "artifact-tour-tag",
+      title: "Sample finding from the README example — not from your corpus",
+    }, ["TOUR"]));
+  }
   td.appendChild(title);
   const tag = kindTagLine(r);
   if (tag) td.appendChild(tag);
@@ -430,13 +480,45 @@ function renderInbox(rows) {
   // to the top. The server returned them in last_seen order; we resort
   // client-side so swapping sort modes is a no-fetch toggle.
   if (state.sort === "urgency") rows = applyUrgencySort(rows.slice());
+  // Tour: pin the sample finding above any real rows when ?tour=1 OR
+  // when the inbox is empty and the analyst hasn't dismissed it. The
+  // banner above the table explains what the analyst is seeing and
+  // offers a dismiss control.
+  const showingTour = _tourRow && (
+    tourForced() || (rows.length === 0 && !tourDismissed())
+  );
+  if (showingTour) {
+    const others = rows.filter(r => !isTourRow(r));
+    rows = [_tourRow, ...others];
+    const banner = el("div", {class: "tour-banner"});
+    banner.appendChild(el("span", {class: "tour-banner-tag"}, ["TOUR"]));
+    banner.appendChild(el("span", {class: "tour-banner-text"}, [
+      tourForced()
+        ? "Forced tour view (?tour=1). Sample finding pinned at top — the rest of the inbox is your real corpus."
+        : "Your inbox is empty. Below is a sample finding from the README — click it to see the analyst workflow.",
+    ]));
+    banner.appendChild(el("button", {
+      type: "button", class: "tour-banner-dismiss",
+      onclick: () => { setTourDismissed(true); refreshAll(); },
+    }, ["Dismiss tour"]));
+    body.appendChild(banner);
+  }
   if (!rows.length) {
     const scope = state.stream
       ? `${(STREAM_LABEL[state.stream] || state.stream).toLowerCase()} `
       : "";
-    body.appendChild(el("p", {class: "fnd-empty"}, [
+    const wrap = el("div");
+    wrap.appendChild(el("p", {class: "fnd-empty"}, [
       `no ${scope}findings match this filter`,
     ]));
+    // Always offer the tour button from an empty state so the analyst
+    // can see what a populated inbox looks like.
+    const btn = el("button", {
+      type: "button", class: "tour-btn",
+      onclick: () => { setTourDismissed(false); refreshAll(); },
+    }, ["Show me a sample finding"]);
+    wrap.appendChild(btn);
+    body.appendChild(wrap);
     return;
   }
   const table = el("table", {class: "fnd-table"});
@@ -462,6 +544,7 @@ function renderInbox(rows) {
     const action = nextAction(r);
     const trClasses = ["fnd-row"];
     if (action) trClasses.push("urgency-" + action.verb);
+    if (isTourRow(r)) trClasses.push("fnd-row-tour");
     const tr = el("tr", {
       class: trClasses.join(" "),
       "data-fid": fid,
@@ -577,6 +660,14 @@ async function applyStatusShortcut(newStatus) {
   const r = focusedRow();
   if (!r) return;
   const fid = r._id || r.finding_id;
+  if (fid === TOUR_FINDING_ID) {
+    // Tour finding has no backend row; updating its status would 404.
+    // Just dismiss the tour and refresh — clicking Confirm/Reject on
+    // the sample is the analyst's signal they're done with onboarding.
+    setTourDismissed(true);
+    await refreshAll();
+    return;
+  }
   try {
     const resp = await fetch(`/api/finding/${encodeURIComponent(fid)}/status`, {
       method: "POST",
@@ -1002,8 +1093,19 @@ function exportDrawerAsMarkdown(data) {
 }
 
 async function bulkMutateStatus(newStatus) {
-  const ids = Array.from(state.selectedIds);
-  if (!ids.length) return;
+  // Tour finding isn't persisted; if it's in the selection, drop it
+  // and dismiss the tour at the same time so the analyst's action
+  // still has a sensible effect.
+  let ids = Array.from(state.selectedIds);
+  if (ids.includes(TOUR_FINDING_ID)) {
+    setTourDismissed(true);
+    ids = ids.filter(i => i !== TOUR_FINDING_ID);
+    state.selectedIds.delete(TOUR_FINDING_ID);
+  }
+  if (!ids.length) {
+    await refreshAll();
+    return;
+  }
   const bar = document.getElementById("bulk-bar");
   if (bar) bar.classList.add("bulk-bar-busy");
   try {
@@ -1032,6 +1134,15 @@ async function bulkMutateStatus(newStatus) {
 
 async function mutateStatus(fid, newStatus, selEl) {
   if (!fid || !newStatus) return;
+  if (fid === TOUR_FINDING_ID) {
+    // Tour finding isn't persisted; clicking through the dropdown
+    // dismisses the tour. Reset the select so it doesn't show a
+    // misleading "confirmed" state on next mount.
+    setTourDismissed(true);
+    selEl.value = "new";
+    await refreshAll();
+    return;
+  }
   selEl.disabled = true;
   try {
     const r = await fetch(`/api/finding/${encodeURIComponent(fid)}/status`, {
@@ -1344,19 +1455,34 @@ function renderDrawer(data) {
   // to the tab.
   if (a.kind === "playbook" || a.kind === "campaign" || a.kind === "ip") {
     const sec = el("div", {class: "drawer-section"});
-    const link = el("a", {
-      href: `/graph?ioc=${encodeURIComponent(a.kind)}:${encodeURIComponent(a.value)}`,
-      class: "nav-link",
-    }, ["Open in graph →"]);
-    link.addEventListener("click", (ev) => {
-      const token = saveInboxReturn();
-      if (token) {
-        const u = new URL(ev.currentTarget.href, location.origin);
-        u.searchParams.set("return", token);
-        ev.currentTarget.href = u.pathname + "?" + u.searchParams.toString();
-      }
-    });
-    sec.appendChild(link);
+    if (isTourRow(data)) {
+      // The tour finding's artifact value doesn't exist in any real
+      // corpus, so a graph anchor would 404. Replace with a note
+      // pointing at the real workflow path.
+      sec.appendChild(el("p", {class: "drawer-meta"}, [
+        "On a real finding, this is the pivot into the investigation graph. " +
+        "It anchors the canvas on the playbook / campaign / IP and " +
+        "auto-expands its behavioural neighbourhood.",
+      ]));
+      sec.appendChild(el("p", {class: "drawer-meta", style: "margin-top:6px;"}, [
+        "Once you've ingested events with ", el("code", null, ["dshield_prism enrich"]),
+        " + ", el("code", null, ["mine findings"]), ", real findings replace the sample.",
+      ]));
+    } else {
+      const link = el("a", {
+        href: `/graph?ioc=${encodeURIComponent(a.kind)}:${encodeURIComponent(a.value)}`,
+        class: "nav-link",
+      }, ["Open in graph →"]);
+      link.addEventListener("click", (ev) => {
+        const token = saveInboxReturn();
+        if (token) {
+          const u = new URL(ev.currentTarget.href, location.origin);
+          u.searchParams.set("return", token);
+          ev.currentTarget.href = u.pathname + "?" + u.searchParams.toString();
+        }
+      });
+      sec.appendChild(link);
+    }
     body.appendChild(sec);
   }
 
@@ -1391,14 +1517,24 @@ function renderNotesSection(body, data) {
     sec.appendChild(el("p", {class: "drawer-meta"}, ["no notes yet"]));
   }
 
+  const isTour = fid === TOUR_FINDING_ID;
   const ta = el("textarea", {
     class: "note-textarea", rows: "2",
-    placeholder: "Add a note (free text). Survives status changes and feeds the markdown export.",
+    placeholder: isTour
+      ? "(sample finding — notes aren't saved; this textarea exists so you can see what the analyst's note pad looks like)"
+      : "Add a note (free text). Survives status changes and feeds the markdown export.",
   });
   const btn = el("button", {class: "note-add-btn", type: "button"}, ["Add note"]);
   btn.addEventListener("click", async () => {
     const text = ta.value.trim();
     if (!text) return;
+    if (isTour) {
+      // Sample finding — show the analyst what a successful save
+      // looks like without trying to persist. Clear the textarea so
+      // the interaction feels real.
+      ta.value = "";
+      return;
+    }
     btn.disabled = true;
     try {
       const r = await fetch(`/api/finding/${encodeURIComponent(fid)}/note`, {
@@ -1501,8 +1637,13 @@ async function openDrawer(finding_id) {
   document.getElementById("drawer-body").innerHTML = "";
   document.getElementById("drawer-backdrop").style.display = "block";
   document.getElementById("drawer").classList.add("open");
+  // Tour finding skips the real API and loads the in-repo fixture so
+  // a fresh deploy can demo the analyst workflow without any data.
+  const url = finding_id === TOUR_FINDING_ID
+    ? TOUR_DETAIL_URL
+    : `/api/finding/${encodeURIComponent(finding_id)}/detail`;
   try {
-    const r = await fetch(`/api/finding/${encodeURIComponent(finding_id)}/detail`);
+    const r = await fetch(url);
     if (!r.ok) {
       document.getElementById("drawer-body").innerHTML =
         `<div class="drawer-section">load failed: ${await r.text()}</div>`;
@@ -1608,7 +1749,9 @@ function closeDrawer() {
     history.replaceState(null, "", location.pathname + (tail ? "?" + tail : ""));
   }
 
-  refreshAll().then(() => {
+  // Pre-load the tour fixture in parallel with the first refresh so
+  // an empty inbox renders the tour row in the same paint cycle.
+  Promise.all([loadTourRow(), refreshAll()]).then(() => {
     if (!restorePayload) return;
     requestAnimationFrame(() => {
       if (restorePayload.scrollY) window.scrollTo(0, restorePayload.scrollY);

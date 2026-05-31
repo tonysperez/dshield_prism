@@ -345,6 +345,55 @@
       border: 1px solid #ffa14c60; border-radius: 3px;
       color: #ffa14c; text-transform: uppercase;
     }
+    /* Tour banner + tour row treatment (Item #4). The tour finding is
+       a hand-crafted README example pinned at the top of the inbox to
+       teach the workflow on an empty deploy. The visual treatment
+       deliberately reads "sample / not real" while still functioning
+       like a real row. */
+    .tour-banner {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 14px; margin: 0 0 10px;
+      background: #1a0e29; border: 1px solid #c084fc60;
+      border-radius: 5px;
+      font-size: 12px; color: #c8d0e2;
+    }
+    .tour-banner-tag {
+      font-size: 9px; font-weight: 700; letter-spacing: 0.8px;
+      color: #c084fc; border: 1px solid #c084fc80;
+      padding: 1px 6px; border-radius: 3px;
+    }
+    .tour-banner-text { flex: 1; }
+    .tour-banner-dismiss {
+      font-size: 11px; font-weight: 600;
+      padding: 4px 10px; border-radius: 4px;
+      background: transparent; color: #c084fc;
+      border: 1px solid #c084fc60;
+      cursor: pointer;
+    }
+    .tour-banner-dismiss:hover { background: #2d1f4e; }
+    /* Tour row — faint purple wash + a TOUR pill next to the title.
+       Keeps the row clearly differentiated from real findings without
+       breaking the visual rhythm of the table. */
+    table.fnd-table tr.fnd-row-tour td { background: #14091f; }
+    table.fnd-table tr.fnd-row-tour:hover td { background: #1f0f2e; }
+    .artifact-tour-tag {
+      display: inline-block; margin-left: 6px;
+      font-size: 9px; font-weight: 700; letter-spacing: 0.8px;
+      color: #c084fc; border: 1px solid #c084fc80;
+      padding: 0 5px; border-radius: 2px;
+      vertical-align: middle;
+    }
+    /* "Show me a sample finding" button in empty-state. */
+    .tour-btn {
+      display: block; margin: 12px auto 0;
+      padding: 6px 14px; border-radius: 4px;
+      background: #1a0e29; color: #c084fc;
+      border: 1px solid #c084fc80;
+      font-size: 12px; font-weight: 600;
+      cursor: pointer;
+    }
+    .tour-btn:hover { background: #2d1f4e; }
+
     .fnd-empty {
       padding: 20px; text-align: center;
       color: #4a5470; font-size: 12px;

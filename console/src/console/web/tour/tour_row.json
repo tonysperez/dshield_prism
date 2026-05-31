@@ -1,0 +1,43 @@
+{
+  "_id": "find-tour-readme-example",
+  "kind": "campaign",
+  "status": "new",
+  "artifact": {
+    "kind": "campaign",
+    "value": "cmp-beh-e6e6e5569e56d396"
+  },
+  "score": 4.72,
+  "narrative": "Defense-in-depth SSH persistence — 73 source IPs across 35 countries and 57 ASNs run an identical combination of two playbooks over 275 sessions and 12 days. Every session installs the same RSA key, locks it immutable with chattr +i, and adds a crontab entry to re-install the key if it disappears.",
+  "narrative_source": "template",
+  "evidence": {
+    "campaign_id": "cmp-beh-e6e6e5569e56d396",
+    "campaign_name": "Defense-in-depth SSH persistence",
+    "playbook_ids": ["spb-tour-keylock", "spb-tour-cronlist"],
+    "member_sessions": 275,
+    "member_ips": 73,
+    "first_seen": "2026-04-29T00:00:00Z",
+    "last_seen":  "2026-05-11T00:00:00Z",
+    "dominant_intent": "persistence",
+    "verdict_curr": "mixed"
+  },
+  "first_seen_at": "2026-04-29T00:00:00Z",
+  "last_seen_at":  "2026-05-11T00:00:00Z",
+  "lifecycle_snapshots": [
+    {"session_count":  4},
+    {"session_count": 12},
+    {"session_count": 19},
+    {"session_count": 28},
+    {"session_count": 37},
+    {"session_count": 51},
+    {"session_count": 68},
+    {"session_count": 89},
+    {"session_count": 113},
+    {"session_count": 138},
+    {"session_count": 168},
+    {"session_count": 199},
+    {"session_count": 231},
+    {"session_count": 275}
+  ],
+  "evidence_quality": "Strong · 275 sess / 73 IPs · 12d · 14 runs",
+  "_tour": true
+}
