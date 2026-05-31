@@ -1,8 +1,8 @@
 # Embedding ablation — Nomic vs. TF-IDF + SVD baseline
 
-Brutal-review phase 3.3. One-time doc captured 2026-05-31 against the
-v1 labeled eval set (100 labeled+embedded sessions, 6 distinct
-playbook labels). Re-runnable any time via:
+Brutal-review phase 3.3 + 3.4 reconciliation. Captured 2026-05-31
+against the v1 labeled eval set (100 labeled+embedded sessions, 6
+distinct playbook labels). Re-runnable any time via:
 
 ```bash
 console/.venv/bin/python scripts/eval_clustering.py --no-json
@@ -14,69 +14,109 @@ production weight → HDBSCAN at production hyperparameters → ARI / NMI
 / homogeneity / completeness / v-measure vs. analyst labels). The only
 varying input is the per-session vector source.
 
-## Side-by-side metrics
+## Result depends on the HDBSCAN config
 
-| metric | model (Nomic 768d) | tfidf-svd (100d) | Δ (model − baseline) |
+Two captures are kept because the ablation flipped between commits:
+
+### At mcs=3, ms=2 (the original phase 3.3 baseline)
+
+| metric | Nomic (768d) | TF-IDF + SVD (100d) | Δ (Nomic − baseline) |
 |---|---:|---:|---:|
-| ARI | **0.2380** | 0.2071 | **+0.0309** |
-| NMI | **0.6521** | 0.6072 | **+0.0449** |
-| Homogeneity | **0.8920** | 0.8298 | **+0.0622** |
-| Completeness | **0.5138** | 0.4788 | **+0.0350** |
-| V-measure | **0.6521** | 0.6072 | **+0.0449** |
-| n_clusters | 17 | 17 | 0 |
-| n_outliers | 16 | 15 | −1 |
+| ARI | **0.238** | 0.207 | **+0.031** |
+| NMI | **0.652** | 0.607 | **+0.045** |
+| Homogeneity | **0.892** | 0.830 | **+0.062** |
+| Completeness | **0.514** | 0.479 | **+0.035** |
+| V-measure | **0.652** | 0.607 | **+0.045** |
 
-The Nomic embedding wins on every metric. The margin is consistent
-(~+0.03–0.06 absolute across the row) and shows up most clearly on
-homogeneity (+0.062): embeddings produce more internally-coherent
-clusters than TF-IDF on the same data.
+Nomic wins every metric, biggest gap on homogeneity. Looks like a
+clear case for the embedding-based approach.
 
-## Why TF-IDF is closer than you might expect
+### At mcs=5, ms=2 (the post-phase-3.4 production config)
 
-The corpus is **dominated by cargo-cult scripts** where the same
-commands appear literally across many sessions
-(`scripts/eval_cluster_purity.py` already surfaced this: cluster_20
-SSH Key Dropper has 526 sessions with modal-signature share 0.99 —
-every member runs the *exact same* command set). TF-IDF nails cargo-
-cult clusters because it captures literal-token overlap. The Nomic
-embedding only pulls ahead when sessions are semantically similar but
-textually different — and the v1 eval set has a limited number of
-those (notably the `shell_wrapper_only` clusters with two payload
-shapes and `mirai_busybox_probe`'s natural split).
+| metric | Nomic (768d) | TF-IDF + SVD (100d) | Δ (Nomic − baseline) |
+|---|---:|---:|---:|
+| ARI | 0.301 | **0.357** | **−0.057** |
+| NMI | 0.651 | **0.653** | −0.002 |
+| Homogeneity | **0.838** | 0.817 | **+0.020** |
+| Completeness | 0.532 | **0.544** | −0.012 |
+| V-measure | 0.651 | **0.653** | −0.002 |
+| n_clusters | 14 | 12 | +2 |
+| n_outliers | 24 | 20 | +4 |
 
-## Verdict
+**TF-IDF wins ARI by +0.057 absolute (+19% relative).** Homogeneity
+flips the other way (Nomic +0.020); the remaining metrics are
+essentially tied.
 
-**Embeddings hold on this corpus**, but the margin is modest. Three
-implications for what ships next:
+## What flipped, and why
 
-1. **The phase-3.4 hyperparameter commit stays with Nomic embeddings.**
-   The sweep winner (mcs=5, ms=1, ARI 0.301) is on top of the model
-   embeddings; the equivalent TF-IDF run would float around 0.27.
-2. **The "embeddings see through textually-unrelated synonyms"
-   thesis the README headlined is correct but currently
-   underutilised** — the eval set isn't anchor-loaded with the kind of
-   `wget` vs `curl` substitution cases where embeddings dominate. A
-   future labeling expansion that includes more textually-divergent
-   same-behaviour sessions would amplify the margin.
-3. **The TF-IDF baseline at 0.21 ARI is a respectable floor** — within
-   striking distance of the production system. The pipeline isn't
-   being *saved* by embeddings; it's being *improved*. Worth keeping
-   in mind when reasoning about the cost (LLM enrichment budget,
-   embedding inference latency) of the model-based path.
+At mcs=3, the Nomic embedding's semantic smoothing pulled
+behaviourally-related sessions close enough in 768-dim space that
+HDBSCAN found them as one cluster. TF-IDF's sparser representation
+left them slightly further apart and mcs=3 fragmented them more.
 
-## How to reproduce / re-run
+At mcs=5, both representations are more forgiving — HDBSCAN merges
+nearby points more aggressively, so the spread penalty for TF-IDF
+shrinks. The inherent "shared command tokens" structure is enough to
+find clusters at this granularity, and the Nomic semantic smoothing
+adds little. On *this* corpus, the literal-token signal dominates.
+
+The corpus dominance is documented in `scripts/eval_cluster_purity.py`
+output: 5 of the top-20 clusters are cargo-cult tight (`modal_sig`
+≥ 0.8 — every member runs the *exact same* command set), and many of
+the loose clusters share the SSH Credential Spray playbook across
+many fragmented HDBSCAN cluster docs. Both representations cluster
+cargo-cult scripts equally well; neither does spectacularly on the
+fragmented playbook.
+
+## Honest conclusion on the embedding thesis
+
+The README's "embeddings see through wget vs curl" thesis is
+**mechanistically correct** but **not currently demonstrated** at
+corpus scale. Two specific reasons:
+
+1. **The eval set is dominated by cargo-cult scripts** where every
+   session runs near-identical text. TF-IDF nails these because
+   literal-token overlap IS the signal. The embedding's value-add —
+   pulling textually-divergent same-behaviour sessions together — is
+   only exercised on a handful of labeled sessions (notably the
+   `mirai_busybox_probe` natural split and `shell_wrapper_only`'s two
+   payload shapes).
+2. **The labels themselves don't anchor-load the test.** A labeling
+   pass that includes more sessions where `wget` vs `curl`,
+   `busybox wget` vs `wget`, or different shell wrappers achieve the
+   same outcome would amplify the embedding margin substantially.
+
+## What ships next
+
+- **Production stays on Nomic embeddings.** This isn't a "TF-IDF is
+  better" verdict — it's "TF-IDF is competitive on this corpus's
+  current label distribution". Embeddings still carry value the
+  ablation can't measure (downstream novelty scoring, per-command
+  intent enrichment, cluster naming) that TF-IDF can't replace.
+- **The README is rewritten honestly** (commit 3.5) — the cluster_7
+  anecdote stays as a mechanistic demonstration but is no longer the
+  load-bearing trustworthiness claim. The actual corpus-wide ARI
+  number is cited instead, with the caveat that TF-IDF is in the
+  same neighbourhood.
+- **Phase 6 or 8 should include a labeling expansion** targeting
+  textually-divergent same-behaviour sessions, after which a
+  re-ablation can settle the question properly.
+
+## How to reproduce
 
 ```bash
-# Both modes; same eval set; deterministic given pinned inputs.
+# Both modes; same eval set; deterministic given pinned inputs +
+# fixed sklearn random_state.
 console/.venv/bin/python scripts/eval_clustering.py --no-json
-console/.venv/bin/python scripts/eval_clustering.py --no-json --embedding-source tfidf-svd
+console/.venv/bin/python scripts/eval_clustering.py --no-json \
+  --embedding-source tfidf-svd
 
-# Or split the runs into JSON dumps for archival:
-console/.venv/bin/python scripts/eval_clustering.py \
-  --output-dir eval/results --no-json     # writes via default path; switch off --no-json
-console/.venv/bin/python scripts/eval_clustering.py \
-  --embedding-source tfidf-svd            # writes a tfidf-svd-tagged dump
+# Toggle the config temporarily to verify the mcs=3 vs mcs=5 flip:
+#   1. Edit config/default.yaml: session.cluster_min_cluster_size: 3
+#   2. Re-run both modes — Nomic should win ARI by ~0.03
+#   3. Revert: session.cluster_min_cluster_size: 5
+#   4. Re-run both modes — TF-IDF should win ARI by ~0.06
 ```
 
-The `--embedding-source` flag is **strictly opt-in**; the CI eval gate
+The `--embedding-source` flag is strictly opt-in; the CI eval gate
 (`.github/workflows/eval.yml`) runs without the flag and is unchanged.

@@ -34,11 +34,15 @@ Behavioral campaign mining surfaces the chattr+cron *subset* of a broader shared
 
 The combination is defense-in-depth persistence: install the key, lock it with chattr, re-install via cron if it disappears. Two campaign axes (behavior and infrastructure) corroborate the same finding from different angles: the infra axis names the shared-key pool; the behavior axis names the chattr+cron sub-population *inside* that pool. Frequent-itemset mining (FP-growth) over each IP's playbook set is what surfaces *"these 73 IPs run this exact combination"* — and the playbooks themselves only exist because session embeddings clustered into stable named behaviors.
 
-## Why that finding is trustworthy — illustrative example
+## What the clustering actually does — measured
 
-> *Illustrative.* The cluster below is a single hand-picked example that motivated the design; it is not a corpus-wide measurement. Cluster-purity metrics over a labeled eval set are pending — see [ROADMAP.md](docs/ROADMAP.md) phase 3.
+The campaign above only means something if the clustering underneath it groups sessions by *behavior*, not by text. The honest answer from an analyst-labeled 100-session eval set:
 
-The campaign above only means something if the clustering underneath it groups commands by *behavior*, not by text. `cluster_7` is the kind of grouping the embedding-based approach is designed to produce: 39 commands across 19 distinct leading binaries, with near-zero textual overlap, grouped together as host/environment fingerprinting.
+- **Cluster-quality vs. analyst labels** — ARI 0.30, NMI 0.65, homogeneity 0.84, completeness 0.53 at the current production HDBSCAN config (`min_cluster_size=5`). Clusters are mostly internally pure; labels fragment across a moderate number of clusters. The HDBSCAN sweep at [`scripts/sweep_hdbscan.py`](scripts/sweep_hdbscan.py) shows the trade-off space in full.
+- **Copy/paste dominance.** Per [`scripts/eval_cluster_purity.py`](scripts/eval_cluster_purity.py), 5 of the top 20 corpus clusters are copy/paste tight — every member runs the *exact same* command set (`modal_signature_share` ≥ 0.8). One cluster (`cluster_20`, SSH Key Dropper) holds 526 sessions at `modal_signature_share = 0.99`.
+- **Embedding ablation.** At the current hyperparameters, a TF-IDF + truncated-SVD baseline ([eval/results/embedding-ablation.md](eval/results/embedding-ablation.md)) lands ARI 0.36 — slightly *above* the Nomic embedding's 0.30. The picture flips at `min_cluster_size=3` (Nomic ARI 0.24 vs. TF-IDF 0.21), but on the current production config the literal-token signal dominates because the eval corpus is mostly copy/paste traffic.
+
+`cluster_7` below is the kind of case where the embedding mechanism *is* doing work that TF-IDF can't: 39 commands across 19 distinct leading binaries, grouped together as host/environment fingerprinting despite near-zero textual overlap.
 
 ```
 w        uname -m      whoami      hostname      ifconfig      top
@@ -47,15 +51,13 @@ free -m | grep Mem | awk '{print $2,$3,$4,$5,$6,$7}'
 ls -la ~/.local/share/TelegramDesktop/tdata ...   /ip cloud print
 ```
 
-Three properties hold at once in this example, and embedding-based clustering is what produces all three:
+Three properties hold at once in this example:
 
 - **Maximal textual divergence** — members run from one character (`w`) to 90+; they share no common tokens.
-- **Cross-dialect membership** — `/ip cloud print` is MikroTik RouterOS syntax, clustered alongside Linux coreutils. A string method has no basis to group these.
+- **Cross-dialect membership** — `/ip cloud print` is MikroTik RouterOS syntax, clustered alongside Linux coreutils.
 - **Semantic coherence** — every member is host recon: CPU, memory, OS/arch, identity, network, competing miners (`ps | grep '[Mm]iner'`), and high-value loot (`ls … TelegramDesktop/tdata`).
 
-A string-distance or command-prefix grouping would scatter these into ~19 buckets; the embedding placed them in one — because `w`, `uname -m`, and `/ip cloud print` do the same thing, they just don't look alike. The same invariance shows up over shell-wrapping: `echo "…" | sh` and the bare command sequence cluster together because the embedding sees through the wrapper to the container-fingerprinting behavior underneath.
-
-That's the project's core thesis — treat textually unrelated commands that do the same job (`wget` vs `curl`) as equivalent. The example demonstrates the mechanism; corpus-wide cluster-purity numbers (mean pairwise token-Jaccard, lineage purity, embedding-ablation results) will replace the anecdote once phase 3 ships.
+The same invariance shows up over shell-wrapping: `echo "…" | sh` and the bare command sequence cluster together because the embedding sees through the wrapper to the underlying behavior. **At the level of individual cases the mechanism works.** What the ablation also shows is that on this specific corpus the wins are mostly drowned out by copy/paste traffic, where literal-token overlap already does the heavy lifting. A labeling expansion targeting textually-divergent same-behavior sessions (e.g. more `wget` vs `curl` or `busybox wget` vs `wget` pairs) would let the embedding margin show up corpus-wide rather than only in mechanism-demonstrating anecdotes.
 
 ## How it works
 
