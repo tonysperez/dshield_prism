@@ -5,9 +5,14 @@ plain-language read on *how strong the evidence is* — at a glance, in
 the inbox table or on the graph orientation card or in a writeup
 paragraph. This module produces that string.
 
-Pure function; no ES, no config. Inputs are the finding's `_source`
-shape returned by `findings.list_findings()` plus an optional lifecycle
-doc (for `runs_observed` / `silent_runs_current` when available).
+Verdict formatting is a pure function — inputs are the finding's
+`_source` shape returned by `findings.list_findings()` plus an
+optional lifecycle doc (for `runs_observed` when available). The
+*thresholds* the Strong/Moderate band uses are now corpus-derived
+(brutal-review phase 4.2): callers fetch the latest percentile
+snapshots from `prism.metrics` via ``band_thresholds(es, cfg)`` and
+pass them through. Sites without an ES handle get the historical
+(20, 5) fallback automatically.
 
 The vocabulary is deliberately small. Different finding kinds carry
 different evidence axes, so the verdict shape varies — but the
@@ -24,8 +29,12 @@ have, not what HDBSCAN measured.
 """
 from __future__ import annotations
 
+import logging
+import time
 from datetime import datetime
 from typing import Any, Optional
+
+log = logging.getLogger(__name__)
 
 
 _COVERAGE_KINDS = frozenset({"playbook", "campaign", "new_playbook"})
@@ -35,9 +44,100 @@ _DRIFT_KINDS = frozenset({
 })
 
 
+# Historical Strong-band cutoff: sess >= 20 AND ips >= 5. Used as the
+# fallback when no `prism.metrics` percentile snapshot exists yet
+# (fresh deploys), and as the documented default for tests + callers
+# that don't have an ES handle.
+_BAND_THRESHOLD_DEFAULT: tuple[int, int] = (20, 5)
+
+
+# Module-level cache for the percentile lookup. Keyed by metrics index
+# name; the (timestamp, thresholds) pair is invalidated after
+# `_BAND_THRESHOLD_TTL_SEC` to pick up fresh distribution snapshots
+# without re-querying ES on every finding.
+_BAND_THRESHOLD_CACHE: dict[str, tuple[float, tuple[int, int]]] = {}
+_BAND_THRESHOLD_TTL_SEC = 3600.0
+
+
+def band_thresholds(es, cfg) -> tuple[int, int]:
+    """Return ``(strong_sess_min, strong_ips_min)`` for the membership band.
+
+    Reads the latest ``playbook_session_count_per_run`` +
+    ``playbook_ip_count_per_run`` percentile snapshots from
+    ``cfg.metrics.indexes.default`` (written by
+    ``track threshold-distributions`` — brutal-review phase 4.1) and
+    returns the p75 of each. Falls back to ``_BAND_THRESHOLD_DEFAULT``
+    when the metrics index doesn't exist, no snapshots have been
+    written, or any field is missing.
+
+    Cached per-process with a 1h TTL — distribution snapshots move at
+    backward-cycle cadence (hourly), so re-querying ES on every
+    finding row is wasted work. The cache key is the metrics index
+    name; if a deploy retargets the index, the new key cold-misses.
+
+    Returned values are clamped to ``>= 2`` so the
+    ``sess <= 1 or ips <= 1`` Single-point rule remains meaningful
+    even on tiny corpora where p75 could otherwise collapse to 1.
+    """
+    try:
+        idx = cfg.metrics.indexes.default
+    except AttributeError:
+        return _BAND_THRESHOLD_DEFAULT
+    now = time.time()
+    cached = _BAND_THRESHOLD_CACHE.get(idx)
+    if cached and (now - cached[0]) < _BAND_THRESHOLD_TTL_SEC:
+        return cached[1]
+    try:
+        sess_p75 = _latest_percentile(
+            es, idx, "playbook_session_count_per_run", "p75",
+        )
+        ips_p75 = _latest_percentile(
+            es, idx, "playbook_ip_count_per_run", "p75",
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort observability
+        log.warning("band_thresholds: lookup on %s failed: %s", idx, exc)
+        _BAND_THRESHOLD_CACHE[idx] = (now, _BAND_THRESHOLD_DEFAULT)
+        return _BAND_THRESHOLD_DEFAULT
+    if sess_p75 is None or ips_p75 is None:
+        _BAND_THRESHOLD_CACHE[idx] = (now, _BAND_THRESHOLD_DEFAULT)
+        return _BAND_THRESHOLD_DEFAULT
+    out = (
+        max(2, int(round(sess_p75))),
+        max(2, int(round(ips_p75))),
+    )
+    _BAND_THRESHOLD_CACHE[idx] = (now, out)
+    return out
+
+
+def _latest_percentile(
+    es, idx: str, kind: str, field: str,
+) -> Optional[float]:
+    """Pull a single percentile value from the most recent metrics doc
+    for ``kind``. Returns None when the index / doc / field is missing.
+    """
+    if not es.indices.exists(index=idx):
+        return None
+    body = {
+        "size":    1,
+        "sort":    [{"generated_at": {"order": "desc"}}],
+        "query":   {"term": {"kind": kind}},
+        "_source": [field],
+    }
+    resp = es.search(index=idx, **body)
+    hits = (resp.get("hits") or {}).get("hits") or []
+    if not hits:
+        return None
+    v = (hits[0].get("_source") or {}).get(field)
+    if v is None:
+        return None
+    return float(v)
+
+
 def format_evidence_quality(
     finding: dict[str, Any],
     lifecycle: Optional[dict[str, Any]] = None,
+    *,
+    thresholds: Optional[tuple[int, int]] = None,
 ) -> str:
     """Return a short verdict string for the finding.
 
@@ -72,7 +172,7 @@ def format_evidence_quality(
     ev = finding.get("evidence") or {}
 
     if kind in _COVERAGE_KINDS:
-        return _membership_verdict(finding, ev, lifecycle)
+        return _membership_verdict(finding, ev, lifecycle, thresholds)
     if kind == "intel_verdict_flip":
         return _intel_flip_verdict(ev)
     if kind == "ip_behavior_shift":
@@ -102,6 +202,7 @@ def _membership_verdict(
     finding: dict[str, Any],
     ev: dict[str, Any],
     lifecycle: Optional[dict[str, Any]],
+    thresholds: Optional[tuple[int, int]] = None,
 ) -> str:
     # Coverage findings use member_sessions/member_ips; new_playbook uses
     # session_count/ip_count. Accept either.
@@ -110,13 +211,16 @@ def _membership_verdict(
     first_seen = ev.get("first_seen") or finding.get("first_seen_at")
     last_seen = ev.get("last_seen") or finding.get("last_seen_at")
     runs = _as_int((lifecycle or {}).get("runs_observed"))
-    return _membership_banded_verdict(sess, ips, first_seen, last_seen, runs)
+    return _membership_banded_verdict(
+        sess, ips, first_seen, last_seen, runs, thresholds,
+    )
 
 
 def _membership_banded_verdict(
     sess: int, ips: int,
     first_seen: Any, last_seen: Any,
     runs: int,
+    thresholds: Optional[tuple[int, int]] = None,
 ) -> str:
     """Primitive shared by finding-shaped and anchor-shaped callers.
 
@@ -125,11 +229,16 @@ def _membership_banded_verdict(
       "Moderate · 6 sess / 4 IPs · 2d"
       "Single-point · 1 sess / 1 IP · today"
     Or an empty string when there's nothing to say.
+
+    The Strong-band cutoff is corpus-derived when ``thresholds`` is
+    supplied (callers pass the output of ``band_thresholds(es, cfg)``);
+    otherwise it falls back to the historical (20, 5) constants.
     """
     window = _window_phrase(first_seen, last_seen)
+    strong_sess, strong_ips = thresholds or _BAND_THRESHOLD_DEFAULT
     if sess <= 1 or ips <= 1:
         band = "Single-point"
-    elif sess >= 20 and ips >= 5:
+    elif sess >= strong_sess and ips >= strong_ips:
         band = "Strong"
     else:
         band = "Moderate"
@@ -317,6 +426,8 @@ def format_anchor_evidence_quality(
     anchor_type: str,
     summary: dict[str, Any],
     lifecycle: Optional[dict[str, Any]] = None,
+    *,
+    thresholds: Optional[tuple[int, int]] = None,
 ) -> str:
     """Anchor-shaped verdict — same vocabulary as findings, different input.
 
@@ -344,6 +455,7 @@ def format_anchor_evidence_quality(
             first_seen=summary.get("first_seen"),
             last_seen=summary.get("last_seen"),
             runs=_as_int((lifecycle or {}).get("runs_observed")),
+            thresholds=thresholds,
         )
     if anchor_type == "campaign":
         return _membership_banded_verdict(
@@ -352,6 +464,7 @@ def format_anchor_evidence_quality(
             first_seen=summary.get("first_seen"),
             last_seen=summary.get("last_seen"),
             runs=_as_int((lifecycle or {}).get("runs_observed")),
+            thresholds=thresholds,
         )
     if anchor_type == "ip":
         return _ip_anchor_verdict(summary, lifecycle)

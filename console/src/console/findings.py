@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from enrich.findings.evidence_quality import format_evidence_quality
+from enrich.findings.evidence_quality import band_thresholds, format_evidence_quality
 
 log = logging.getLogger(__name__)
 
@@ -140,22 +140,31 @@ def list_findings(
         rows.append(src)
     total = hits.get("total", {}).get("value", 0) if isinstance(hits.get("total"), dict) else 0
     _attach_inbox_snapshots(es, cfg, rows)
-    _attach_evidence_quality(rows)
+    _attach_evidence_quality(rows, es=es, cfg=cfg)
     return {"total": total, "rows": rows, "page": {"from": frm, "size": size}}
 
 
-def _attach_evidence_quality(rows: list[dict]) -> None:
+def _attach_evidence_quality(rows: list[dict], *, es=None, cfg=None) -> None:
     """Stamp each row with `evidence_quality` — a one-line verdict the
-    inbox + graph orientation card + writeup all consume. Pure-function
-    helper; failures stay silent and leave the field absent rather than
-    fail the whole list.
+    inbox + graph orientation card + writeup all consume. Failures stay
+    silent and leave the field absent rather than fail the whole list.
+
+    Membership-band thresholds (Strong vs Moderate cutoff) are fetched
+    once from `prism.metrics` and shared across all rows in the batch —
+    one ES round-trip per inbox page, not per row.
     """
+    thresholds = None
+    if es is not None and cfg is not None:
+        try:
+            thresholds = band_thresholds(es, cfg)
+        except Exception:
+            thresholds = None
     for r in rows:
         try:
             # `_attach_inbox_snapshots` may have stamped lifecycle hints
             # under `_lifecycle_hint` (see helper below); pass them through.
             lc = r.pop("_lifecycle_hint", None)
-            verdict = format_evidence_quality(r, lc)
+            verdict = format_evidence_quality(r, lc, thresholds=thresholds)
             if verdict:
                 r["evidence_quality"] = verdict
         except Exception:
@@ -600,9 +609,17 @@ def get_finding_detail(es, cfg, finding_id: str) -> Optional[dict[str, Any]]:
         )
         out["detail_error"] = str(exc)
     # Stamp the same evidence-quality verdict the inbox row carries — the
-    # drawer's next-action banner consumes it. Best-effort.
+    # drawer's next-action banner consumes it. Best-effort. Band cutoff
+    # is corpus-derived from prism.metrics (brutal-review 4.2); cached
+    # per-process so this doesn't add ES round-trips per drawer open.
     try:
-        verdict = format_evidence_quality(out, out.get("lifecycle"))
+        thresholds = band_thresholds(es, cfg)
+    except Exception:
+        thresholds = None
+    try:
+        verdict = format_evidence_quality(
+            out, out.get("lifecycle"), thresholds=thresholds,
+        )
         if verdict:
             out["evidence_quality"] = verdict
     except Exception:

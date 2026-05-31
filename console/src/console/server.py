@@ -1434,7 +1434,7 @@ def build_app(config_path: str | None = None) -> FastAPI:
             return _attach_anchor_evidence_quality(IOCDetail(
                 type="playbook", id=ident, title=f"playbook: {title}",
                 summary=data, raw=None,
-            ))
+            ), es=es, cfg=cfg)
         if ioc_type == "campaign":
             # Multi-session campaign — mined into its own index by
             # `dshield_prism mine campaigns`. Distinct from playbook (which
@@ -1470,7 +1470,7 @@ def build_app(config_path: str | None = None) -> FastAPI:
                     type="campaign", id=ident,
                     title="campaign: Defense-in-depth SSH persistence",
                     summary=doc, raw=None,
-                ))
+                ), es=es, cfg=cfg)
             doc = queries.lookup_campaign(es, cfg, ident)
             if not doc:
                 raise HTTPException(404, f"campaign not found: {ident}")
@@ -1478,7 +1478,7 @@ def build_app(config_path: str | None = None) -> FastAPI:
             return _attach_anchor_evidence_quality(IOCDetail(
                 type="campaign", id=ident, title=f"campaign: {title}",
                 summary=doc, raw=None,
-            ))
+            ), es=es, cfg=cfg)
         if ioc_type == "asn":
             return IOCDetail(type="asn", id=ident, title=f"AS{ident}",
                              summary={"asn": ident}, raw=None)
@@ -1756,20 +1756,35 @@ def _build_ask_prompt(question: str, context: dict, nonce: str | None = None) ->
 # Detail builders (pull out the headline fields a human wants to see first)
 # ---------------------------------------------------------------------------
 
-def _attach_anchor_evidence_quality(detail: IOCDetail) -> IOCDetail:
+def _attach_anchor_evidence_quality(
+    detail: IOCDetail, *, es=None, cfg=None,
+) -> IOCDetail:
     """Stamp the one-line evidence-quality verdict on an IOCDetail.
 
     Called by every anchor-detail builder that benefits from a confidence
     surface (playbook / campaign / *_cluster / ip). Empty for kinds where
     a verdict doesn't apply (asn / country / mitre_* / session / command).
 
+    When ``es`` + ``cfg`` are supplied (playbook / campaign anchors),
+    the Strong-band cutoff is fetched from `prism.metrics` so the
+    verdict scales with the corpus (brutal-review 4.2). Anchors
+    without a band shape (ip / *_cluster) ignore thresholds harmlessly.
+
     Consumed by the graph orientation card via `state.currentDetail.
     evidence_quality` and by /browse + per-IOC artifact pages.
     """
     try:
-        from enrich.findings.evidence_quality import format_anchor_evidence_quality
+        from enrich.findings.evidence_quality import (
+            band_thresholds, format_anchor_evidence_quality,
+        )
+        thresholds = None
+        if es is not None and cfg is not None:
+            try:
+                thresholds = band_thresholds(es, cfg)
+            except Exception:
+                thresholds = None
         verdict = format_anchor_evidence_quality(
-            detail.type, detail.summary or {},
+            detail.type, detail.summary or {}, thresholds=thresholds,
         )
         if verdict:
             detail.evidence_quality = verdict

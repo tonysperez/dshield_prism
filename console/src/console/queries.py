@@ -1903,12 +1903,22 @@ def insights_summary(
     # card carry, so the analyst learns one mental scale. Best-effort:
     # failures leave the field absent rather than fail the whole panel.
     try:
-        from enrich.findings.evidence_quality import format_anchor_evidence_quality
+        from enrich.findings.evidence_quality import (
+            band_thresholds, format_anchor_evidence_quality,
+        )
+        try:
+            thresholds = band_thresholds(es, cfg)
+        except Exception:
+            thresholds = None
         for row in playbooks:
-            v = format_anchor_evidence_quality("playbook", row)
+            v = format_anchor_evidence_quality(
+                "playbook", row, thresholds=thresholds,
+            )
             if v: row["evidence_quality"] = v
         for row in mined_campaigns:
-            v = format_anchor_evidence_quality("campaign", row)
+            v = format_anchor_evidence_quality(
+                "campaign", row, thresholds=thresholds,
+            )
             if v: row["evidence_quality"] = v
     except Exception as exc:
         log.warning("insights evidence_quality stamping failed: %s", exc)
