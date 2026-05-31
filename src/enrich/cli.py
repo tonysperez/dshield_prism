@@ -754,8 +754,17 @@ def _build_parser() -> argparse.ArgumentParser:
     # cluster <layer>
     p_cluster = sub.add_parser("cluster", help="Run HDBSCAN over a layer's embeddings")
     cluster_sub = p_cluster.add_subparsers(dest="layer", required=True)
-    for layer_name in ("commands", "sessions", "ips"):
-        cl = cluster_sub.add_parser(layer_name, help=f"Cluster {layer_name}")
+    # The `all` layer runs commands → sessions → ips in sequence with the
+    # same flag set applied to each. Per-layer verbs remain available and
+    # unchanged; `all` is the convenience wrapper for backward-cycle runs.
+    cluster_layer_help = {
+        "commands": "Cluster commands",
+        "sessions": "Cluster sessions",
+        "ips":      "Cluster ips",
+        "all":      "Cluster commands → sessions → ips in sequence (one --source / --dry-run / --refresh-reference flag set applies to all three)",
+    }
+    for layer_name in ("commands", "sessions", "ips", "all"):
+        cl = cluster_sub.add_parser(layer_name, help=cluster_layer_help[layer_name])
         cl.add_argument("--source", default="cowrie", help="Source name (default: cowrie)")
         cl.add_argument("--dry-run", action="store_true", help="Fetch + cluster but skip all ES writes")
         # ROADMAP P1: stable across-run novelty scoring.
@@ -1220,21 +1229,34 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.verb == "cluster":
-        mod = _load_source_layer(args.source, args.layer)
-        if mod is None:
-            print(f"[ERROR] Source {args.source!r} has no {args.layer!r} layer", flush=True)
-            return 1
-        try:
-            stats = mod.run_cluster(
-                cfg, secrets,
-                dry_run=args.dry_run,
-                refresh_reference=args.refresh_reference,
-                use_reference=not args.no_reference,
-            )
-        except (ImportError, RuntimeError) as exc:
-            print(f"[ERROR] {exc}", flush=True)
-            return 1
-        print(json.dumps(stats, indent=2, default=str))
+        # `cluster all` runs each per-layer clusterer in production order
+        # (commands → sessions → ips) with the same flags. Per-layer
+        # verbs are still available and behave identically; this is a
+        # convenience wrapper for backward-cycle runs.
+        layers = ("commands", "sessions", "ips") if args.layer == "all" else (args.layer,)
+        all_stats: dict[str, object] = {}
+        for layer in layers:
+            mod = _load_source_layer(args.source, layer)
+            if mod is None:
+                print(f"[ERROR] Source {args.source!r} has no {layer!r} layer", flush=True)
+                return 1
+            try:
+                stats = mod.run_cluster(
+                    cfg, secrets,
+                    dry_run=args.dry_run,
+                    refresh_reference=args.refresh_reference,
+                    use_reference=not args.no_reference,
+                )
+            except (ImportError, RuntimeError) as exc:
+                print(f"[ERROR] cluster {layer}: {exc}", flush=True)
+                return 1
+            all_stats[layer] = stats
+        if args.layer == "all":
+            print(json.dumps(all_stats, indent=2, default=str))
+        else:
+            # Preserve the old one-layer output shape (un-wrapped) so
+            # downstream tools that parse stdout don't break.
+            print(json.dumps(all_stats[args.layer], indent=2, default=str))
         return 0
 
     if args.verb == "rollup":
