@@ -284,6 +284,53 @@ def _render_stdout(report: dict) -> str:
     return "\n".join(out)
 
 
+def _compare_to_baseline(report: dict, baseline_path: Path) -> tuple[list[dict], bool]:
+    """Diff the current metrics against ``eval/baseline.json``.
+
+    Returns (per_metric_rows, ok) where ``ok`` is False when any metric
+    has dropped more than its tolerance below the baseline. Each row is
+    ``{name, baseline, current, tolerance, delta, status}``.
+
+    Tolerance semantics: absolute drop. A metric fails when
+    ``current < baseline - tolerance``. Improvements never fail."""
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    rows: list[dict] = []
+    ok = True
+    current = report["metrics"]
+    for name, spec in baseline["metrics"].items():
+        cur = current.get(name)
+        base = spec["baseline"]
+        tol = spec["tolerance"]
+        if cur is None:
+            rows.append({"name": name, "baseline": base, "current": None,
+                         "tolerance": tol, "delta": None, "status": "MISSING"})
+            ok = False
+            continue
+        delta = cur - base
+        status = "PASS" if cur >= base - tol else "FAIL"
+        if status == "FAIL":
+            ok = False
+        rows.append({"name": name, "baseline": base, "current": cur,
+                     "tolerance": tol, "delta": round(delta, 4), "status": status})
+    return rows, ok
+
+
+def _render_gate(rows: list[dict], ok: bool) -> str:
+    out = ["", "=" * 72, "Regression gate vs baseline", "=" * 72,
+           f"  {'metric':14} {'baseline':>10} {'current':>10} "
+           f"{'tolerance':>10} {'delta':>10}  status"]
+    for r in rows:
+        cur = "—" if r["current"] is None else f"{r['current']:.4f}"
+        dlt = "—" if r["delta"]   is None else f"{r['delta']:+.4f}"
+        out.append(
+            f"  {r['name']:14} {r['baseline']:>10.4f} {cur:>10} "
+            f"{r['tolerance']:>10.4f} {dlt:>10}  {r['status']}"
+        )
+    out.append("")
+    out.append(f"GATE: {'PASS' if ok else 'FAIL'}")
+    return "\n".join(out)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--labels", type=Path,
@@ -297,6 +344,11 @@ def main() -> int:
                     help="Where to write the machine-readable JSON")
     ap.add_argument("--no-json", action="store_true",
                     help="Skip writing the JSON dump (stdout only)")
+    ap.add_argument("--baseline", type=Path, default=None,
+                    help=(
+                        "Compare metrics to this baseline file and exit "
+                        "non-zero on regression. Use to gate PRs."
+                    ))
     args = ap.parse_args()
 
     cfg = load_config()
@@ -309,6 +361,11 @@ def main() -> int:
         out_path = args.output_dir / f"clustering-{ts}.json"
         out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(f"\nwrote {out_path}")
+
+    if args.baseline is not None:
+        rows, ok = _compare_to_baseline(report, args.baseline)
+        print(_render_gate(rows, ok))
+        return 0 if ok else 1
     return 0
 
 

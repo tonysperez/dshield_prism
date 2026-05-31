@@ -1,0 +1,31 @@
+name: Eval
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  clustering:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # The eval is pure-function: it reads eval/sessions-v1.unlabeled.jsonl
+      # + eval/labels-v1.yaml from HEAD and re-runs the production
+      # clustering math (L2-normalize + scalar augment + HDBSCAN) on the
+      # pinned eval set. No ES connection needed.
+      - name: Install deps
+        run: pip install -e .[cluster]
+      - name: Run clustering eval + gate against baseline
+        run: |
+          python scripts/eval_clustering.py \
+            --baseline eval/baseline.json \
+            --no-json
+        # Exit non-zero on regression beyond the per-metric tolerance in
+        # eval/baseline.json. To re-baseline after an intentional
+        # improvement, regenerate eval/baseline.json on a feature branch
+        # and commit the new file — the next CI run on that branch will
+        # gate against the updated numbers.
