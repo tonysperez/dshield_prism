@@ -105,6 +105,72 @@ def _playbook_ip_count_per_run(es: Elasticsearch, cfg) -> list[float]:
     )
 
 
+def _campaign_convergence_ratio(es: Elasticsearch, cfg) -> list[float]:
+    """Distribution of IP-overlap ratios across every (behaviour campaign)
+    × (infrastructure campaign) pair whose intersection is non-empty.
+    Feeds 4.4's `convergence_min_ip_overlap_ratio` migration — the
+    corpus-p75 becomes the new firing cutoff.
+
+    Mirrors `mine_campaign_convergence` exactly: same source index,
+    same kind partition, same denominator `min(|bhv|, |inf|)`, same
+    non-empty-intersection filter. Pairs with empty intersection are
+    skipped (the miner skips them too — they're not convergence
+    candidates at all, and including their 0.0 ratio would swamp the
+    percentile with a degenerate population).
+    """
+    cidx = cfg.elasticsearch.indexes.cowrie.campaigns
+    if not es.indices.exists(index=cidx):
+        return []
+    bhv: list[set[str]] = []
+    inf: list[set[str]] = []
+    body = {
+        "size":    500,
+        "_source": ["kind", "member_source_ips"],
+        "query":   {"term": {"doc_type": "campaign"}},
+        "sort":    [{"_doc": "asc"}],
+    }
+    search_after = None
+    while True:
+        if search_after:
+            body["search_after"] = search_after
+        try:
+            resp = es.search(index=cidx, **body)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "threshold-distribution: campaign scan on %s failed: %s",
+                cidx, exc,
+            )
+            return []
+        hits = (resp.get("hits") or {}).get("hits") or []
+        if not hits:
+            break
+        for h in hits:
+            src = h.get("_source") or {}
+            kind = (src.get("kind") or "").lower()
+            ips = src.get("member_source_ips") or []
+            if not ips:
+                continue
+            s = set(ips)
+            if kind in ("behaviour", "behavior"):
+                bhv.append(s)
+            elif kind in ("infrastructure", "infra"):
+                inf.append(s)
+        search_after = hits[-1].get("sort")
+        if not search_after:
+            break
+    out: list[float] = []
+    for b in bhv:
+        for i in inf:
+            inter = b & i
+            if not inter:
+                continue
+            denom = min(len(b), len(i))
+            if denom <= 0:
+                continue
+            out.append(len(inter) / denom)
+    return out
+
+
 def _ip_behavior_shift_js(es: Elasticsearch, cfg) -> list[float]:
     """Distribution of per-IP JS distance between the latest snapshot's
     ``playbook_distribution`` and the union of prior snapshots — the
@@ -191,6 +257,11 @@ _THRESHOLD_QUANTITIES: tuple[_QuantitySpec, ...] = (
         kind="ip_behavior_shift_js",
         layer="source_ip_lifecycle",
         fn=_ip_behavior_shift_js,
+    ),
+    _QuantitySpec(
+        kind="campaign_convergence_ratio",
+        layer="campaigns",
+        fn=_campaign_convergence_ratio,
     ),
 )
 

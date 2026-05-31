@@ -43,7 +43,7 @@ human-meaningful — percentile-tuning them would obscure intent.
 | `discovery.unattributed_min_sessions` | 5 | same | (vestigial — see config.py comment) |
 | `discovery.outlier_burst_min_sessions` | 5 | sessions per artifact within `outlier_burst_window_hours` | (later) |
 | `discovery.outlier_burst_window_hours` | 24 | time window length | (kept; not corpus-derived) |
-| `discovery.convergence_min_ip_overlap_ratio` | 0.4 | `len(bhv_ips ∩ inf_ips) / min(\|bhv_ips\|, \|inf_ips\|)` | **4.4** |
+| `discovery.convergence_min_ip_overlap_ratio` | 0.4 | `len(bhv_ips ∩ inf_ips) / min(\|bhv_ips\|, \|inf_ips\|)` | **4.4 (shipped)** — corpus-p75 lookup with min-n=10 + min-value=0.2 floor (incidental-overlap noise threshold); falls back to default when corpus is sparse or pre-convergence. |
 | `discovery.intel_flip_recent_session_days` | 7 | days since the most recent session matching the flipped IP | (kept; calendar window, not corpus-derived) |
 
 ## `drift.py` — configurable thresholds (`DriftConfig`)
@@ -71,6 +71,11 @@ human-meaningful — percentile-tuning them would obscure intent.
      between latest snapshot's `playbook_distribution` and the union of
      prior snapshots. Filter mirrors `mine_ip_behavior_shift`
      (`runs_observed >= 2`). Consumed by 4.3 (p90).
+  4. `campaign_convergence_ratio` (4.4) — IP-overlap ratio for every
+     (behaviour campaign) × (infrastructure campaign) pair whose
+     intersection is non-empty. Mirrors `mine_campaign_convergence`
+     (same partition, same denominator, same non-empty gate). Consumed
+     by 4.4 (p75).
 
 Each commit adds its own quantity computer alongside its consumer
 change so the work is local. The contract on the writer is stable:

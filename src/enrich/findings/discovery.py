@@ -72,6 +72,77 @@ _JS_CUTOFF_MIN_N = 10
 _JS_CUTOFF_MIN_VALUE = 0.1
 
 
+# Per-process cache for the convergence-ratio cutoff (4.4). Same shape
+# and TTL as `_JS_CUTOFF_CACHE`. Key = metrics index name.
+_CONVERGENCE_CUTOFF_CACHE: dict[str, tuple[float, Optional[float]]] = {}
+_CONVERGENCE_CUTOFF_TTL_SEC = 3600.0
+
+# Minimum sample size + value floor (same lesson as 4.3). A bhv×inf
+# overlap ratio below 0.2 means at most one-in-five IPs are shared,
+# which is incidental overlap rather than convergence signal — using a
+# corpus-p75 below that floor would loosen the threshold to the point
+# of being operational noise.
+_CONVERGENCE_CUTOFF_MIN_N = 10
+_CONVERGENCE_CUTOFF_MIN_VALUE = 0.2
+
+
+def _convergence_ratio_cutoff(es, cfg) -> Optional[float]:
+    """Return the corpus-p75 of bhv×inf IP-overlap ratios from
+    `prism.metrics`, or None when the metrics index / doc / field is
+    missing, the sample size is below `_CONVERGENCE_CUTOFF_MIN_N`, or
+    the p75 is below `_CONVERGENCE_CUTOFF_MIN_VALUE`. Caller falls
+    back to the config'd `convergence_min_ip_overlap_ratio`.
+    """
+    try:
+        idx = cfg.metrics.indexes.default
+    except AttributeError:
+        return None
+    now = time.time()
+    cached = _CONVERGENCE_CUTOFF_CACHE.get(idx)
+    if cached and (now - cached[0]) < _CONVERGENCE_CUTOFF_TTL_SEC:
+        return cached[1]
+    try:
+        if not es.indices.exists(index=idx):
+            _CONVERGENCE_CUTOFF_CACHE[idx] = (now, None)
+            return None
+        resp = es.search(
+            index=idx, size=1,
+            sort=[{"generated_at": {"order": "desc"}}],
+            query={"term": {"kind": "campaign_convergence_ratio"}},
+            _source=["p75", "n"],
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "discovery: convergence-cutoff lookup on %s failed: %s", idx, exc,
+        )
+        _CONVERGENCE_CUTOFF_CACHE[idx] = (now, None)
+        return None
+    hits = (resp.get("hits") or {}).get("hits") or []
+    if not hits:
+        _CONVERGENCE_CUTOFF_CACHE[idx] = (now, None)
+        return None
+    src = hits[0].get("_source") or {}
+    n = src.get("n")
+    if not isinstance(n, (int, float)) or int(n) < _CONVERGENCE_CUTOFF_MIN_N:
+        _CONVERGENCE_CUTOFF_CACHE[idx] = (now, None)
+        return None
+    v = src.get("p75")
+    if v is None:
+        _CONVERGENCE_CUTOFF_CACHE[idx] = (now, None)
+        return None
+    out = float(v)
+    if out < _CONVERGENCE_CUTOFF_MIN_VALUE:
+        log.info(
+            "discovery: convergence-cutoff corpus-p75 %.4f below floor "
+            "%.2f; falling back to config'd default",
+            out, _CONVERGENCE_CUTOFF_MIN_VALUE,
+        )
+        _CONVERGENCE_CUTOFF_CACHE[idx] = (now, None)
+        return None
+    _CONVERGENCE_CUTOFF_CACHE[idx] = (now, out)
+    return out
+
+
 def _ip_shift_js_cutoff(es, cfg) -> Optional[float]:
     """Return the corpus-p90 of per-IP JS distance from `prism.metrics`,
     or None when:
@@ -526,8 +597,15 @@ def mine_campaign_convergence(es: Elasticsearch, cfg: Any, run_id: str) -> list[
     cidx = cowrie.campaigns
     if not es.indices.exists(index=cidx):
         return []
-    ratio_min = float(getattr(getattr(cfg.findings, "discovery", None),
-                              "convergence_min_ip_overlap_ratio", 0.4))
+    ratio_min_fallback = float(getattr(getattr(cfg.findings, "discovery", None),
+                                       "convergence_min_ip_overlap_ratio", 0.4))
+    # Corpus-derived p75 (brutal-review 4.4) — fires on the top 25% of
+    # bhv×inf overlap ratios that have any non-empty intersection.
+    # Falls back to the config'd default when the metrics snapshot is
+    # missing, the sample size is too small, or the p75 collapses
+    # below the operational floor.
+    ratio_p75 = _convergence_ratio_cutoff(es, cfg)
+    ratio_min = ratio_p75 if ratio_p75 is not None else ratio_min_fallback
     bhv: list[dict] = []
     inf: list[dict] = []
     # Pull every campaign once. `member_source_ips` is a keyword[] capped
