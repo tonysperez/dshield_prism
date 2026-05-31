@@ -1,0 +1,23 @@
+{
+  "_comment": "Threshold-distribution snapshots (ROADMAP brutal-review phase 4). One doc per (run_id, kind, layer) capturing the corpus-wide percentile distribution of a thresholded quantity. Consumed by miners that migrate hardcoded bands to percentile lookups (evidence_quality, ip_behavior_shift, campaign_convergence). Strict-dynamic: new metric kinds use the `kind` discriminator; they do not add new top-level fields.",
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "30s"
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "run_id":       { "type": "keyword" },
+      "generated_at": { "type": "date" },
+      "kind":         { "type": "keyword" },
+      "layer":        { "type": "keyword" },
+      "p50":          { "type": "float" },
+      "p75":          { "type": "float" },
+      "p90":          { "type": "float" },
+      "p95":          { "type": "float" },
+      "p99":          { "type": "float" },
+      "n":            { "type": "long" }
+    }
+  }
+}

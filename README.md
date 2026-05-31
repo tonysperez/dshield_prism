@@ -25,22 +25,20 @@ A dashboard over honeypot logs tells you which IPs and commands are loudest, whe
 
 Built during my internship with the SANS Internet Storm Center to enable faster and more impactful analysis of the activity my DShield sensor sees.
 
-## A finding only behavioral analysis could surface
+## A behavioral subset of a broader shared-key campaign
 
-`cmp-beh-e6e6e5569e56d396` is a behavior campaign Prism mined from my live corpus: **73 source IPs across 35 countries and 57 ASNs**, all running the same combination of two playbooks over 275 sessions and 12 days:
+Behavioral campaign mining surfaces the chattr+cron *subset* of a broader shared-key infra campaign. `cmp-inf-cd57092a675b30ea` is a **1,251-IP infrastructure campaign** sharing one RSA public key (`SHA256:c2c1e9557c5abc30b71f1aae0b896e57ac16aba3add335ceebcc1701ae6cbb57`) across the corpus. Inside that pool, `cmp-beh-e6e6e5569e56d396` isolates **73 source IPs across 35 countries and 57 ASNs** — the subset that runs the same combination of two playbooks over 275 sessions and 12 days:
 
 - **SSH Key Injection with chattr Locking** (T1098.004, T1222.002) — installs an `authorized_keys` entry, then sets the immutable bit on `.ssh` so the key can't be removed without first unsetting it.
 - **SSH Key Installer: Crontab list** (T1098.004, T1222.002, T1053.003) — installs the same `authorized_keys` entry, plus reconnaissance and `crontab -l` for cron-based re-installation.
 
-Both playbooks install the *same* RSA public key (`SHA256:c2c1e9557c5abc30b71f1aae0b896e57ac16aba3add335ceebcc1701ae6cbb57`). The combination is defense-in-depth persistence: install the key, lock it with chattr, re-install via cron if it disappears.
+The combination is defense-in-depth persistence: install the key, lock it with chattr, re-install via cron if it disappears. Two campaign axes (behavior and infrastructure) corroborate the same finding from different angles: the infra axis names the shared-key pool; the behavior axis names the chattr+cron sub-population *inside* that pool. Frequent-itemset mining (FP-growth) over each IP's playbook set is what surfaces *"these 73 IPs run this exact combination"* — and the playbooks themselves only exist because session embeddings clustered into stable named behaviors.
 
-No single command, IP, or artifact would have surfaced this. Prism caught it because frequent-itemset mining (FP-growth) over each IP's playbook set surfaced *"these 73 IPs run this exact combination"* — and the playbooks themselves only exist because session embeddings clustered into stable named behaviors.
+## Why that finding is trustworthy — illustrative example
 
-The same RSA key shows up in `cmp-inf-cd57092a675b30ea`: a **1,251-IP infrastructure campaign** sharing the key across the broader corpus. The 73-IP behavior campaign is the subset that specifically uses chattr+cron. Two campaign axes (behavior and infrastructure) corroborate the same finding from different angles.
+> *Illustrative.* The cluster below is a single hand-picked example that motivated the design; it is not a corpus-wide measurement. Cluster-purity metrics over a labeled eval set are pending — see [ROADMAP.md](docs/ROADMAP.md) phase 3.
 
-## Why that finding is trustworthy
-
-The campaign above only means something if the clustering underneath it groups commands by *behavior*, not by text. `cluster_7` is the proof: **39 commands across 19 distinct leading binaries, near-zero textual overlap, all correctly grouped as one behavior** — host/environment fingerprinting.
+The campaign above only means something if the clustering underneath it groups commands by *behavior*, not by text. `cluster_7` is the kind of grouping the embedding-based approach is designed to produce: 39 commands across 19 distinct leading binaries, with near-zero textual overlap, grouped together as host/environment fingerprinting.
 
 ```
 w        uname -m      whoami      hostname      ifconfig      top
@@ -49,15 +47,15 @@ free -m | grep Mem | awk '{print $2,$3,$4,$5,$6,$7}'
 ls -la ~/.local/share/TelegramDesktop/tdata ...   /ip cloud print
 ```
 
-Three properties hold at once, and only embedding-based clustering produces all three:
+Three properties hold at once in this example, and embedding-based clustering is what produces all three:
 
 - **Maximal textual divergence** — members run from one character (`w`) to 90+; they share no common tokens.
 - **Cross-dialect membership** — `/ip cloud print` is MikroTik RouterOS syntax, clustered alongside Linux coreutils. A string method has no basis to group these.
-- **Total semantic coherence** — every member is host recon: CPU, memory, OS/arch, identity, network, competing miners (`ps | grep '[Mm]iner'`), and high-value loot (`ls … TelegramDesktop/tdata`).
+- **Semantic coherence** — every member is host recon: CPU, memory, OS/arch, identity, network, competing miners (`ps | grep '[Mm]iner'`), and high-value loot (`ls … TelegramDesktop/tdata`).
 
-A string-distance or command-prefix grouping would scatter these into ~19 buckets; the embedding placed them in one — because `w`, `uname -m`, and `/ip cloud print` do the same thing, they just don't look alike. The same invariance holds over shell-wrapping: `echo "…" | sh` and the bare command sequence cluster together because the embedding sees through the wrapper to the container-fingerprinting behavior underneath.
+A string-distance or command-prefix grouping would scatter these into ~19 buckets; the embedding placed them in one — because `w`, `uname -m`, and `/ip cloud print` do the same thing, they just don't look alike. The same invariance shows up over shell-wrapping: `echo "…" | sh` and the bare command sequence cluster together because the embedding sees through the wrapper to the container-fingerprinting behavior underneath.
 
-That's the project's core thesis — treat textually unrelated commands that do the same job (`wget` vs `curl`) as equivalent — holding under real adversarial input, and it's the foundation under everything above. Pull it out and the campaign collapses into noise.
+That's the project's core thesis — treat textually unrelated commands that do the same job (`wget` vs `curl`) as equivalent. The example demonstrates the mechanism; corpus-wide cluster-purity numbers (mean pairwise token-Jaccard, lineage purity, embedding-ablation results) will replace the anecdote once phase 3 ships.
 
 ## How it works
 
@@ -65,7 +63,7 @@ That's the project's core thesis — treat textually unrelated commands that do 
 
 **Grounded in threat intel.** Artifacts (IP and URL today; hash and domain planned) are checked against freely available CTI feeds. A consensus engine collates verdicts and feeds them back into the pipeline: known-good scanners get quieted, commodity-malicious IPs get cheaper triage.
 
-**Watch behavior change over time.** Recurring activity gets named as a playbook; coordinated multi-session activity gets grouped as a campaign. Both keep stable identities across re-analysis runs, so drift and emergence surface as findings in a curated inbox with a confirm/reject workflow that turns analyst decisions into a growing knowledge base.
+**Watch behavior change over time.** Recurring activity gets named as a playbook; coordinated multi-session activity gets grouped as a campaign. Both keep stable identities across re-analysis runs, so drift and emergence surface as findings in a curated inbox with a confirm/reject workflow that turns analyst decisions into a growing knowledge base. *Caveat:* drift bands today are absolute counts, not corpus-normalized — percentile-based calibration is pending ([ROADMAP.md](docs/ROADMAP.md) phase 4).
 
 **Private by default.** A local LLM does the cognitive work; cloud escalation is budget-capped and opt-in; CTI feeds are integrated but disabled by default. Nothing about your honeypot traffic leaves your environment unless you say so.
 
@@ -148,7 +146,7 @@ Prism is built to answer:
 - What commands are typically run alongside this one, and what's the intent of the sequence?
 - How does this IP behave, and what other IPs behave like it?
 - What IPs don't behave like anything else in the corpus?
-- Is this activity known by the broader community, or is it novel?
+- Is this activity checked against opt-in CTI feeds, or is it novel relative to my own corpus? *(External-corpus novelty — comparing against another honeypot sensor's traffic, not just CTI feeds — is pending [ROADMAP.md](docs/ROADMAP.md) phase 5.)*
 
 ## Status & roadmap
 

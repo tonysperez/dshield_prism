@@ -728,6 +728,28 @@ class AnalystIndexes(BaseModel):
     artifact_rules: str = "prism.analyst.artifact_rules"
 
 
+class MetricsIndexes(BaseModel):
+    """Threshold-distribution snapshots index (brutal-review phase 4).
+
+    One doc per (run_id, kind, layer) capturing corpus-wide percentile
+    bands. Miners that previously used hardcoded thresholds will look up
+    a fresh distribution doc here and pick a band by percentile.
+    """
+    default: str = "prism.metrics"
+
+
+class MetricsConfig(BaseModel):
+    """Per-run threshold distribution writer.
+
+    The `track threshold-distributions` step in the backward chain writes
+    one doc per metric kind per run. Disabled until the writer ships in
+    phase 4.1; the index + config stub land first so the mapping is
+    available for downstream readers.
+    """
+    enabled: bool = False
+    indexes: MetricsIndexes = Field(default_factory=MetricsIndexes)
+
+
 class AnalystRuleConfig(BaseModel):
     """Analyst-authored artifact extraction rules (ROADMAP #5).
 
@@ -767,6 +789,7 @@ class AppConfig(BaseModel):
     findings: FindingsConfig = Field(default_factory=FindingsConfig)
     command_shape_dedup: ShapeDedupConfig = Field(default_factory=ShapeDedupConfig)
     analyst: AnalystRuleConfig = Field(default_factory=AnalystRuleConfig)
+    metrics: MetricsConfig = Field(default_factory=MetricsConfig)
 
 
 class Secrets(BaseSettings):

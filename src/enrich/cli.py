@@ -121,6 +121,13 @@ _LAYER_MAPPINGS = {
     "analyst": {
         "artifact_rules": "setup/es-mappings/analyst/artifact_rules.json",
     },
+    # Threshold-distribution snapshots (brutal-review phase 4). Writers
+    # land per-commit alongside the miners that consume them; the index +
+    # mapping ship first so reader code can fall through to the
+    # hardcoded bands when no metrics doc exists yet.
+    "metrics": {
+        "default": "setup/es-mappings/metrics/default.json",
+    },
 }
 
 
@@ -491,6 +498,8 @@ def _resolve_index_for_layer(cfg, source: str, layer: str) -> str:
         }[layer]
     if source == "analyst":
         return {"artifact_rules": cfg.analyst.indexes.artifact_rules}[layer]
+    if source == "metrics":
+        return {"default": cfg.metrics.indexes.default}[layer]
     raise ValueError(f"Unknown source: {source}")
 
 
