@@ -61,11 +61,11 @@ find clusters at this granularity, and the Nomic semantic smoothing
 adds little. On *this* corpus, the literal-token signal dominates.
 
 The corpus dominance is documented in `scripts/eval_cluster_purity.py`
-output: 5 of the top-20 clusters are cargo-cult tight (`modal_sig`
+output: 5 of the top-20 clusters are copy/paste tight (`modal_sig`
 ≥ 0.8 — every member runs the *exact same* command set), and many of
 the loose clusters share the SSH Credential Spray playbook across
 many fragmented HDBSCAN cluster docs. Both representations cluster
-cargo-cult scripts equally well; neither does spectacularly on the
+copy/paste scripts equally well; neither does spectacularly on the
 fragmented playbook.
 
 ## Honest conclusion on the embedding thesis
@@ -74,7 +74,7 @@ The README's "embeddings see through wget vs curl" thesis is
 **mechanistically correct** but **not currently demonstrated** at
 corpus scale. Two specific reasons:
 
-1. **The eval set is dominated by cargo-cult scripts** where every
+1. **The eval set is dominated by copy/paste scripts** where every
    session runs near-identical text. TF-IDF nails these because
    literal-token overlap IS the signal. The embedding's value-add —
    pulling textually-divergent same-behaviour sessions together — is

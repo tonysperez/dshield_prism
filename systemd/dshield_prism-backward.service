@@ -97,6 +97,13 @@ ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/
 # multi-rule-edit cases). Soft-fail. ROADMAP #5.
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml apply-artifact-rules
 
+# --- Step 12: snapshot per-thresholded-quantity percentile distributions.
+# Runs AFTER `mine findings` so the lifecycle docs the writer reads are
+# already up-to-date for this cycle. Feeds the percentile-based threshold
+# migrations in brutal-review phases 4.2-4.4. Soft-fail; metrics docs are
+# observability, not pipeline-critical.
+ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml track threshold-distributions
+
 StandardOutput=journal
 StandardError=journal
 

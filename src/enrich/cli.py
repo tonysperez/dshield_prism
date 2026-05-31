@@ -935,6 +935,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tl = track_sub.add_parser("lifecycles", help="Upsert playbook / campaign / source-ip lifecycle docs")
     p_tl.add_argument("--dry-run", action="store_true",
                       help="Enumerate artifacts without writing lifecycle docs")
+    # brutal-review phase 4.1 — corpus-distribution writer feeding the
+    # percentile-based threshold migrations in 4.2-4.4.
+    p_td = track_sub.add_parser(
+        "threshold-distributions",
+        help="Snapshot per-thresholded-quantity percentile distributions into prism.metrics",
+    )
+    p_td.add_argument("--dry-run", action="store_true",
+                      help="Compute distributions without writing to prism.metrics")
 
     # intel — external threat-intel subsystem. `refresh` runs one pass:
     # discovers artifacts, priority-queues them, dispatches to every
@@ -1413,6 +1421,31 @@ def main(argv: list[str] | None = None) -> int:
         if args.subject == "lifecycles":
             from .findings.lifecycle import run_track_lifecycles
             stats = run_track_lifecycles(cfg, secrets, dry_run=args.dry_run)
+            print(json.dumps(stats, indent=2, default=str))
+            return 0
+        if args.subject == "threshold-distributions":
+            from .es_client import make_client
+            from .findings.metrics import (
+                compute_threshold_distributions,
+                write_threshold_distributions,
+            )
+            es = make_client(cfg.elasticsearch, secrets)
+            if args.dry_run:
+                docs = compute_threshold_distributions(es, cfg)
+                stats = {
+                    "dry_run": True,
+                    "computed": len(docs),
+                    "kinds":    [d["kind"] for d in docs],
+                    # Pull p50/p99/n out of each doc as a sanity check on the
+                    # distribution shape without writing anything.
+                    "summary": [
+                        {"kind": d["kind"], "p50": d["p50"],
+                         "p99": d["p99"], "n": d["n"]}
+                        for d in docs
+                    ],
+                }
+            else:
+                stats = write_threshold_distributions(es, cfg)
             print(json.dumps(stats, indent=2, default=str))
             return 0
         print(f"[ERROR] Unknown `track` subject: {args.subject!r}", flush=True)
