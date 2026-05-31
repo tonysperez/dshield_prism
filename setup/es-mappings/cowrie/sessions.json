@@ -127,6 +127,7 @@
                       "session_embed_version": { "type": "keyword" },
                       "playbook_id":           { "type": "keyword" },
                       "playbook_name":         { "type": "keyword" },
+                      "playbook_named_at":     { "type": "date" },
                       "credentials": {
                         "type": "text",
                         "fields": {

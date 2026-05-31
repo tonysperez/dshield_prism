@@ -105,6 +105,63 @@ def _playbook_ip_count_per_run(es: Elasticsearch, cfg) -> list[float]:
     )
 
 
+def _ip_behavior_shift_js(es: Elasticsearch, cfg) -> list[float]:
+    """Distribution of per-IP JS distance between the latest snapshot's
+    ``playbook_distribution`` and the union of prior snapshots — the
+    quantity that ``mine_ip_behavior_shift`` thresholds on. Feeds 4.3's
+    `ip_shift_js_distance_min` migration: the corpus-p90 of this
+    distribution becomes the new firing cutoff.
+
+    Filter mirrors the miner exactly (``runs_observed >= 2``) so the
+    percentile reflects the population the threshold actually gates.
+    Sources the lifecycle docs in scan order with ``_doc`` tiebreak —
+    not a paginated UI surface, so no need to sort by time.
+    """
+    from .discovery import _jensen_shannon  # reuse the miner's math
+    lc_idx = cfg.findings.indexes.source_ip_lifecycle
+    if not es.indices.exists(index=lc_idx):
+        return []
+    body = {
+        "_source": ["snapshots"],
+        "query":   {"range": {"runs_observed": {"gte": 2}}},
+        "size":    500,
+        "sort":    [{"_doc": "asc"}],
+    }
+    out: list[float] = []
+    search_after = None
+    while True:
+        if search_after:
+            body["search_after"] = search_after
+        try:
+            resp = es.search(index=lc_idx, **body)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "threshold-distribution: ip_behavior_shift_js scan on %s "
+                "failed: %s", lc_idx, exc,
+            )
+            return []
+        hits = (resp.get("hits") or {}).get("hits") or []
+        if not hits:
+            break
+        for h in hits:
+            src = h.get("_source") or {}
+            snaps = src.get("snapshots") or []
+            if len(snaps) < 2:
+                continue
+            curr_dist = snaps[-1].get("playbook_distribution") or {}
+            prior_dist: dict[str, float] = {}
+            for s in snaps[:-1]:
+                for k, v in (s.get("playbook_distribution") or {}).items():
+                    prior_dist[k] = prior_dist.get(k, 0.0) + float(v)
+            if not curr_dist or not prior_dist:
+                continue
+            out.append(float(_jensen_shannon(prior_dist, curr_dist)))
+        search_after = hits[-1].get("sort")
+        if not search_after:
+            break
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Registry + dispatcher
 # ---------------------------------------------------------------------------
@@ -129,6 +186,11 @@ _THRESHOLD_QUANTITIES: tuple[_QuantitySpec, ...] = (
         kind="playbook_ip_count_per_run",
         layer="playbook_lifecycle",
         fn=_playbook_ip_count_per_run,
+    ),
+    _QuantitySpec(
+        kind="ip_behavior_shift_js",
+        layer="source_ip_lifecycle",
+        fn=_ip_behavior_shift_js,
     ),
 )
 

@@ -76,6 +76,11 @@ _SESSION_PLAYBOOK_NAME_SCRIPT = (
     "if (ctx._source.dshield.cowrie.enrichment.session == null) { ctx._source.dshield.cowrie.enrichment.session = [:]; }"
     "ctx._source.dshield.cowrie.enrichment.session.playbook_id = params.playbook_id;"
     "ctx._source.dshield.cowrie.enrichment.session.playbook_name = params.playbook_name;"
+    # Watermark signal for the per-IP rollup. `@timestamp` is the session's
+    # real event time and must not move; this is a side-channel "the playbook
+    # attribution on this doc was (re)written at" timestamp that
+    # `_iter_updated_session_ips` ORs against to pick up newly-named sessions.
+    "ctx._source.dshield.cowrie.enrichment.session.playbook_named_at = params.now;"
 )
 
 
@@ -1618,6 +1623,8 @@ def _apply_playbook_name(
     except Exception as exc:
         log.warning("Failed to update centroids for %s %s: %s", log_prefix, playbook_id, exc)
         stats["centroid_update_errors"] += 1
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
     try:
         es.update_by_query(
             index=sessions_idx,
@@ -1627,7 +1634,11 @@ def _apply_playbook_name(
                 }},
                 "script": {
                     "source": _SESSION_PLAYBOOK_NAME_SCRIPT,
-                    "params": {"playbook_id": playbook_id, "playbook_name": name},
+                    "params": {
+                        "playbook_id": playbook_id,
+                        "playbook_name": name,
+                        "now": now_iso,
+                    },
                 },
             },
         )

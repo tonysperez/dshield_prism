@@ -21,9 +21,9 @@ The columns:
 
 | Symbol | Location | Underlying quantity | Migrating in | Percentile target |
 |---|---|---|---|---|
-| `sess >= 20 and ips >= 5` (Strong band) | `_evidence_band` 132 | playbook lifecycle latest-snapshot `session_count` × `ip_count` | **4.2** | p90 of session_count, p90 of ip_count |
-| `sess <= 1 or ips <= 1` (Single-point band) | `_evidence_band` 130 | same | **4.2** | p10 of session_count, p10 of ip_count |
-| `runs >= 3` (multi-run threshold) | `_evidence_band` 141 | playbook lifecycle `runs_observed` | **4.2** | p50 of runs_observed |
+| `sess >= 20 and ips >= 5` (Strong band) | `_evidence_band` 132 | playbook lifecycle latest-snapshot `session_count` × `ip_count` | **4.2 (shipped)** | p75 of session_count, p75 of ip_count |
+| `sess <= 1 or ips <= 1` (Single-point band) | `_evidence_band` 130 | same | 4.2 (kept) | floor — clamps p75 to ≥ 2 in `band_thresholds` |
+| `runs >= 3` (multi-run threshold) | `_evidence_band` 141 | playbook lifecycle `runs_observed` | 4.2 (kept) | hardcoded — readability gate, not a corpus signal |
 | `magnitude < 0.7` (command/bigram drift band) | `_drift_verdict` 178/182 | command/bigram Jaccard | 4.2 (kept) | hardcoded — already in tight 0..1 range |
 | `dist >= 0.30` (artifact/ASN drift band) | `_drift_verdict` 186/190 | artifact Jaccard distance, ASN cosine distance | 4.2 (kept) | hardcoded — already in tight 0..1 range |
 | `days >= 1.0` (resurgence "Resurfaced" verdict) | `_resurgence_verdict` 206 | gap_hours / 24 | 4.2 (kept) | hardcoded — interpretable as-is |
@@ -38,7 +38,7 @@ human-meaningful — percentile-tuning them would obscure intent.
 
 | Knob | Default | Underlying quantity | Migrating in |
 |---|---|---|---|
-| `discovery.ip_shift_js_distance_min` | 0.3 | JS distance between source-IP lifecycle current vs prior playbook distribution | **4.3** |
+| `discovery.ip_shift_js_distance_min` | 0.3 | JS distance between source-IP lifecycle current vs prior playbook distribution | **4.3 (shipped)** — corpus-p90 lookup with min-n=10 + min-value=0.1 floor; falls back to default when corpus is bimodal-stable (most IPs JS=0, real shifts in long tail). Observed on 2026-05-31 corpus: 99.2% of 2046 eligible IPs sit at JS=0; only the floor catches this regime. |
 | `discovery.ip_shift_min_sessions` | 5 | latest snapshot's `session_count` per source-IP lifecycle | 4.3 (kept; bot-traffic threshold not a corpus-derived value) |
 | `discovery.unattributed_min_sessions` | 5 | same | (vestigial — see config.py comment) |
 | `discovery.outlier_burst_min_sessions` | 5 | sessions per artifact within `outlier_burst_window_hours` | (later) |
@@ -60,17 +60,20 @@ human-meaningful — percentile-tuning them would obscure intent.
 | `drift.campaign_growth_pct_min` | 0.75 | same as size_growth for campaign lifecycle | (later) |
 | `drift.campaign_growth_min_delta_ips` | 3 | same | (kept) |
 
-## What 4.1 ships
+## Distribution computers shipped
 
-Two distribution computers (the simplest cases that feed 4.2):
+  1. `playbook_session_count_per_run` (4.1) — per playbook-lifecycle
+     latest snapshot's `session_count`. Consumed by 4.2's
+     `band_thresholds(p75)` for the Strong band.
+  2. `playbook_ip_count_per_run` (4.1) — per playbook-lifecycle
+     latest snapshot's `ip_count`. Consumed by 4.2 (p75).
+  3. `ip_behavior_shift_js` (4.3) — per source-IP-lifecycle JS distance
+     between latest snapshot's `playbook_distribution` and the union of
+     prior snapshots. Filter mirrors `mine_ip_behavior_shift`
+     (`runs_observed >= 2`). Consumed by 4.3 (p90).
 
-  1. `playbook_session_count_per_run` — per playbook-lifecycle latest
-     snapshot's `session_count`. Used by 4.2's evidence-band migration.
-  2. `playbook_ip_count_per_run` — per playbook-lifecycle latest
-     snapshot's `ip_count`. Same.
-
-Each commit 4.2/4.3/4.4 adds its own quantity computer alongside its
-consumer change so the work is local. The contract on the writer is
-stable: any function `(es, cfg) -> list[float]` registered in
+Each commit adds its own quantity computer alongside its consumer
+change so the work is local. The contract on the writer is stable:
+any function `(es, cfg) -> list[float]` registered in
 `_THRESHOLD_QUANTITIES` becomes a metrics doc with the standard
 percentile shape.

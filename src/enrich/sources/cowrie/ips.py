@@ -73,10 +73,24 @@ def _iter_updated_session_ips(
     since: Optional[str],
     page_size: int = 1000,
 ) -> Iterator[str]:
-    """Yield distinct source.ip values from session docs updated after `since`."""
+    """Yield distinct source.ip values from session docs updated after `since`.
+
+    "Updated" means EITHER the session's `@timestamp` (event time) advanced —
+    i.e. a brand-new session doc landed — OR the session's `playbook_named_at`
+    advanced — i.e. `name playbooks` (re)stamped this doc's playbook
+    attribution via update-by-query. The latter is critical: that script
+    cannot bump `@timestamp` (which is the real session event time) so
+    without ORing on `playbook_named_at` here, the per-IP rollup never
+    re-rolls IPs whose only change since `since` is a fresh playbook
+    assignment, and `dshield.cowrie.enrichment.ip.dominant_playbook_id`
+    stays empty.
+    """
     must: list[dict] = [{"exists": {"field": "source.ip"}}]
     if since:
-        must.append({"range": {"@timestamp": {"gt": since}}})
+        must.append({"bool": {"should": [
+            {"range": {"@timestamp": {"gt": since}}},
+            {"range": {"dshield.cowrie.enrichment.session.playbook_named_at": {"gt": since}}},
+        ], "minimum_should_match": 1}})
 
     body: dict = {
         "size": page_size,

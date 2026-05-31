@@ -33,12 +33,105 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from elasticsearch import Elasticsearch
 
 log = logging.getLogger(__name__)
+
+
+# Per-process cache for the corpus-derived JS-distance cutoff (4.3).
+# The miner runs once per backward pass; the cache is here so a
+# pytest-style fast loop that calls `mine_ip_behavior_shift` repeatedly
+# doesn't re-hit ES every time. TTL matches `band_thresholds` for
+# consistency. Key = metrics index name.
+_JS_CUTOFF_CACHE: dict[str, tuple[float, Optional[float]]] = {}
+_JS_CUTOFF_TTL_SEC = 3600.0
+
+
+# Minimum sample size before the corpus-p90 is trusted. Below this,
+# the lookup returns None and the miner falls back to the config'd
+# default. Reason: the JS-distance distribution depends on IPs having
+# populated playbook_distribution on both current and prior snapshots —
+# in early-corpus or partial-pipeline states (e.g. clustering hasn't
+# attributed enough sessions to playbooks yet) the population can be
+# < 10 IPs, and p90 of three samples is not a percentile, it's noise.
+_JS_CUTOFF_MIN_N = 10
+
+# Operational floor on the corpus-derived cutoff. A JS distance below
+# this is statistical noise — two distributions that differ by < 0.1 JS
+# are effectively the same. When the corpus is heavily bimodal (most
+# IPs stable at JS=0, a long tail at JS > 0.3) the p90 collapses to 0
+# and the lookup would produce a "fire on anything non-zero" threshold,
+# which is strictly more permissive than the hand-picked default. The
+# floor catches that regime: below it, the percentile didn't capture
+# the long tail and the config'd default is more useful than the
+# corpus value.
+_JS_CUTOFF_MIN_VALUE = 0.1
+
+
+def _ip_shift_js_cutoff(es, cfg) -> Optional[float]:
+    """Return the corpus-p90 of per-IP JS distance from `prism.metrics`,
+    or None when:
+      * the metrics index / doc / field is missing, OR
+      * the distribution's sample size is below `_JS_CUTOFF_MIN_N`, OR
+      * the p90 falls below `_JS_CUTOFF_MIN_VALUE` (bimodal-stable corpus
+        regime — the percentile collapsed to noise and the config'd
+        default is more useful than the corpus value).
+    Caller falls back to the config'd `ip_shift_js_distance_min`.
+    """
+    try:
+        idx = cfg.metrics.indexes.default
+    except AttributeError:
+        return None
+    now = time.time()
+    cached = _JS_CUTOFF_CACHE.get(idx)
+    if cached and (now - cached[0]) < _JS_CUTOFF_TTL_SEC:
+        return cached[1]
+    try:
+        if not es.indices.exists(index=idx):
+            _JS_CUTOFF_CACHE[idx] = (now, None)
+            return None
+        resp = es.search(
+            index=idx, size=1,
+            sort=[{"generated_at": {"order": "desc"}}],
+            query={"term": {"kind": "ip_behavior_shift_js"}},
+            _source=["p90", "n"],
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("discovery: js-cutoff lookup on %s failed: %s", idx, exc)
+        _JS_CUTOFF_CACHE[idx] = (now, None)
+        return None
+    hits = (resp.get("hits") or {}).get("hits") or []
+    if not hits:
+        _JS_CUTOFF_CACHE[idx] = (now, None)
+        return None
+    src = hits[0].get("_source") or {}
+    n = src.get("n")
+    if not isinstance(n, (int, float)) or int(n) < _JS_CUTOFF_MIN_N:
+        _JS_CUTOFF_CACHE[idx] = (now, None)
+        return None
+    v = src.get("p90")
+    if v is None:
+        _JS_CUTOFF_CACHE[idx] = (now, None)
+        return None
+    out = float(v)
+    if out < _JS_CUTOFF_MIN_VALUE:
+        # Bimodal-stable corpus: most IPs sit at JS=0, real shifts are
+        # in the long tail. p90 swallowed by the zero mass — falling
+        # back is more honest than promoting a noise-floor value to
+        # production threshold.
+        log.info(
+            "discovery: js-cutoff corpus-p90 %.4f below floor %.2f; "
+            "falling back to config'd default",
+            out, _JS_CUTOFF_MIN_VALUE,
+        )
+        _JS_CUTOFF_CACHE[idx] = (now, None)
+        return None
+    _JS_CUTOFF_CACHE[idx] = (now, out)
+    return out
 
 
 def _now() -> datetime:
@@ -266,8 +359,14 @@ def mine_ip_behavior_shift(es: Elasticsearch, cfg: Any, run_id: str) -> list[dic
     lc_idx = cfg.findings.indexes.source_ip_lifecycle
     if not es.indices.exists(index=lc_idx):
         return []
-    js_min = float(getattr(getattr(cfg.findings, "discovery", None),
-                           "ip_shift_js_distance_min", 0.3))
+    js_min_fallback = float(getattr(getattr(cfg.findings, "discovery", None),
+                                    "ip_shift_js_distance_min", 0.3))
+    # Corpus-derived p90 (brutal-review 4.3) — falls back to the
+    # config'd constant when the metrics snapshot doesn't exist yet
+    # (fresh deploys, or before `track threshold-distributions` has
+    # run for the first time).
+    js_p90 = _ip_shift_js_cutoff(es, cfg)
+    js_min = js_p90 if js_p90 is not None else js_min_fallback
     sess_min = int(getattr(getattr(cfg.findings, "discovery", None),
                            "ip_shift_min_sessions", 5))
     out: list[dict[str, Any]] = []
