@@ -103,6 +103,60 @@ def _extract_session_features(rec: dict) -> tuple[list[float], dict] | None:
     return emb, scalars
 
 
+def _extract_session_text(rec: dict) -> str | None:
+    """Concatenate the session's cowrie.command.input / .failed
+    command-line strings in chronological order. Used by the TF-IDF
+    baseline embedder (--embedding-source tfidf-svd) so the ablation
+    grades a model-free comparator on the same labels."""
+    raw_events = rec.get("raw_events") or []
+    parts: list[str] = []
+    for ev in raw_events:
+        action = (ev.get("event") or {}).get("action")
+        if action not in ("cowrie.command.input", "cowrie.command.failed"):
+            continue
+        cmd = (ev.get("process") or {}).get("command_line")
+        if isinstance(cmd, str) and cmd:
+            parts.append(cmd)
+    return " ".join(parts) if parts else None
+
+
+def _tfidf_svd_embed(texts: list[str], *, n_components: int = 100) -> list[list[float]]:
+    """Fit a TF-IDF + truncated-SVD baseline embedder on the eval set
+    and return per-session vectors. Used as a model-free comparator for
+    the brutal-review embedding ablation (phase 3.3).
+
+    Why TF-IDF: it's the simplest text representation that captures
+    "which commands occur" without learned semantics. If the
+    embedding-based clustering does meaningfully better than this
+    baseline on the eval set, the embedding-sees-through-text thesis
+    holds; if TF-IDF ties or wins, the thesis weakens on this corpus.
+
+    Why n_components=100: TF-IDF + SVD at ~50-200 dims is the
+    standard "topic" reduction. 100 lands in the middle; on a
+    100-session eval set with O(1000) unique tokens, this captures
+    most of the explained variance without overfitting to noise.
+    """
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.decomposition import TruncatedSVD
+    vectorizer = TfidfVectorizer(
+        max_features=5000,
+        ngram_range=(1, 2),
+        # Default token pattern is `\b\w\w+\b` — keep it; commands tokenise
+        # cleanly on whitespace + punctuation for our corpus. Pipes,
+        # semicolons, slashes already act as word separators.
+        sublinear_tf=True,
+        norm="l2",
+    )
+    matrix = vectorizer.fit_transform(texts)
+    n_components = min(n_components, matrix.shape[1], matrix.shape[0] - 1)
+    if n_components < 2:
+        # Pathologically tiny corpus — surface as a degenerate run.
+        return [[0.0] for _ in texts]
+    svd = TruncatedSVD(n_components=n_components, random_state=20260531)
+    reduced = svd.fit_transform(matrix)
+    return reduced.tolist()
+
+
 # ---------------------------------------------------------------------------
 # Clustering
 # ---------------------------------------------------------------------------
@@ -167,7 +221,10 @@ def _per_label_breakdown(
     return out
 
 
-def _evaluate(labels_path: Path, jsonl_path: Path, cfg) -> dict:
+def _evaluate(
+    labels_path: Path, jsonl_path: Path, cfg,
+    *, embedding_source: str = "model",
+) -> dict:
     label_blocks = _load_labels(labels_path)
     if not label_blocks:
         raise RuntimeError(
@@ -180,6 +237,7 @@ def _evaluate(labels_path: Path, jsonl_path: Path, cfg) -> dict:
     embeddings: list[list[float]] = []
     scalars: list[dict] = []
     skipped_no_embedding: list[str] = []
+    session_texts: list[str] = []  # populated only when embedding_source=tfidf-svd
 
     for rec in _iter_jsonl(jsonl_path):
         sid = rec.get("session_id")
@@ -190,6 +248,16 @@ def _evaluate(labels_path: Path, jsonl_path: Path, cfg) -> dict:
             skipped_no_embedding.append(sid)
             continue
         emb, sc = feats
+        if embedding_source == "tfidf-svd":
+            text = _extract_session_text(rec)
+            if text is None:
+                # Session has an embedding but no command text — shouldn't
+                # happen on the v1 set (build_eval_set ES-filters login-
+                # only), but skip defensively rather than fit TF-IDF on
+                # an empty document.
+                skipped_no_embedding.append(sid)
+                continue
+            session_texts.append(text)
         session_ids.append(sid)
         label_truth.append(label_blocks[sid]["playbook_label"])
         embeddings.append(emb)
@@ -200,6 +268,13 @@ def _evaluate(labels_path: Path, jsonl_path: Path, cfg) -> dict:
             f"Too few labeled+embedded sessions ({len(embeddings)}) — "
             f"need at least {cfg.session.cluster_min_cluster_size}."
         )
+
+    if embedding_source == "tfidf-svd":
+        # Replace the LLM embeddings with the TF-IDF baseline. Scalars
+        # stay; the rest of the pipeline (L2-normalize + scalar augment +
+        # HDBSCAN) is unchanged so the only varying input is the vector
+        # source.
+        embeddings = _tfidf_svd_embed(session_texts)
 
     cluster_pred = _cluster(
         embeddings, scalars,
@@ -225,6 +300,7 @@ def _evaluate(labels_path: Path, jsonl_path: Path, cfg) -> dict:
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "embedding_source": embedding_source,
         "config": {
             "min_cluster_size": cfg.session.cluster_min_cluster_size,
             "min_samples":      cfg.session.cluster_min_samples,
@@ -349,10 +425,24 @@ def main() -> int:
                         "Compare metrics to this baseline file and exit "
                         "non-zero on regression. Use to gate PRs."
                     ))
+    ap.add_argument("--embedding-source",
+                    choices=["model", "tfidf-svd"],
+                    default="model",
+                    help=(
+                        "Vector source for clustering. `model` uses the "
+                        "LLM embeddings persisted on each rollup doc "
+                        "(production). `tfidf-svd` fits a baseline "
+                        "TF-IDF + truncated-SVD on session command text "
+                        "as a model-free comparator (brutal-review "
+                        "phase 3.3 embedding ablation)."
+                    ))
     args = ap.parse_args()
 
     cfg = load_config()
-    report = _evaluate(args.labels, args.jsonl, cfg)
+    report = _evaluate(
+        args.labels, args.jsonl, cfg,
+        embedding_source=args.embedding_source,
+    )
     print(_render_stdout(report))
 
     if not args.no_json:
