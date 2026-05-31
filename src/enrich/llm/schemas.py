@@ -36,6 +36,18 @@ except (OSError, ValueError):
 # Read via `mitre_drop_counts()` from monitoring / healthcheck.
 _mitre_drops: dict[str, int] = {"tactics": 0, "techniques": 0}
 
+# Per-technique application counter (brutal-review phase 2.3). Bumped
+# each time `_validate_mitre_ids` accepts a *technique* ID (tactics are
+# excluded — they're coarse-grained buckets not subject to the
+# over-application failure mode the metric is meant to surface). The
+# `enrich` CLI verb reads this at the end of each run, snapshots the
+# top-N into a prism.metrics doc, and resets. The Health page flags
+# techniques whose application rate exceeds 5% of commands as likely
+# over-applied — a soft warning, not an error.
+from collections import Counter
+
+_mitre_applications: Counter[str] = Counter()
+
 
 def mitre_drop_counts() -> dict[str, int]:
     """Return a snapshot of how many MITRE IDs have been dropped as invalid
@@ -48,12 +60,23 @@ def reset_mitre_drop_counts() -> None:
     _mitre_drops["techniques"] = 0
 
 
+def mitre_application_counts() -> Counter[str]:
+    """Return a copy of {technique_id: count} accumulated since the last
+    `reset_mitre_application_counts()` call."""
+    return Counter(_mitre_applications)
+
+
+def reset_mitre_application_counts() -> None:
+    _mitre_applications.clear()
+
+
 def _validate_mitre_ids(
     raw: list[str], valid: frozenset[str], kind: str
 ) -> list[str]:
     """Normalise (uppercase, strip) the LLM's tactic/technique IDs and drop any
     that aren't in the vendored ATT&CK set. Increments the drop counter for
-    each rejection so we can observe hallucination rate."""
+    each rejection so we can observe hallucination rate; also bumps the
+    per-technique application counter on accepted technique IDs (phase 2.3)."""
     out: list[str] = []
     for s in raw or ():
         if not s or not isinstance(s, str):
@@ -63,6 +86,8 @@ def _validate_mitre_ids(
             continue
         if norm in valid:
             out.append(norm)
+            if kind == "techniques":
+                _mitre_applications[norm] += 1
         else:
             _mitre_drops[kind] += 1
     return out

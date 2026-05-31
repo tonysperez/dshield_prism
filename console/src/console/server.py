@@ -872,6 +872,20 @@ def build_app(config_path: str | None = None) -> FastAPI:
         except Exception as e:  # pragma: no cover -- depends on ES state
             return JSONResponse({"rows": [], "error": f"{e.__class__.__name__}: {e}"})
 
+    @app.get("/api/health/ttp-rates")
+    def health_ttp_rates_api() -> JSONResponse:
+        """Top-N MITRE-technique application rates from the latest
+        enrich-run snapshot. Drives the TTP-rates panel on /health
+        (brutal-review phase 2.3). Rows with `warning=true` are
+        applied to >=5% of LLM-enriched commands and likely over-
+        applied — a soft warning, not an error."""
+        try:
+            return JSONResponse(queries.health_ttp_rates(es, cfg))
+        except Exception as e:  # pragma: no cover -- depends on ES state
+            return JSONResponse(
+                {"rows": [], "error": f"{e.__class__.__name__}: {e}"}
+            )
+
     @app.get("/api/config/ui")
     def config_ui() -> JSONResponse:
         """UI-facing config values, fetched once at frontend boot. Distinct

@@ -1429,6 +1429,47 @@ def health_freshness(es: Elasticsearch, cfg: AppConfig) -> list[dict]:
     return rows
 
 
+def health_ttp_rates(es: Elasticsearch, cfg: AppConfig) -> dict:
+    """Latest top-N MITRE-technique application rates from prism.metrics
+    (brutal-review phase 2.3). Returns
+    ``{generated_at, n, rows: [{id, count, rate, warning}]}`` where
+    `warning=True` for any technique applied to >=5% of LLM-enriched
+    commands in the run — likely over-applied. Empty rows when the
+    metrics index doesn't yet have a TTP snapshot."""
+    metrics_idx = cfg.metrics.indexes.default
+    try:
+        resp = es.search(
+            index=metrics_idx, size=1,
+            query={"term": {"kind": "mitre_technique_top_n"}},
+            sort=[{"generated_at": {"order": "desc"}}],
+        )
+    except Exception:
+        return {"generated_at": None, "n": None, "rows": []}
+    hits = resp.get("hits", {}).get("hits") or []
+    if not hits:
+        return {"generated_at": None, "n": None, "rows": []}
+    src = hits[0]["_source"]
+    items = src.get("items") or []
+    rows = []
+    for it in items:
+        rate = float(it.get("rate") or 0.0)
+        rows.append({
+            "id":      it.get("id"),
+            "count":   it.get("count"),
+            "rate":    rate,
+            # 5% over-application threshold per brutal-review phase 2.3.
+            # A technique applied to >=5% of commands is almost always
+            # over-applied (real attack-technique distributions are
+            # long-tail; a flat 5%+ rate on any one TTP is a smell).
+            "warning": rate >= 0.05,
+        })
+    return {
+        "generated_at": src.get("generated_at"),
+        "n":            src.get("n"),
+        "rows":         rows,
+    }
+
+
 def health_runs(es: Elasticsearch, cfg: AppConfig) -> list[dict]:
     """Most recent run_summary doc from each cluster index. Each entry
     is `{verb, idx, run_id, ts, total_docs, n_clusters, n_outliers}`.

@@ -1,5 +1,5 @@
 {
-  "_comment": "Threshold-distribution snapshots (ROADMAP brutal-review phase 4). One doc per (run_id, kind, layer) capturing the corpus-wide percentile distribution of a thresholded quantity. Consumed by miners that migrate hardcoded bands to percentile lookups (evidence_quality, ip_behavior_shift, campaign_convergence). Strict-dynamic: new metric kinds use the `kind` discriminator; they do not add new top-level fields.",
+  "_comment": "Per-run metrics snapshots. Two kinds of payload share this index, distinguished by the `kind` discriminator: (1) percentile-distribution snapshots for threshold migrations (brutal-review phase 4) populate p50..p99 + n; (2) aggregate-list snapshots (e.g. top-N most-applied MITRE techniques, brutal-review phase 2.3) populate the nested `items` array. Strict-dynamic: new metric kinds use the `kind` discriminator and one of the two existing payload shapes; new payload shapes require a mapping migration first.",
   "settings": {
     "number_of_shards": 1,
     "number_of_replicas": 0,
@@ -17,7 +17,15 @@
       "p90":          { "type": "float" },
       "p95":          { "type": "float" },
       "p99":          { "type": "float" },
-      "n":            { "type": "long" }
+      "n":            { "type": "long" },
+      "items": {
+        "type": "nested",
+        "properties": {
+          "id":    { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 64 } } },
+          "count": { "type": "long" },
+          "rate":  { "type": "float" }
+        }
+      }
     }
   }
 }

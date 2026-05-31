@@ -90,6 +90,13 @@
     </section>
 
     <section>
+      <p class="h-section-title">MITRE TTP application rate
+        <span class="h-hint">top techniques the LLM tagged in the latest <code>enrich</code> run. Rows in amber are applied to <strong>≥5%</strong> of commands — likely over-applied (real attack distributions are long-tail; a flat ≥5% rate on any one technique is a smell).</span>
+      </p>
+      <div id="ttp-body"><em class="h-empty">loading…</em></div>
+    </section>
+
+    <section>
       <p class="h-section-title">Cache
         <span class="h-hint">in-memory caches in the console process — insights summaries (60&nbsp;s TTL), latest cluster <code>run_id</code> (5&nbsp;min TTL). Purge to force a fresh read after a pipeline cycle.</span>
       </p>

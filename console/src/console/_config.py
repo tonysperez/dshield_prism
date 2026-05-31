@@ -97,6 +97,20 @@ class FindingsConfig(BaseModel):
     indexes: FindingsIndexes = FindingsIndexes()
 
 
+class MetricsIndexes(BaseModel):
+    """Mirror of the parent MetricsIndexes (brutal-review phase 0.2)."""
+    default: str = "prism.metrics"
+
+
+class MetricsConfig(BaseModel):
+    """Slim mirror — the console only reads from prism.metrics for the
+    TTP-rate panel on /health (phase 2.3). Defaults make the field
+    optional on the deploy side; older configs without a `metrics:` block
+    still load."""
+    enabled: bool = False
+    indexes: MetricsIndexes = MetricsIndexes()
+
+
 class SessionConfig(BaseModel):
     """Slim mirror — the console only needs the UI-facing knobs. Any
     pipeline-side `session.*` fields not declared here are silently ignored
@@ -113,6 +127,7 @@ class AppConfig(BaseModel):
     llm: Optional[LLMConfig] = None
     intel: IntelConfig = IntelConfig()
     findings: FindingsConfig = FindingsConfig()
+    metrics: MetricsConfig = MetricsConfig()
     session: SessionConfig = SessionConfig()
 
 
