@@ -310,6 +310,7 @@ def _build_ip_doc(
             {"hassh": h, "count": c}
             for h, c in sorted(hassh_counter.items(), key=lambda kv: (-kv[1], kv[0]))
         ]
+        ip_block["hassh_cluster_id"] = _hassh_cluster_id(hassh_counter)
     if playbook_counter:
         ip_block["dominant_playbook_id"] = playbook_counter.most_common(1)[0][0]
         ip_block["playbook_distribution"] = [
@@ -544,6 +545,23 @@ def _compute_top_asns(es: Elasticsearch, ips_index: str, top_n: int) -> list[int
     except Exception as exc:
         log.warning("could not compute top-ASN list: %s", exc)
         return []
+
+
+def _hassh_cluster_id(hassh_counter: Counter) -> str:
+    """Stable IP-grouping id keyed on SSH client fingerprint shape.
+
+    Two IPs land in the same `hcl-<sha16>` bucket iff they share the same
+    dominant HASSH AND the same set of seen HASSH values. Counts don't
+    enter the digest — re-runs against a corpus where an IP gains a new
+    session on an already-seen HASSH stay stable; gaining a never-seen
+    HASSH (or shifting which one is modal) is what re-keys the IP. The
+    7.5 vendored HASSH-to-tooling map will use this id to label clusters.
+    """
+    dominant = hassh_counter.most_common(1)[0][0]
+    seen = sorted(hassh_counter)
+    payload = f"{dominant}|{'|'.join(seen)}"
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    return f"hcl-{digest}"
 
 
 def _hash_credential_bin(cred: str, k: int) -> int:

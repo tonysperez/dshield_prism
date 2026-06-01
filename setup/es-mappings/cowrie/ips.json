@@ -80,6 +80,7 @@
                           "count":  { "type": "long" }
                         }
                       },
+                      "hassh_cluster_id":        { "type": "keyword" },
                       "dominant_playbook_id": { "type": "keyword" },
                       "playbook_distribution": {
                         "properties": {
