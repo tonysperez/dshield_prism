@@ -353,6 +353,125 @@ def _mine_campaigns(
 
 
 # ---------------------------------------------------------------------------
+# Noise-threshold safety valve (brutal-review phase 4.5)
+# ---------------------------------------------------------------------------
+#
+# Generalises the lesson from `unattributed_active_ip`'s retirement —
+# a miner that produces > N% of its source-artifact population in a
+# single run is almost certainly spamming the inbox rather than
+# surfacing signal. The cap is per-miner-kind, not aggregate, so one
+# miner's noise can't crowd out other miners' findings.
+#
+# Denominator selection is per-artifact-kind. Findings with an
+# artifact.kind we don't know how to size (e.g. "campaign_pair") skip
+# the gate — the analyst sees the output unchanged, and the
+# inventory doc / journal log are the place to spot a future blowup.
+
+
+def _count_or_zero(es: Elasticsearch, index: str, query: Optional[dict] = None) -> int:
+    """es.count wrapper that returns 0 on any failure (missing index,
+    transient ES error). The gate logs a warning and skips that
+    miner's denominator — we never want the gate itself to abort
+    mining."""
+    try:
+        if not es.indices.exists(index=index):
+            return 0
+        body = {"query": query} if query else {}
+        return int(es.count(index=index, **body).get("count") or 0)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("noise gate: count(%s) failed: %s", index, exc)
+        return 0
+
+
+def _noise_denominator(artifact_kind: str, es: Elasticsearch, cfg: AppConfig) -> int:
+    """Return the corpus population this miner's findings should be
+    compared against. 0 means "no denominator known" — caller skips
+    the gate for that miner."""
+    if artifact_kind == "ip":
+        # IP-keyed findings: source-IP lifecycle is the eligible
+        # population (IPs the miner could even see).
+        return _count_or_zero(es, cfg.findings.indexes.source_ip_lifecycle)
+    if artifact_kind == "playbook":
+        return _count_or_zero(es, cfg.findings.indexes.playbook_lifecycle)
+    if artifact_kind == "campaign":
+        return _count_or_zero(
+            es, cfg.elasticsearch.indexes.cowrie.campaigns,
+            query={"term": {"doc_type": "campaign"}},
+        )
+    # Unknown artifact kind (e.g. campaign_pair) — caller skips.
+    return 0
+
+
+def apply_noise_gate(
+    findings_by_kind: dict[str, list[dict[str, Any]]],
+    es: Elasticsearch, cfg: AppConfig, *, threshold_pct: float,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, Any]]]:
+    """Suppress any miner whose findings exceed `threshold_pct` of the
+    source-artifact population for that run. Returns:
+
+      (gated_findings_by_kind, gate_stats)
+
+    Where `gate_stats[miner_kind]` is `{emitted, denominator,
+    share_pct, gated}`. `gated=True` means the output was replaced
+    with `[]` and a warning was logged; the analyst inbox is spared
+    while a fresh investigator can still see the share in the journal
+    and decide whether the miner is producing real signal that just
+    happens to be large.
+    """
+    out: dict[str, list[dict[str, Any]]] = {}
+    stats: dict[str, dict[str, Any]] = {}
+    if threshold_pct <= 0:
+        # Gate disabled — pass everything through, no stats.
+        return findings_by_kind, stats
+    # Per-kind denominators are cached for this call so two miners
+    # whose artifacts share a population (e.g. both IP-keyed) make a
+    # single count() round-trip.
+    denom_cache: dict[str, int] = {}
+    for kind, findings in findings_by_kind.items():
+        if not findings:
+            out[kind] = findings
+            continue
+        artifact_kind = (findings[0].get("artifact") or {}).get("kind") or ""
+        if artifact_kind not in denom_cache:
+            denom_cache[artifact_kind] = _noise_denominator(artifact_kind, es, cfg)
+        denom = denom_cache[artifact_kind]
+        if denom <= 0:
+            # Unknown denominator — pass through and record the skip.
+            out[kind] = findings
+            stats[kind] = {
+                "emitted":     len(findings),
+                "denominator": 0,
+                "gated":       False,
+                "skip_reason": f"no denominator for artifact.kind={artifact_kind!r}",
+            }
+            continue
+        share = len(findings) / denom
+        if share > threshold_pct:
+            log.warning(
+                "noise gate: miner %s emitted %d findings against %d-doc "
+                "%s population (%.3f%%) > %.3f%% threshold; suppressing this run",
+                kind, len(findings), denom, artifact_kind,
+                share * 100, threshold_pct * 100,
+            )
+            out[kind] = []
+            stats[kind] = {
+                "emitted":     len(findings),
+                "denominator": denom,
+                "share_pct":   round(share * 100, 4),
+                "gated":       True,
+            }
+        else:
+            out[kind] = findings
+            stats[kind] = {
+                "emitted":     len(findings),
+                "denominator": denom,
+                "share_pct":   round(share * 100, 4),
+                "gated":       False,
+            }
+    return out, stats
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -383,6 +502,14 @@ def run_mine(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) -> dict[st
     # indices don't exist yet (fresh deploy where step 1 hasn't run).
     from .discovery import run_discovery
     discovery_by_kind = run_discovery(es, cfg, run_id)
+    # Noise-threshold safety valve (brutal-review 4.5) — any miner whose
+    # output exceeds `findings.noise_threshold_pct` of its source
+    # artifact population gets suppressed for this run with a warning.
+    # Set the knob to 0 to disable.
+    discovery_by_kind, discovery_gate_stats = apply_noise_gate(
+        discovery_by_kind, es, cfg,
+        threshold_pct=cfg.findings.noise_threshold_pct,
+    )
     discovery_findings: list = []
     discovery_stats: dict[str, int] = {}
     for kind, items in discovery_by_kind.items():
@@ -393,6 +520,10 @@ def run_mine(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) -> dict[st
     # playbooks + campaigns; diff current state against latest anchor.
     from .drift import run_drift
     drift_by_kind = run_drift(es, cfg, run_id)
+    drift_by_kind, drift_gate_stats = apply_noise_gate(
+        drift_by_kind, es, cfg,
+        threshold_pct=cfg.findings.noise_threshold_pct,
+    )
     drift_findings: list = []
     drift_stats: dict[str, int] = {}
     for kind, items in drift_by_kind.items():
@@ -463,12 +594,14 @@ def run_mine(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) -> dict[st
         "playbooks_written": written_pb,
         "campaigns_mined":   len(campaigns),
         "campaigns_written": written_cmp,
-        "discovery_mined":   len(discovery_findings),
-        "discovery_written": written_disc,
-        "discovery_by_kind": discovery_stats,
-        "drift_mined":       len(drift_findings),
-        "drift_written":     written_drift,
-        "drift_by_kind":     drift_stats,
+        "discovery_mined":      len(discovery_findings),
+        "discovery_written":    written_disc,
+        "discovery_by_kind":    discovery_stats,
+        "discovery_gate_stats": discovery_gate_stats,
+        "drift_mined":          len(drift_findings),
+        "drift_written":        written_drift,
+        "drift_by_kind":        drift_stats,
+        "drift_gate_stats":     drift_gate_stats,
         "narrative_stats":   narrative_stats,
         "elapsed_seconds":   round(elapsed, 2),
     }

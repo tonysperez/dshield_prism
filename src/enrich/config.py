@@ -659,6 +659,16 @@ class FindingsConfig(BaseModel):
     # Existing finding docs keep their status; the miner just stops
     # emitting fresh ones for stale artifacts.
     window_days: int = 30
+    # Noise-threshold safety valve (brutal-review phase 4.5).
+    # Generalises the lesson from `unattributed_active_ip`'s retirement
+    # (discovery.py:18-23): any miner whose output exceeds this fraction
+    # of the corpus its artifacts are drawn from is auto-suppressed for
+    # that run with a log warning. The aggregate signal might still be
+    # real, but the analyst inbox is the wrong surface for it.
+    # 0.005 = 0.5% — `unattributed_active_ip` would have been gated at
+    # ~20%, so the floor is well below any pathological miner's output.
+    # Set to 0 to disable the gate entirely.
+    noise_threshold_pct: float = 0.005
 
 
 class WorkerConfig(BaseModel):
