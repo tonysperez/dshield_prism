@@ -104,6 +104,15 @@ ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/
 # observability, not pipeline-critical.
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml track threshold-distributions
 
+# --- Step 13: run hypothesis-driven hunts. Loads YAML from
+# `cfg.findings.hunts.config_dir` (default: config/hunts), executes each
+# hunt's filters against the session rollup, and writes one
+# `kind=analyst_hunt` finding per matching session. Runs AFTER step 10
+# (`mine findings`) so the lifecycle / playbook fields the hunts read
+# are populated. Soft-fail; a malformed hunt YAML shouldn't abort the
+# backward chain. Brutal-review phase 6.1.
+ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml mine hunts
+
 StandardOutput=journal
 StandardError=journal
 

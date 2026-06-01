@@ -957,6 +957,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p_mf.add_argument("--dry-run", action="store_true",
                       help="Score + rank without writing finding docs")
 
+    # mine hunts — brutal-review phase 6.1. Analyst-authored YAML
+    # queries against the session rollup; matches emit
+    # `kind=analyst_hunt` into prism.findings. Loads from
+    # `cfg.findings.hunts.config_dir` (default: config/hunts).
+    p_mh = mine_sub.add_parser(
+        "hunts",
+        help="Run analyst-authored hunt YAMLs and emit analyst_hunt findings",
+    )
+    p_mh.add_argument("--dry-run", action="store_true",
+                      help="Load + execute but don't write findings")
+
     # track lifecycles — Findings v2 step 1. Walks session_clusters /
     # campaigns / ips_rollup; upserts one doc per playbook_id /
     # campaign_id / source.ip into the lifecycle indices, appending a
@@ -1451,6 +1462,39 @@ def main(argv: list[str] | None = None) -> int:
             stats = run_mine_findings(cfg, secrets, dry_run=args.dry_run)
             print(json.dumps(stats, indent=2, default=str))
             return 0
+        if args.subject == "hunts":
+            # Hypothesis-driven hunts (brutal-review phase 6.1). Reads
+            # YAML from cfg.findings.hunts.config_dir, executes each
+            # against the session rollup, writes one
+            # `kind=analyst_hunt` finding per matching session.
+            from .findings.hunts import run_hunts
+            from .findings.writer import bulk_upsert_findings
+            from .es_client import init_index, make_client
+            import uuid as _uuid
+            es = make_client(cfg.elasticsearch, secrets)
+            findings_idx = cfg.findings.indexes.default
+            init_index(es, "setup/es-mappings/findings/default.json", findings_idx)
+            run_id = str(_uuid.uuid4())
+            result = run_hunts(es, cfg, run_id)
+            written = 0
+            if not args.dry_run:
+                for hunt_id, findings in (result.get("by_hunt") or {}).items():
+                    if findings:
+                        written += bulk_upsert_findings(es, findings_idx, findings)
+            # Build a per-hunt summary for the console.
+            per_hunt = {
+                hid: {"matched": len(rows), "wrote": (0 if args.dry_run else len(rows))}
+                for hid, rows in (result.get("by_hunt") or {}).items()
+            }
+            print(json.dumps({
+                "run_id":    run_id,
+                "dry_run":   args.dry_run,
+                "loaded":    result.get("loaded", 0),
+                "by_hunt":   per_hunt,
+                "total_written": written,
+                "errors":    result.get("errors", []),
+            }, indent=2, default=str))
+            return 0 if not result.get("errors") else 1
         mod = _load_source_layer(args.source, "campaigns")
         if mod is None:
             print(f"[ERROR] Source {args.source!r} has no `campaigns` miner", flush=True)

@@ -1,0 +1,11 @@
+# Hypothesis-driven hunts — analyst-authored YAML queries that emit
+# `kind=analyst_hunt` findings against the session rollup.
+#
+# Brutal-review phase 6.1 ships the schema + executor; phase 6.2 will
+# seed this directory with four standing hunts:
+#   - persistence-touched.yaml
+#   - cryptominer-staging.yaml
+#   - credential-spray.yaml
+#   - novel-persistence.yaml
+#
+# See `src/enrich/findings/hunts.py` for the YAML schema.

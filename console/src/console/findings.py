@@ -36,17 +36,27 @@ _DISCOVERY_KINDS: frozenset[str] = frozenset({
     "unattributed_active_ip", "campaign_convergence", "ip_behavior_shift",
     "intel_verdict_flip",
 })
-_VALID_KINDS: frozenset[str] = _COVERAGE_KINDS | _DRIFT_KINDS | _DISCOVERY_KINDS
+# Hypothesis-driven hunts (brutal-review phase 6.1). Distinct UI stream
+# from discovery / drift / coverage — analyst-authored hypotheses are a
+# different workflow from anomaly-driven inbox triage. Surfaced in
+# its own console page via commit 6.3.
+_HUNT_KINDS: frozenset[str] = frozenset({"analyst_hunt"})
+_VALID_KINDS: frozenset[str] = (
+    _COVERAGE_KINDS | _DRIFT_KINDS | _DISCOVERY_KINDS | _HUNT_KINDS
+)
 
 
 def stream_for_kind(kind: str) -> str:
-    """Map a finding kind to its UI stream: 'drift', 'discovery', 'coverage'."""
+    """Map a finding kind to its UI stream: 'drift', 'discovery',
+    'coverage', or 'hunt'."""
     if kind in _DRIFT_KINDS:
         return "drift"
     if kind in _DISCOVERY_KINDS:
         return "discovery"
     if kind in _COVERAGE_KINDS:
         return "coverage"
+    if kind in _HUNT_KINDS:
+        return "hunt"
     return "unknown"
 
 

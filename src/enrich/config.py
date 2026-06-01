@@ -628,6 +628,24 @@ class DriftConfig(BaseModel):
     campaign_growth_min_delta_ips: int = 3
 
 
+class HuntsConfig(BaseModel):
+    """Hypothesis-driven hunts subsystem (brutal-review phase 6.1).
+
+    A hunt is a YAML file under ``config_dir`` carrying an `id`, a
+    `name`, a list of `filters`, and an optional `enabled` flag.
+    Matching sessions produce one `kind=analyst_hunt` finding per
+    (hunt, session) pair into `prism.findings`.
+    """
+    # Where the loader looks for `*.yaml` / `*.yml` hunt files. Relative
+    # paths resolve from the process working directory (matches the
+    # other `config/*.yaml` lookups in this project).
+    config_dir: str = "config/hunts"
+    # Cap on findings emitted by a single hunt per run. Hunts that match
+    # more sessions than this silently truncate — operator sees the
+    # count in the stats and can refine the filters.
+    max_findings_per_hunt: int = 500
+
+
 class FindingsConfig(BaseModel):
     """Findings-mining subsystem (M5).
 
@@ -666,6 +684,11 @@ class FindingsConfig(BaseModel):
     # Existing finding docs keep their status; the miner just stops
     # emitting fresh ones for stale artifacts.
     window_days: int = 30
+    # Hypothesis-driven hunts (brutal-review phase 6.1) — analyst-authored
+    # YAML queries that produce `kind=analyst_hunt` findings against the
+    # session rollup. The directory `config_dir` is scanned at every
+    # `mine hunts` invocation; an empty/missing directory is a no-op.
+    hunts: HuntsConfig = Field(default_factory=HuntsConfig)
     # Noise-threshold safety valve (brutal-review phase 4.5).
     # Generalises the lesson from `unattributed_active_ip`'s retirement
     # (discovery.py:18-23): any miner whose output exceeds this fraction
