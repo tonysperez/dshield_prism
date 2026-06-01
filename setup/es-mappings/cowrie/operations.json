@@ -1,0 +1,38 @@
+{
+  "_comment": "Operations — one doc per merged (bhv-campaign × inf-campaign) pair whose IP overlap clears the corpus-p75 percentile of bhv×inf ratios (4.4's `convergence_ratio_cutoff`). Promotes the `campaign_convergence` finding signal to a first-class persisted entity with a stable `op-<16hex>` id content-addressed on `sorted([bhv_id, inf_id])`. Brutal-review phase 7.1; phase 7.2's console anchor type 'operation' reads from here.",
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "30s"
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "@timestamp":         { "type": "date" },
+      "run_id":             { "type": "keyword" },
+      "operation_id":       { "type": "keyword" },
+
+      "behaviour_id":       { "type": "keyword" },
+      "behaviour_name":     {
+        "type": "text",
+        "fields": { "keyword": { "type": "keyword", "ignore_above": 512 } }
+      },
+      "infrastructure_id":  { "type": "keyword" },
+      "infrastructure_name": {
+        "type": "text",
+        "fields": { "keyword": { "type": "keyword", "ignore_above": 512 } }
+      },
+
+      "member_source_ips":  { "type": "keyword" },
+
+      "bhv_ip_count":       { "type": "long" },
+      "inf_ip_count":       { "type": "long" },
+      "shared_ip_count":    { "type": "long" },
+      "overlap_ratio":      { "type": "float" },
+      "overlap_threshold":  { "type": "float" },
+
+      "first_seen":         { "type": "date" },
+      "last_seen":          { "type": "date" }
+    }
+  }
+}

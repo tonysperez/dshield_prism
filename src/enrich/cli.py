@@ -94,6 +94,7 @@ _LAYER_MAPPINGS = {
         "campaigns":         "setup/es-mappings/cowrie/campaigns.json",
         "playbook_anchors":  "setup/es-mappings/cowrie/playbook_anchors.json",
         "reference_session": "setup/es-mappings/cowrie/reference_session.json",
+        "operations":        "setup/es-mappings/cowrie/operations.json",
     },
     # External threat-intel — cross-source per-artifact indices.
     # `init-indexes --source intel` creates these. M1 shipped `ip`,
@@ -557,6 +558,7 @@ def _resolve_index_for_layer(cfg, source: str, layer: str) -> str:
             "campaigns":         c.campaigns,
             "playbook_anchors":  c.playbook_anchors,
             "reference_session": c.reference_sessions,
+            "operations":        c.operations,
         }[layer]
     if source == "intel":
         i = cfg.intel.indexes
@@ -956,6 +958,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p_mf = mine_sub.add_parser("findings", help="Mine likely_discovery + axis_disagreement findings (M5)")
     p_mf.add_argument("--dry-run", action="store_true",
                       help="Score + rank without writing finding docs")
+
+    # mine operations — brutal-review phase 7.1. Promote merged
+    # (bhv-campaign × inf-campaign) pairs whose IP overlap clears the
+    # corpus-p75 percentile to first-class operation docs in
+    # `prism.operations`. Same signal as `campaign_convergence` finding
+    # but stable across re-mines via `op-<sha16>` ids content-addressed
+    # on the (bhv, inf) pair.
+    p_mo = mine_sub.add_parser("operations", help="Mine operations (bhv×inf merges)")
+    p_mo.add_argument("--dry-run", action="store_true",
+                      help="Evaluate pairs without writing operation docs")
 
     # mine hunts — brutal-review phase 6.1. Analyst-authored YAML
     # queries against the session rollup; matches emit
@@ -1462,6 +1474,12 @@ def main(argv: list[str] | None = None) -> int:
             stats = run_mine_findings(cfg, secrets, dry_run=args.dry_run)
             print(json.dumps(stats, indent=2, default=str))
             return 0
+        if args.subject == "operations":
+            # Brutal-review phase 7.1.
+            from .findings.operations import run_mine_operations
+            stats = run_mine_operations(cfg, secrets, dry_run=args.dry_run)
+            print(json.dumps(stats, indent=2, default=str))
+            return 0 if stats.get("bulk_errors", 0) == 0 else 1
         if args.subject == "hunts":
             # Hypothesis-driven hunts (brutal-review phase 6.1). Reads
             # YAML from cfg.findings.hunts.config_dir, executes each

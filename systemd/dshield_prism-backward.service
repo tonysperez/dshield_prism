@@ -67,6 +67,14 @@ ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/
 # set. Stable campaign IDs (content-hashed playbook set, ROADMAP #2).
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml mine campaigns --kind all
 
+# --- Step 8a: promote (bhv × inf) campaign pairs whose IP overlap clears
+# the corpus-p75 percentile to first-class operation docs in
+# `prism.operations` with stable `op-<16hex>` ids content-addressed on
+# the pair. Same signal as the `campaign_convergence` finding kind, but
+# persisted as an entity for the graph anchor type (7.2) and the
+# `operation_emergence` finding kind (7.3). Soft-fail. Brutal-review 7.1.
+ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml mine operations
+
 # --- Step 8b: append this-run snapshots to the lifecycle indices
 # (playbook / campaign / source_ip) and bump silent_runs_current on
 # artifacts not seen this run. Findings v2 step 1 — feeds drift detectors
