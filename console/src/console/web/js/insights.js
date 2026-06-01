@@ -465,6 +465,82 @@
     wrap.appendChild(table);
   }
 
+  function renderTradecraftMatches(rows) {
+    // Brutal-review 5.10: positive-signal surface — sessions whose
+    // behavior most closely matches a documented adversary technique
+    // from the external (Atomic Red Team) reference corpus. Read-only,
+    // no status workflow; the analyst clicks through to pivot.
+    const wrap = document.getElementById("tradecraft-body");
+    if (!rows || !rows.length) {
+      wrap.innerHTML = "";
+      wrap.appendChild(el("em", "ins-empty",
+        "No tradecraft matches above the cosine floor (0.5). " +
+        "Either no external reference corpus is loaded, or no live " +
+        "session embeds close to a documented technique centroid."));
+      return;
+    }
+    const table = el("table", "ins-table");
+    const thead = el("thead");
+    const hrow = el("tr");
+    for (const h of ["Session", "Cosine", "Matches (MITRE)", "Local cluster", "Playbook", "Intent", ""]) {
+      hrow.appendChild(th(h));
+    }
+    thead.appendChild(hrow);
+    table.appendChild(thead);
+    const tbody = el("tbody");
+    for (const row of rows) {
+      const tr = el("tr", "clickable");
+      tr.addEventListener("click", () =>
+        row.session_id && pivot("session", row.session_id));
+      // Session id (truncated for table fit, full on hover).
+      const sidCell = document.createElement("td");
+      const sidSpan = el("span", "cmd-cell", truncate(row.session_id || "", 16));
+      sidSpan.title = row.session_id || "";
+      sidCell.appendChild(sidSpan);
+      tr.appendChild(sidCell);
+      // Cosine — same visual as the novelty bars on the panel above.
+      const cosCell = document.createElement("td");
+      const cos = row.external_match_cosine;
+      if (cos !== null && cos !== undefined) {
+        const bar = el("div", "novelty-bar");
+        const track = el("div", "novelty-track");
+        const fill = el("div", "novelty-fill");
+        fill.style.width = Math.round(Math.max(0, cos) * 100) + "%";
+        track.appendChild(fill);
+        bar.appendChild(track);
+        bar.appendChild(el("span", "novelty-val", cos.toFixed(2)));
+        cosCell.appendChild(bar);
+      } else {
+        cosCell.textContent = "—";
+      }
+      tr.appendChild(cosCell);
+      // MITRE technique distribution from the matched external centroid.
+      const techCell = document.createElement("td");
+      const techs = (row.techniques || []).slice(0, 3);
+      if (techs.length) {
+        for (const t of techs) {
+          const tag = el("span", "mitre-tag", `${t.id} ${(t.weight * 100).toFixed(0)}%`);
+          techCell.appendChild(tag);
+          techCell.appendChild(document.createTextNode(" "));
+        }
+      } else {
+        techCell.textContent = "—";
+      }
+      tr.appendChild(techCell);
+      tr.appendChild(td("", row.local_cluster_id || "—"));
+      tr.appendChild(td("", row.playbook_name || row.playbook_id || "—"));
+      const intentCell = document.createElement("td");
+      const badge = badgeIntent(row.dominant_intent);
+      if (badge) intentCell.appendChild(badge);
+      tr.appendChild(intentCell);
+      tr.appendChild(row.session_id ? actionCell("session", row.session_id) : td(""));
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    wrap.innerHTML = "";
+    wrap.appendChild(table);
+  }
+
   // ─── init ────────────────────────────────────────────────────────────────
 
   document.addEventListener("DOMContentLoaded", async () => {
@@ -482,6 +558,7 @@
       renderSessionClusters(data.session_clusters);
       renderIPClusters(data.ip_clusters);
       renderNovelCommands(data.novel_commands);
+      renderTradecraftMatches(data.tradecraft_matches || []);
     } catch (e) {
       const main = document.getElementById("insights-main");
       main.innerHTML = "";

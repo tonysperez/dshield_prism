@@ -1931,6 +1931,112 @@ def insights_summary(
     except Exception as exc:
         log.warning("insights evidence_quality stamping failed: %s", exc)
 
+    # --- Tradecraft matches (brutal-review phase 5.10) --------------------
+    # Sessions whose embedding is closest to a documented external (AR)
+    # adversary-technique centroid. Read-only enrichment surface — not a
+    # finding kind, no status workflow. Joined to the centroid's resolved
+    # `external_match_techniques` so the analyst sees the MITRE label
+    # inline ("Matches T1003.007 + T1014 + T1027 — cosine 0.93").
+    tradecraft_matches: list[dict] = []
+    try:
+        # Top sessions by external_match_cosine. Only meaningful when the
+        # cosine is well above noise — 0.5 is the conservative floor;
+        # below that the "match" is structural happenstance, not signal.
+        r = es.search(
+            index=idxs.sessions_rollup, size=15,
+            _source=[
+                "cowrie.session_id",
+                "source.ip",
+                "dshield.cowrie.enrichment.session.cluster.id",
+                "dshield.cowrie.enrichment.session.cluster.external_match_id",
+                "dshield.cowrie.enrichment.session.cluster.external_match_cosine",
+                "dshield.cowrie.enrichment.session.cluster.novelty_score_external",
+                "dshield.cowrie.enrichment.session.command_count",
+                "dshield.cowrie.enrichment.session.dominant_intent",
+                "dshield.cowrie.enrichment.session.playbook_id",
+                "dshield.cowrie.enrichment.session.playbook_name",
+            ],
+            query={"bool": {"must": [
+                {"exists": {"field": "dshield.cowrie.enrichment.session.cluster.external_match_id"}},
+                {"range":  {"dshield.cowrie.enrichment.session.cluster.external_match_cosine": {"gte": 0.5}}},
+            ]}},
+            sort=[{
+                "dshield.cowrie.enrichment.session.cluster.external_match_cosine": {"order": "desc"}
+            }],
+        )
+        # Bulk-fetch each referenced external centroid's technique
+        # distribution once. The session_clusters index uses the cluster
+        # run's run_id as part of the centroid's `_id` so we can't reuse
+        # session-side IDs directly; query by (reference_source=external,
+        # cluster_id=...) instead and cache.
+        match_ids = sorted({
+            ((h["_source"].get("dshield") or {}).get("cowrie", {})
+             .get("enrichment", {}).get("session", {}).get("cluster") or {}).get("external_match_id")
+            for h in r["hits"]["hits"]
+        } - {None})
+        tech_by_match: dict[str, dict] = {}
+        if match_ids:
+            # Find the latest external generation, then pull centroids in
+            # that generation for the matched cluster_ids only.
+            try:
+                gen_r = es.search(
+                    index=idxs.session_clusters, size=1,
+                    query={"bool": {"must": [
+                        {"term": {"doc_type": "reference_centroid"}},
+                        {"term": {"reference_source.keyword": "external"}},
+                    ]}},
+                    sort=[{"reference_generation": {"order": "desc"}}],
+                    _source=["reference_generation"],
+                )
+                gen_hits = gen_r["hits"]["hits"]
+                latest_gen = (
+                    int(gen_hits[0]["_source"]["reference_generation"])
+                    if gen_hits else None
+                )
+                if latest_gen is not None:
+                    cent_r = es.search(
+                        index=idxs.session_clusters, size=100,
+                        query={"bool": {"must": [
+                            {"term":  {"doc_type": "reference_centroid"}},
+                            {"term":  {"reference_source.keyword": "external"}},
+                            {"term":  {"reference_generation": latest_gen}},
+                            {"terms": {"cluster_id": match_ids}},
+                        ]}},
+                        _source=["cluster_id", "external_match_techniques"],
+                    )
+                    for h in cent_r["hits"]["hits"]:
+                        s = h["_source"]
+                        tech_by_match[s["cluster_id"]] = s.get("external_match_techniques") or {}
+            except Exception as exc:
+                log.warning("insights tradecraft: technique lookup failed: %s", exc)
+        for h in r["hits"]["hits"]:
+            s = h["_source"]
+            sess_enr = ((s.get("dshield") or {}).get("cowrie", {})
+                        .get("enrichment", {}).get("session", {})) or {}
+            cluster = sess_enr.get("cluster") or {}
+            match_id = cluster.get("external_match_id")
+            cosine = cluster.get("external_match_cosine")
+            techs = tech_by_match.get(match_id) or {}
+            # Render the technique distribution as a stable ordered list
+            # of (id, weight) tuples — the analyst reads "T1003.007: 0.6"
+            # not the raw dict.
+            techs_sorted = sorted(techs.items(), key=lambda kv: -float(kv[1]))
+            tradecraft_matches.append({
+                "session_id":  (s.get("cowrie") or {}).get("session_id") or h["_id"],
+                "source_ip":   (s.get("source") or {}).get("ip"),
+                "local_cluster_id":     cluster.get("id"),
+                "external_match_id":    match_id,
+                "external_match_cosine": cosine,
+                "novelty_score_external": cluster.get("novelty_score_external"),
+                "techniques":  [{"id": t, "weight": float(w)} for t, w in techs_sorted],
+                "command_count":    sess_enr.get("command_count"),
+                "dominant_intent":  sess_enr.get("dominant_intent"),
+                "playbook_id":      sess_enr.get("playbook_id"),
+                "playbook_name":    sess_enr.get("playbook_name"),
+            })
+    except Exception as exc:
+        log.warning("insights tradecraft_matches failed: %s", exc)
+
     return {
         "overview": {
             "total_ips":        total_ips,
@@ -1941,12 +2047,13 @@ def insights_summary(
         },
         # Playbooks (named session clusters) and mined campaigns (multi-
         # session patterns) are distinct surfaces.
-        "playbooks":         playbooks,
-        "mined_campaigns":   mined_campaigns,
-        "command_clusters":  command_clusters,
-        "session_clusters":  session_clusters,
-        "ip_clusters":       ip_clusters,
-        "novel_commands":    novel_commands,
+        "playbooks":           playbooks,
+        "mined_campaigns":     mined_campaigns,
+        "command_clusters":    command_clusters,
+        "session_clusters":    session_clusters,
+        "ip_clusters":         ip_clusters,
+        "novel_commands":      novel_commands,
+        "tradecraft_matches":  tradecraft_matches,
     }
 
 
