@@ -76,7 +76,7 @@ class ESConfig(BaseModel):
 
 class LLMConfig(BaseModel):
     provider: str = "ollama"  # "ollama" | "openai_compat"
-    base_url: str
+    base_url: Optional[str] = None
     generation_model: str
     embedding_model: str
     request_timeout: int = 120

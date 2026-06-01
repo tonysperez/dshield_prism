@@ -28,6 +28,11 @@ class LLMClient(Protocol):
 def make_llm_client(cfg) -> LLMClient:
     """cfg is an LLMConfig. Returns the concrete client per cfg.provider."""
     provider = (cfg.provider or "ollama").lower()
+    if not cfg.base_url:
+        raise ValueError(
+            "llm.base_url is not set. Override it in config/local.yaml "
+            "(e.g. http://localhost:11434 for Ollama)."
+        )
     if provider == "ollama":
         from .ollama import OllamaClient
         return OllamaClient(
