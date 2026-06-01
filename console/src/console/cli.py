@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import sys
 import webbrowser
-from pathlib import Path
 
 from .__about__ import CLI_NAME
 

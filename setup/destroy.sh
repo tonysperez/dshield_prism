@@ -12,12 +12,13 @@
 # every time.
 #
 # Removes:
-#   - systemd timers + services (stopped, disabled, unit files deleted)
+#   - systemd timers + services (stopped, disabled, unit files deleted),
+#     including dshield_prism-console.service
 #   - ES processed indices (cowrie/intel/findings layers)
 #   - ES ingest pipelines (prism.cowrie.session, dshield.webhoneypot)
 #   - SQLite cache + watermark + intel cache files (the state dir contents)
-#   - the install dir (/opt/dshield_prism by default)
-#   - the state dir (/var/lib/dshield_prism by default)
+#   - the install dir (/opt/dshield_prism by default) — this also drops
+#     the console venv at /opt/dshield_prism/console/.venv
 #
 # Preserves:
 #   - cfg.elasticsearch.indexes.cowrie.sessions_raw (the raw data stream)
@@ -169,7 +170,8 @@ if (( DO_SYSTEMD )); then
         dshield_prism-backward.timer \
         dshield_prism-backward.service \
         dshield_prism-forward.timer \
-        dshield_prism-forward.service
+        dshield_prism-forward.service \
+        dshield_prism-console.service
     do
         # Stop + disable, even if not currently enabled (systemctl is
         # idempotent and returns 0 in the absence-of-unit case as long

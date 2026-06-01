@@ -11,7 +11,6 @@ from __future__ import annotations
 import ipaddress
 import re
 from dataclasses import dataclass
-from typing import Iterable
 
 
 # Canonical type strings used everywhere in the API.

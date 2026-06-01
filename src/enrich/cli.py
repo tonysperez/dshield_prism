@@ -197,7 +197,8 @@ def _write_mitre_metrics_doc(cfg, secrets, *, top_n: int) -> None:
     Best-effort: failures log but never fail the enrich verb.
     """
     from .es_client import make_client
-    import logging, uuid
+    import logging
+    import uuid
     from datetime import datetime, timezone
     log = logging.getLogger(__name__)
     es = make_client(cfg.elasticsearch, secrets)

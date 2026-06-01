@@ -1,0 +1,33 @@
+[Unit]
+Description=DShield Prism console — read-only investigation web UI (FastAPI/uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dshield_prism
+Group=dshield_prism
+WorkingDirectory=/opt/dshield_prism/console
+EnvironmentFile=/opt/dshield_prism/.env
+
+# Binds 0.0.0.0:8765 by default — the systemd-managed deploy is meant to be
+# reachable from the analyst LAN. If you want loopback-only, override the
+# --host flag here (or override the whole ExecStart via a drop-in at
+# /etc/systemd/system/dshield_prism-console.service.d/override.conf).
+ExecStart=/opt/dshield_prism/console/.venv/bin/python -m console.cli serve --host 0.0.0.0 --port 8765 --config /opt/dshield_prism/config/default.yaml
+
+Restart=on-failure
+RestartSec=5s
+
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dshield_prism /var/log/dshield_prism
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

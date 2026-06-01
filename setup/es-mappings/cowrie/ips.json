@@ -81,6 +81,18 @@
                         }
                       },
                       "hassh_cluster_id":        { "type": "keyword" },
+                      "hassh_family": {
+                        "type": "text",
+                        "fields": {
+                          "keyword": { "type": "keyword", "ignore_above": 64 }
+                        }
+                      },
+                      "hassh_tool": {
+                        "type": "text",
+                        "fields": {
+                          "keyword": { "type": "keyword", "ignore_above": 128 }
+                        }
+                      },
                       "dominant_playbook_id": { "type": "keyword" },
                       "playbook_distribution": {
                         "properties": {

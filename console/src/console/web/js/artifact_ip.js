@@ -96,6 +96,19 @@
     const src = rollup.source || {};
     const geo = (src.geo || {});
     const asn = ((src.as || {}).organization || {}).name || (src.as || {}).number;
+    // SSH-client attribution (7.5): show "<family> · <tool>" when the
+    // vendored map (src/enrich/data/hassh_known.json) had a hit on the
+    // dominant HASSH at rollup time. Falls back to the cluster id alone
+    // when unknown — that's still useful for grouping aggregations.
+    let sshClient = "—";
+    if (ip.hassh_family || ip.hassh_tool) {
+      const parts = [];
+      if (ip.hassh_family) parts.push(ip.hassh_family);
+      if (ip.hassh_tool) parts.push(ip.hassh_tool);
+      sshClient = parts.join(" · ");
+    } else if (ip.hassh_cluster_id) {
+      sshClient = `${ip.hassh_cluster_id} (unlabeled)`;
+    }
     const rows = [
       ["total_sessions",          ip.total_sessions ?? "—"],
       ["successful_sessions",     ip.successful_sessions ?? "—"],
@@ -110,6 +123,7 @@
       ["geo.city",                geo.city_name ?? "—"],
       ["as",                      asn ?? "—"],
       ["credentials_seen",        Array.isArray(ip.credentials) ? ip.credentials.length : "—"],
+      ["ssh_client",              sshClient],
     ];
     const html = `<div class="art-kv">${
       rows.map(([k, v]) =>

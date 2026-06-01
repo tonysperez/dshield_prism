@@ -4,6 +4,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+from collections import Counter
 from pathlib import Path
 from pydantic import BaseModel, Field, field_validator
 
@@ -44,8 +45,6 @@ _mitre_drops: dict[str, int] = {"tactics": 0, "techniques": 0}
 # top-N into a prism.metrics doc, and resets. The Health page flags
 # techniques whose application rate exceeds 5% of commands as likely
 # over-applied — a soft warning, not an error.
-from collections import Counter
-
 _mitre_applications: Counter[str] = Counter()
 
 

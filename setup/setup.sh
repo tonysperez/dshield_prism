@@ -11,10 +11,17 @@
 #   4. The GPU-side LLM server is reachable from this box (Ollama / LM Studio).
 #
 # Steps performed (each is a no-op if already done):
-#   A. Sanity checks (root, python >= 3.9, source files, .env + local config)
+#   A. Sanity checks (root, python >= 3.11, source files, .env + local config)
 #   B. Create system user + state directory
 #   C. Rsync source → INSTALL_DIR
 #   D. Create venv + pip install (base package + [cluster] extra)
+#   D2. (opt-in via --ufw) Add UFW rules for outbound traffic:
+#        - allow out to ES host:port (parsed from local.yaml, skipped if loopback)
+#        - allow out to LLM host:port (parsed from local.yaml, skipped if loopback)
+#        - allow out 443/tcp (intel feeds + Anthropic cloud API)
+#        - (opt-in via --ufw-console) allow in 8765/tcp for console web UI
+#       No-op if ufw is not installed or not active. Idempotent — ufw skips
+#       rules that already exist.
 #   E. Apply ES templates + ingest pipelines + raw data stream from setup/:
 #        prism.raw index template (data stream + ILM for raw event store)
 #        prism.cowrie.session ingest pipeline (ECS normalization + reroute)
@@ -41,6 +48,17 @@
 #        runs after `name playbooks` — the legacy
 #        dshield_prism-mine-findings.{service,timer} are removed by this
 #        script if present from a prior install.
+#   I. Install /usr/local/bin/prism wrapper. Lets operators run e.g.
+#        `prism healthcheck` from any cwd in any shell — same as
+#        `sudo -u dshield_prism ${VENV}/bin/python -m enrich.cli ...`.
+#
+# Console install (default on; opt out with --no-console):
+#   - Builds a separate venv at /opt/dshield_prism/console/.venv
+#     (FastAPI/uvicorn/jinja2 — not in the parent package).
+#   - Installs dshield_prism-console.service from setup/../systemd/.
+#   - Enables + starts the unit. Binds 0.0.0.0:8765 — make sure your
+#     perimeter firewall blocks WAN, or use --no-console and run it
+#     manually with --host 127.0.0.1 behind an ssh tunnel.
 #
 # Skipped on purpose (first run can take hours on a backlog):
 #   - Initial enrichment + clustering pass. Trigger manually after setup:
@@ -52,6 +70,7 @@
 #
 # Usage:
 #   sudo bash setup/setup.sh [--no-systemd] [--skip-healthcheck] [--skip-init-index]
+#                            [--no-console] [--ufw] [--ufw-console]
 #
 # Environment overrides:
 #   SERVICE_USER   default: dshield_prism
@@ -75,6 +94,10 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 INSTALL_SYSTEMD=1
 RUN_HEALTHCHECK=1
 RUN_INIT_INDEX=1
+INSTALL_CONSOLE=1
+INSTALL_UFW=0
+OPEN_CONSOLE_PORT=0
+CONSOLE_PORT="${CONSOLE_PORT:-8765}"
 
 # ---- argv ------------------------------------------------------------------
 
@@ -83,6 +106,9 @@ while [[ $# -gt 0 ]]; do
         --no-systemd)       INSTALL_SYSTEMD=0 ;;
         --skip-healthcheck) RUN_HEALTHCHECK=0 ;;
         --skip-init-index)  RUN_INIT_INDEX=0 ;;
+        --no-console)       INSTALL_CONSOLE=0 ;;
+        --ufw)              INSTALL_UFW=1 ;;
+        --ufw-console)      INSTALL_UFW=1; OPEN_CONSOLE_PORT=1 ;;
         -h|--help)
             sed -n '1,55p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
@@ -94,6 +120,15 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+# When both --ufw is enabled AND the console is being installed, auto-open
+# the console port. The systemd-managed console binds 0.0.0.0:8765, so
+# closing UFW on that port would silently break LAN access — make the
+# rule track the install rather than requiring a second flag. Users who
+# want the rule WITHOUT the service can still pass --no-console + --ufw-console.
+if (( INSTALL_UFW && INSTALL_CONSOLE )); then
+    OPEN_CONSOLE_PORT=1
+fi
 
 # ---- helpers ---------------------------------------------------------------
 
@@ -131,13 +166,13 @@ exec > >(tee -a "${LOG_DIR}/setup.log") 2>&1
 log "Tee'ing output to ${LOG_DIR}/setup.log"
 
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
-    die "${PYTHON_BIN} not found in PATH. Install Python 3.9+ first."
+    die "${PYTHON_BIN} not found in PATH. Install Python 3.11+ first."
 fi
 PY_VER="$("${PYTHON_BIN}" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
 PY_MAJOR="${PY_VER%%.*}"
 PY_MINOR="${PY_VER##*.}"
-if (( PY_MAJOR < 3 )) || { (( PY_MAJOR == 3 )) && (( PY_MINOR < 9 )); }; then
-    die "Python ${PY_VER} too old; need >= 3.9."
+if (( PY_MAJOR < 3 )) || { (( PY_MAJOR == 3 )) && (( PY_MINOR < 11 )); }; then
+    die "Python ${PY_VER} too old; need >= 3.11."
 fi
 log "  python: ${PY_VER}"
 
@@ -278,6 +313,195 @@ run_cli() {
         --config "${INSTALL_DIR}/config/default.yaml" "$@"
 }
 
+# ---- D2. UFW rules (opt-in via --ufw / --ufw-console) ----------------------
+# Add outbound allows for the endpoints this deploy actually talks to:
+#   - ES host:port            (parsed from local.yaml; skipped if loopback)
+#   - LLM host:port           (parsed from local.yaml; skipped if loopback)
+#   - 443/tcp                 (intel feeds + Anthropic cloud API)
+# And, only if --ufw-console was passed, allow inbound on the console port.
+# Idempotent: `ufw allow` is a no-op when the rule already exists.
+
+if (( INSTALL_UFW )); then
+    log "Configuring UFW rules"
+
+    if ! command -v ufw >/dev/null 2>&1; then
+        warn "  ufw not installed; skipping UFW configuration"
+    elif ! ufw status 2>/dev/null | grep -q "^Status: active"; then
+        warn "  ufw is installed but inactive; skipping (enable with 'ufw enable' and re-run with --ufw)"
+    else
+        # Parse ES + LLM endpoints from default.yaml + local.yaml overlay,
+        # then resolve any hostnames to IPs so we emit one rule per A/AAAA
+        # record. UFW doesn't reliably accept hostnames in rules (some
+        # versions reject them, others snapshot the IP without re-checking),
+        # so doing the resolution here keeps the failure mode visible and
+        # supports multi-IP clusters.
+        # Uses the venv's PyYAML (declared in pyproject.toml). Emits one
+        # line per (endpoint, resolved IP):
+        #   KIND <ip> <port> <original-host>
+        # or, when DNS resolution fails:
+        #   UNRESOLVED KIND <host> <port>
+        # Loopback IPs (including hostnames that resolve to 127.0.0.0/8 via
+        # /etc/hosts) are filtered out in Python so bash just iterates.
+        ENDPOINTS="$(sudo -u "${SERVICE_USER}" "${VENV}/bin/python" - <<'PYEOF'
+import ipaddress, socket, sys, urllib.parse, yaml
+
+def parse(url):
+    p = urllib.parse.urlparse(url)
+    if not p.hostname:
+        return None, None
+    port = p.port
+    if port is None:
+        port = 443 if p.scheme == "https" else (80 if p.scheme == "http" else None)
+    if port is None:
+        return None, None
+    return p.hostname, port
+
+def is_loopback(ip_str):
+    try:
+        return ipaddress.ip_address(ip_str).is_loopback
+    except ValueError:
+        return False
+
+def resolve(host):
+    # IP literal -> use as-is.
+    try:
+        ipaddress.ip_address(host)
+        return [host]
+    except ValueError:
+        pass
+    if host == "localhost":
+        return ["127.0.0.1"]  # caught by is_loopback below
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return None  # signals unresolved
+    seen, ips = set(), []
+    for _, _, _, _, sockaddr in infos:
+        ip = sockaddr[0]
+        if ip not in seen:
+            seen.add(ip)
+            ips.append(ip)
+    return ips
+
+def merge(a, b):
+    for k, v in (b or {}).items():
+        if isinstance(v, dict) and isinstance(a.get(k), dict):
+            merge(a[k], v)
+        else:
+            a[k] = v
+
+with open("/opt/dshield_prism/config/default.yaml") as f:
+    cfg = yaml.safe_load(f) or {}
+for lp in ("/opt/dshield_prism/config/local.yaml", "/opt/dshield_prism/config/local.yml"):
+    try:
+        with open(lp) as f:
+            merge(cfg, yaml.safe_load(f) or {})
+        break
+    except FileNotFoundError:
+        continue
+
+def emit(kind, url):
+    host, port = parse(url)
+    if not host:
+        return
+    ips = resolve(host)
+    if ips is None:
+        print(f"UNRESOLVED {kind} {host} {port}")
+        return
+    for ip in ips:
+        if is_loopback(ip):
+            continue
+        print(f"{kind} {ip} {port} {host}")
+
+for h in (cfg.get("elasticsearch") or {}).get("hosts") or []:
+    emit("ES", h)
+llm_url = (cfg.get("llm") or {}).get("base_url")
+if llm_url:
+    emit("LLM", llm_url)
+PYEOF
+)"
+
+        # Idempotency note: `ufw allow` is a no-op when an identical rule
+        # already exists — it prints "Skipping adding existing rule" and
+        # exits 0. We rely on that here rather than diffing `ufw status`
+        # ourselves.
+
+        # Targeted outbound allows for ES + LLM (one rule per resolved IP).
+        while IFS= read -r line; do
+            [[ -z "${line}" ]] && continue
+            read -r kind a b c <<< "${line}"
+            if [[ "${kind}" == "UNRESOLVED" ]]; then
+                warn "  ${a} host did not resolve via DNS; skipping rule (host=${a} port=${b})"
+                continue
+            fi
+            ip="${a}"; port="${b}"; host="${c}"
+            if [[ "${ip}" == "${host}" ]]; then
+                log "  ${kind}: out to ${ip} port ${port}/tcp"
+            else
+                log "  ${kind}: out to ${ip} port ${port}/tcp  (${host})"
+            fi
+            ufw allow out to "${ip}" port "${port}" proto tcp
+        done <<< "${ENDPOINTS}"
+
+        # Intel feeds + Anthropic cloud — all HTTPS, hosts not stable enough
+        # to pin by IP.
+        log "  intel + cloud: out 443/tcp"
+        ufw allow out 443/tcp
+
+        if (( OPEN_CONSOLE_PORT )); then
+            log "  console: in ${CONSOLE_PORT}/tcp"
+            ufw allow in "${CONSOLE_PORT}"/tcp
+            warn "  console will be reachable from any host that can route to this box on ${CONSOLE_PORT}/tcp — ensure your perimeter firewall blocks WAN"
+        fi
+    fi
+fi
+
+# ---- D3. Console venv + install (opt-out via --no-console) -----------------
+# The browser console is a separate package under console/. It needs its own
+# venv because its pinned deps (FastAPI/uvicorn/jinja2) aren't in the parent
+# package. The systemd unit at H. starts it; this section just gets the
+# venv + editable install in place.
+# The rsync above excluded `.venv/` so the source-side console/.venv (if
+# any) doesn't clobber the deployed venv across re-runs. Idempotent.
+
+if (( INSTALL_CONSOLE )); then
+    CONSOLE_DIR="${INSTALL_DIR}/console"
+    CONSOLE_VENV="${CONSOLE_DIR}/.venv"
+
+    if [[ ! -d "${CONSOLE_DIR}" ]]; then
+        die "Console package missing at ${CONSOLE_DIR}; rsync of console/ failed?"
+    fi
+
+    if [[ -x "${CONSOLE_VENV}/bin/python" && -x "${CONSOLE_VENV}/bin/pip" ]]; then
+        log "Reusing existing console venv at ${CONSOLE_VENV}"
+    else
+        log "Creating console venv at ${CONSOLE_VENV}"
+        # Wipe a half-built venv so the create succeeds and the bin/python
+        # check on re-run isn't a false reuse.
+        rm -rf "${CONSOLE_VENV}"
+        sudo -u "${SERVICE_USER}" "${PYTHON_BIN}" -m venv "${CONSOLE_VENV}"
+    fi
+
+    log "Installing console package"
+    sudo -u "${SERVICE_USER}" "${CONSOLE_VENV}/bin/pip" install --quiet --upgrade pip
+    # Parent package first — the console imports from `enrich.findings` and
+    # `enrich.llm` (e.g. evidence_quality, fencing). Base install only; the
+    # `[cluster]` extra (scikit-learn/scipy) isn't needed for read-only UI.
+    sudo -u "${SERVICE_USER}" "${CONSOLE_VENV}/bin/pip" install --quiet -e "${INSTALL_DIR}"
+    sudo -u "${SERVICE_USER}" "${CONSOLE_VENV}/bin/pip" install --quiet -e "${CONSOLE_DIR}"
+
+    # `if` puts the command in a test position, so the ERR trap above
+    # doesn't fire on a non-zero exit and we can keep stderr for the die
+    # message.
+    if ! CONSOLE_IMPORT_ERR=$(sudo -u "${SERVICE_USER}" "${CONSOLE_VENV}/bin/python" -c \
+        'import console.cli, console.server' 2>&1); then
+        die "Console install failed (console.cli / console.server not importable):
+${CONSOLE_IMPORT_ERR}"
+    fi
+else
+    warn "Skipping console install (--no-console)"
+fi
+
 # ---- E. bootstrap ES (templates + ingest pipelines + raw data stream) ------
 
 if (( RUN_INIT_INDEX )); then
@@ -353,23 +577,31 @@ if (( INSTALL_SYSTEMD )); then
         fi
     done
 
-    UNITS_CHANGED=0
-    for unit in \
-        dshield_prism-forward.service \
-        dshield_prism-forward.timer \
-        dshield_prism-backward.service \
+    UNITS=(
+        dshield_prism-forward.service
+        dshield_prism-forward.timer
+        dshield_prism-backward.service
         dshield_prism-backward.timer
-    do
+    )
+    if (( INSTALL_CONSOLE )); then
+        UNITS+=(dshield_prism-console.service)
+    fi
+
+    UNITS_CHANGED=0
+    CONSOLE_UNIT_CHANGED=0
+    for unit in "${UNITS[@]}"; do
         src="${INSTALL_DIR}/systemd/${unit}"
         dst="${SYSTEMD_DIR}/${unit}"
         if [[ ! -f "${dst}" ]]; then
             log "  ${unit}: installing (missing)"
             install -m 0644 "${src}" "${dst}"
             UNITS_CHANGED=1
+            [[ "${unit}" == "dshield_prism-console.service" ]] && CONSOLE_UNIT_CHANGED=1
         elif ! cmp -s "${src}" "${dst}"; then
             log "  ${unit}: updating (outdated)"
             install -m 0644 "${src}" "${dst}"
             UNITS_CHANGED=1
+            [[ "${unit}" == "dshield_prism-console.service" ]] && CONSOLE_UNIT_CHANGED=1
         else
             log "  ${unit}: up-to-date"
         fi
@@ -387,13 +619,50 @@ if (( INSTALL_SYSTEMD )); then
         systemctl restart dshield_prism-backward.timer
     fi
 
+    if (( INSTALL_CONSOLE )); then
+        # `enable --now` starts it on a fresh install and is a no-op when
+        # already running. Only force a restart when the unit file itself
+        # changed — restarting on every setup run would needlessly interrupt
+        # in-flight analyst sessions.
+        systemctl enable --now dshield_prism-console.service
+        if (( CONSOLE_UNIT_CHANGED )); then
+            systemctl restart dshield_prism-console.service
+        fi
+    fi
+
     log "Timer status:"
     systemctl --no-pager list-timers \
         dshield_prism-forward.timer \
         dshield_prism-backward.timer || true
+    if (( INSTALL_CONSOLE )); then
+        log "Console service status:"
+        systemctl --no-pager --lines=0 status dshield_prism-console.service || true
+    fi
 else
     warn "Skipping systemd install (--no-systemd)"
 fi
+
+# ---- I. CLI wrapper --------------------------------------------------------
+# Install a /usr/local/bin/prism wrapper so operators can type:
+#     prism healthcheck
+# instead of:
+#     sudo -u dshield_prism /opt/dshield_prism/.venv/bin/python -m enrich.cli ...
+# Wrapper script (not a shell alias) so it works in any shell, in scripts,
+# in cron, and over non-interactive ssh. Idempotent: re-running setup.sh
+# rewrites the file with identical content.
+
+PRISM_WRAPPER="/usr/local/bin/prism"
+log "Installing CLI wrapper at ${PRISM_WRAPPER}"
+cat > "${PRISM_WRAPPER}" <<EOF
+#!/usr/bin/env bash
+# Auto-generated by ${BASH_SOURCE[0]##*/}. Edits will be overwritten on re-run.
+# Runs the enrich CLI as ${SERVICE_USER} with the deployed config + env.
+exec sudo -u "${SERVICE_USER}" env \\
+    PRISM_ENV="${INSTALL_DIR}/.env" \\
+    "${VENV}/bin/python" -m enrich.cli \\
+    --config "${INSTALL_DIR}/config/default.yaml" "\$@"
+EOF
+chmod 0755 "${PRISM_WRAPPER}"
 
 # ---- done ------------------------------------------------------------------
 
@@ -438,24 +707,28 @@ Tail live logs:
   journalctl -fu dshield_prism-forward.service
   journalctl -fu dshield_prism-backward.service
 
-Useful CLI commands (run as the service user):
+Useful CLI commands (the 'prism' wrapper at /usr/local/bin/prism handles
+sudo + service-user + config; works from any cwd in any shell):
 
-  CLI="sudo -u ${SERVICE_USER} ${VENV}/bin/python -m enrich.cli"
-  \$CLI healthcheck                  # ES + LLM + SQLite + cloud + intel
-  \$CLI enrich --dry-run             # show what would be enriched
-  \$CLI budget                       # today's cloud-LLM spend
-  \$CLI cluster commands --dry-run   # command-level cluster stats
-  \$CLI name playbooks --dry-run     # preview playbook naming candidates
-  \$CLI mine campaigns --dry-run     # preview multi-session campaign mining
-  \$CLI mine findings --dry-run      # preview the findings inbox refresh
-  \$CLI intel refresh --dry-run      # preview intel queue + provider dispatch
+  prism healthcheck                  # ES + LLM + SQLite + cloud + intel
+  prism enrich --dry-run             # show what would be enriched
+  prism budget                       # today's cloud-LLM spend
+  prism cluster commands --dry-run   # command-level cluster stats
+  prism name playbooks --dry-run     # preview playbook naming candidates
+  prism mine campaigns --dry-run     # preview multi-session campaign mining
+  prism mine findings --dry-run      # preview the findings inbox refresh
+  prism intel refresh --dry-run      # preview intel queue + provider dispatch
 
-The browser console is installed separately (see console/README.md):
+Browser console:
 
-  cd console && python3 -m venv .venv && source .venv/bin/activate
-  pip install -e .
-  dshield_prism_console serve --port 8765
-  # then open http://127.0.0.1:8765/  (redirects to /findings)
+  dshield_prism-console.service        (binds 0.0.0.0:8765 on boot)
+    journalctl -fu dshield_prism-console.service   # tail logs
+    systemctl restart dshield_prism-console.service
+  open  http://<this-host>:8765/        (redirects to /findings)
+
+  To skip the console install / unit, re-run setup.sh with --no-console.
+  To bind loopback only, drop in /etc/systemd/system/dshield_prism-console.service.d/override.conf
+  with [Service] / ExecStart= overriding the --host flag.
 
 Import the Kibana dashboards (Saved Objects → Import):
   ${INSTALL_DIR}/es-dashboards/session-analysis.ndjson

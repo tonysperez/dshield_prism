@@ -1,0 +1,29 @@
+{
+  "_README": [
+    "Vendored HASSH-to-tooling lookup. Resolved against each IP's dominant",
+    "HASSH at rollup time (see _build_ip_doc); the result is stamped onto",
+    "the IP rollup as `hassh_family` + `hassh_tool` for analyst display.",
+    "",
+    "Schema per entry:",
+    "  family:     broad bucket label, e.g. 'mirai-style', 'libssh', 'openssh'",
+    "  tool:       specific tool/library/version if known (free-form string)",
+    "  confidence: 'low' | 'medium' | 'high'  (analyst's certainty)",
+    "  source:     URL or short citation supporting the attribution",
+    "  notes:      free-form provenance / corroborating context",
+    "",
+    "Adding entries: edit this file, then either:",
+    "  (a) clear the per-IP rollup watermark + re-run `rollup ips` to backfill, or",
+    "  (b) just wait — new sessions on existing IPs re-roll naturally.",
+    "",
+    "Removing entries: same as above; absence stamps null and the console",
+    "stops surfacing the chip on next page load.",
+    "",
+    "Empty `entries` is intentional and safe: the lookup is a clean no-op,",
+    "no field is stamped, and the console hides the chip. Curate per-corpus.",
+    "Build aggregation views off `dshield.cowrie.enrichment.ip.hassh_cluster_id`",
+    "(7.4) to find your top cluster IDs, then resolve each one's dominant HASSH",
+    "via the IP rollup and add an entry here."
+  ],
+  "version": "v1",
+  "entries": {}
+}

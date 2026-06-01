@@ -45,7 +45,7 @@ import random
 import sys
 from itertools import combinations
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 

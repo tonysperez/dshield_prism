@@ -24,6 +24,7 @@ from elasticsearch import Elasticsearch
 
 from ...cache import StateDB
 from ...config import AppConfig, IPConfig, Secrets
+from ...data.hassh_known import lookup as _lookup_hassh_known
 from ...es_client import bulk_write, init_index, make_client
 from .sessions import _mean_pool, _summarize_intents
 
@@ -311,6 +312,16 @@ def _build_ip_doc(
             for h, c in sorted(hassh_counter.items(), key=lambda kv: (-kv[1], kv[0]))
         ]
         ip_block["hassh_cluster_id"] = _hassh_cluster_id(hassh_counter)
+        # 7.5: stamp curated SSH-client attribution when the dominant HASSH
+        # is in the vendored map. Empty map => silent no-op.
+        known = _lookup_hassh_known(ip_block["hassh"])
+        if known:
+            family = known.get("family")
+            tool = known.get("tool")
+            if family:
+                ip_block["hassh_family"] = family
+            if tool:
+                ip_block["hassh_tool"] = tool
     if playbook_counter:
         ip_block["dominant_playbook_id"] = playbook_counter.most_common(1)[0][0]
         ip_block["playbook_distribution"] = [

@@ -430,7 +430,7 @@ def main() -> int:
 
     if not args.input.exists():
         print(f"[ERROR] missing input: {args.input}", file=sys.stderr)
-        print(f"Run `scripts/build_eval_set.py` first.", file=sys.stderr)
+        print("Run `scripts/build_eval_set.py` first.", file=sys.stderr)
         return 1
 
     args.out_dir.mkdir(parents=True, exist_ok=True)

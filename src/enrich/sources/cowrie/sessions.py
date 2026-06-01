@@ -1510,7 +1510,6 @@ def populate_reference_session_embeddings(
         for h in hits:
             stats["visited"] += 1
             src = h["_source"]
-            sid = (src.get("cowrie") or {}).get("session_id") or h["_id"]
             s = ((src.get("dshield") or {}).get("cowrie", {})
                  .get("enrichment", {}).get("session", {}))
             command_set = s.get("command_set") or []
