@@ -1,0 +1,150 @@
+{
+  "_comment": "Reference-corpus session index — synthetic sessions built from Atomic Red Team atomic tests (brutal-review phase 5.2). One doc per atomic test that targets Linux + sh/bash. Mirrors `prism.rollup.cowrie.session` shape so downstream embedding / clustering / novelty code runs unchanged; ships strict-dynamic to catch any reference-side writer drift early. Out-of-corpus fields trimmed (no source IP / GeoIP / SSH banner — these aren't observed connections). `dshield.reference.*` carries the MITRE label + provenance.",
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "30s"
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "@timestamp": { "type": "date" },
+
+      "event": {
+        "properties": {
+          "kind":     { "type": "keyword" },
+          "category": { "type": "keyword" },
+          "dataset":  { "type": "keyword" },
+          "start":    { "type": "date" },
+          "end":      { "type": "date" },
+          "duration": { "type": "long" }
+        }
+      },
+
+      "cowrie": {
+        "properties": {
+          "session_id": { "type": "keyword" }
+        }
+      },
+
+      "threat": {
+        "properties": {
+          "indicator": {
+            "type": "nested",
+            "properties": {
+              "type":   { "type": "keyword" },
+              "ip":     { "type": "ip" },
+              "domain": { "type": "keyword" },
+              "url":    { "properties": { "full": { "type": "keyword" } } },
+              "file": {
+                "properties": {
+                  "name": { "type": "keyword" },
+                  "hash": { "properties": { "sha256": { "type": "keyword" } } }
+                }
+              }
+            }
+          }
+        }
+      },
+
+      "dshield": {
+        "properties": {
+          "reference": {
+            "properties": {
+              "atomic_id":        { "type": "keyword" },
+              "atomic_test_name": { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } } },
+              "atomic_guid":      { "type": "keyword" },
+              "executor":         { "type": "keyword" },
+              "platforms":        { "type": "keyword" },
+              "source":           { "type": "keyword" },
+              "commit_sha":       { "type": "keyword" },
+              "imported_at":      { "type": "date" },
+              "command_lines": {
+                "type": "text",
+                "fields": { "keyword": { "type": "keyword", "ignore_above": 4096 } }
+              }
+            }
+          },
+          "cowrie": {
+            "properties": {
+              "enrichment": {
+                "properties": {
+                  "session": {
+                    "properties": {
+                      "command_count":         { "type": "long" },
+                      "unique_commands":       { "type": "long" },
+                      "dominant_intent":       { "type": "keyword" },
+                      "intent_distribution": {
+                        "properties": {
+                          "intent": {
+                            "type": "text",
+                            "fields": {
+                              "keyword": { "type": "keyword", "ignore_above": 256 }
+                            }
+                          },
+                          "count":  { "type": "long" }
+                        }
+                      },
+                      "mean_novelty_score":    { "type": "float" },
+                      "max_novelty_score":     { "type": "float" },
+                      "mean_confidence":       { "type": "float" },
+                      "command_entropy":       { "type": "float" },
+                      "session_embed_version": { "type": "keyword" },
+                      "playbook_id":           { "type": "keyword" },
+                      "playbook_name":         { "type": "keyword" },
+                      "playbook_named_at":     { "type": "date" },
+                      "command_signature": {
+                        "type": "text",
+                        "fields": {
+                          "keyword": { "type": "keyword", "ignore_above": 64 }
+                        }
+                      },
+                      "command_set": {
+                        "type": "text",
+                        "fields": {
+                          "keyword": { "type": "keyword", "ignore_above": 32 }
+                        }
+                      },
+                      "command_bigram_signature": {
+                        "type": "text",
+                        "fields": {
+                          "keyword": { "type": "keyword", "ignore_above": 64 }
+                        }
+                      },
+                      "command_bigram_set": {
+                        "type": "text",
+                        "fields": {
+                          "keyword": { "type": "keyword", "ignore_above": 64 }
+                        }
+                      },
+                      "artifact_set": {
+                        "type": "text",
+                        "fields": {
+                          "keyword": { "type": "keyword", "ignore_above": 512 }
+                        }
+                      },
+                      "embedding": {
+                        "type": "dense_vector",
+                        "dims": 768,
+                        "index": true,
+                        "similarity": "cosine"
+                      },
+                      "cluster": {
+                        "properties": {
+                          "id":            { "type": "keyword" },
+                          "novelty_score": { "type": "float" },
+                          "is_outlier":    { "type": "boolean" },
+                          "scored_at":     { "type": "date" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

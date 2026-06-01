@@ -42,6 +42,13 @@ class CowrieIndexes(BaseModel):
     # One doc per stable_playbook_id pinning its first-mint centroid. See
     # setup/es-mappings/cowrie/playbook_anchors.json.
     playbook_anchors: str = "prism.identity.cowrie.playbook_anchor"
+    # External reference-corpus sessions (brutal-review phase 5.2).
+    # Synthetic sessions imported from Atomic Red Team — feeds the
+    # `reference_source=external` centroid set built in 5.4, which 5.5
+    # uses to compute `novelty_score_external` alongside the in-corpus
+    # score. Strict-dynamic mapping at
+    # setup/es-mappings/cowrie/reference_session.json.
+    reference_sessions: str = "prism.reference.cowrie.session"
 
 
 class SourceIndexes(BaseModel):

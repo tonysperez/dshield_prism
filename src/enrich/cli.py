@@ -85,14 +85,15 @@ def _commands_layer(source: str):
 
 _LAYER_MAPPINGS = {
     "cowrie": {
-        "commands":         "setup/es-mappings/cowrie/commands.json",
-        "command_clusters": "setup/es-mappings/cowrie/command_clusters.json",
-        "sessions":         "setup/es-mappings/cowrie/sessions.json",
-        "session_clusters": "setup/es-mappings/cowrie/session_clusters.json",
-        "ips":              "setup/es-mappings/cowrie/ips.json",
-        "ip_clusters":      "setup/es-mappings/cowrie/ip_clusters.json",
-        "campaigns":        "setup/es-mappings/cowrie/campaigns.json",
-        "playbook_anchors": "setup/es-mappings/cowrie/playbook_anchors.json",
+        "commands":          "setup/es-mappings/cowrie/commands.json",
+        "command_clusters":  "setup/es-mappings/cowrie/command_clusters.json",
+        "sessions":          "setup/es-mappings/cowrie/sessions.json",
+        "session_clusters":  "setup/es-mappings/cowrie/session_clusters.json",
+        "ips":               "setup/es-mappings/cowrie/ips.json",
+        "ip_clusters":       "setup/es-mappings/cowrie/ip_clusters.json",
+        "campaigns":         "setup/es-mappings/cowrie/campaigns.json",
+        "playbook_anchors":  "setup/es-mappings/cowrie/playbook_anchors.json",
+        "reference_session": "setup/es-mappings/cowrie/reference_session.json",
     },
     # External threat-intel — cross-source per-artifact indices.
     # `init-indexes --source intel` creates these. M1 shipped `ip`,
@@ -547,14 +548,15 @@ def _resolve_index_for_layer(cfg, source: str, layer: str) -> str:
     if source == "cowrie":
         c = cfg.elasticsearch.indexes.cowrie
         return {
-            "commands":         c.commands,
-            "command_clusters": c.command_clusters,
-            "sessions":         c.sessions_rollup,
-            "session_clusters": c.session_clusters,
-            "ips":              c.ips_rollup,
-            "ip_clusters":      c.ip_clusters,
-            "campaigns":        c.campaigns,
-            "playbook_anchors": c.playbook_anchors,
+            "commands":          c.commands,
+            "command_clusters":  c.command_clusters,
+            "sessions":          c.sessions_rollup,
+            "session_clusters":  c.session_clusters,
+            "ips":               c.ips_rollup,
+            "ip_clusters":       c.ip_clusters,
+            "campaigns":         c.campaigns,
+            "playbook_anchors":  c.playbook_anchors,
+            "reference_session": c.reference_sessions,
         }[layer]
     if source == "intel":
         i = cfg.intel.indexes

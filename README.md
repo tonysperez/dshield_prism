@@ -65,7 +65,7 @@ The same invariance shows up over shell-wrapping: `echo "…" | sh` and the bare
 
 **Grounded in threat intel.** Artifacts (IP and URL today; hash and domain planned) are checked against freely available CTI feeds. A consensus engine collates verdicts and feeds them back into the pipeline: known-good scanners get quieted, commodity-malicious IPs get cheaper triage.
 
-**Watch behavior change over time.** Recurring activity gets named as a playbook; coordinated multi-session activity gets grouped as a campaign. Both keep stable identities across re-analysis runs, so drift and emergence surface as findings in a curated inbox with a confirm/reject workflow that turns analyst decisions into a growing knowledge base. *Caveat:* drift bands today are absolute counts, not corpus-normalized — percentile-based calibration is pending ([ROADMAP.md](docs/ROADMAP.md) phase 4).
+**Watch behavior change over time.** Recurring activity gets named as a playbook; coordinated multi-session activity gets grouped as a campaign. Both keep stable identities across re-analysis runs, so drift and emergence surface as findings in a curated inbox with a confirm/reject workflow that turns analyst decisions into a growing knowledge base.
 
 **Private by default.** A local LLM does the cognitive work; cloud escalation is budget-capped and opt-in; CTI feeds are integrated but disabled by default. Nothing about your honeypot traffic leaves your environment unless you say so.
 
