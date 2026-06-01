@@ -116,6 +116,10 @@ _CLUSTER_UPDATE_SCRIPT = (
     "if (en.cluster == null) { en.cluster = [:]; }"
     "en.cluster.id = params.cluster_id;"
     "en.cluster.novelty_score = params.novelty_score;"
+    # Dual novelty (brutal-review 5.5).
+    "if (params.containsKey('novelty_score_external')) {"
+    "  en.cluster.novelty_score_external = params.novelty_score_external;"
+    "}"
     "en.cluster.is_outlier = params.is_outlier;"
     "en.cluster.scored_at = params.scored_at;"
 )

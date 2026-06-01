@@ -610,6 +610,61 @@ def run_layer_clustering(
         score_centroids = centroids_for_novelty
         score_in_augmented = persist_augmented
 
+    # Dual novelty (brutal-review 5.5) — alongside the in-corpus
+    # `novelty_score`, score each doc against the external reference set
+    # (if one exists for this layer) and emit `novelty_score_external`.
+    # Only attempted on regular live-data runs; skipped during external
+    # bootstrap (self-scoring the corpus against itself is meaningless)
+    # and during dry-runs.
+    score_centroids_external: dict | None = None
+    score_external_in_augmented = False
+    reference_external_status = "disabled"
+    reference_external_generation: int | None = None
+    if (
+        use_reference
+        and not bootstrap_reference_now
+        and not dry_run
+    ):
+        ref_ext = load_reference_centroids(
+            es, clusters_index, reference_source="external",
+        )
+        if ref_ext:
+            reason_ext = _validate_reference(
+                ref_ext,
+                current_embedding_dims=embedding_dims,
+                current_augmented_dims=augmented_dims,
+                current_scalar_weight=scalar_weight,
+                expects_augmented=persist_augmented,
+            )
+            if reason_ext:
+                log.warning(
+                    "[%s] external reference (gen=%s) invalid (%s); "
+                    "novelty_score_external will be omitted this run",
+                    layer_label, ref_ext.get("generation"), reason_ext,
+                )
+                reference_external_status = f"stale_{reason_ext}"
+                reference_external_generation = ref_ext.get("generation")
+            else:
+                if persist_augmented and ref_ext.get("augmented"):
+                    score_centroids_external = {
+                        i: np.asarray(v, dtype=np.float32)
+                        for i, v in enumerate(ref_ext["augmented"])
+                    }
+                    score_external_in_augmented = True
+                else:
+                    score_centroids_external = {
+                        i: np.asarray(v, dtype=np.float32)
+                        for i, v in enumerate(ref_ext["pure"])
+                    }
+                    score_external_in_augmented = False
+                reference_external_status = "active"
+                reference_external_generation = ref_ext.get("generation")
+                log.info(
+                    "[%s] dual novelty active: external ref gen=%d, %d centroids",
+                    layer_label, reference_external_generation,
+                    len(score_centroids_external),
+                )
+
     sample_map: dict[int, list[str]] = {lbl: [] for lbl in valid_cluster_ids}
     for lbl, label_text in zip(cluster_labels_arr, labels_list):
         lbl = int(lbl)
@@ -629,17 +684,32 @@ def run_layer_clustering(
         else:
             doc_vec = cluster_matrix[i] if score_in_augmented else normalized[i]
             score = novelty_score(doc_vec, score_centroids)
+        params: dict = {
+            "cluster_id":    cluster_id,
+            "novelty_score": round(score, 6),
+            "is_outlier":    is_outlier,
+            "scored_at":     now_str,
+        }
+        # Dual novelty (5.5): when an external reference is loaded, score
+        # every doc against it too. Outliers get max novelty (1.0) against
+        # both refs by convention — HDBSCAN already said "nothing in this
+        # corpus claims you".
+        if score_centroids_external is not None:
+            if is_outlier:
+                ext_score = 1.0
+            else:
+                ext_vec = (
+                    cluster_matrix[i] if score_external_in_augmented
+                    else normalized[i]
+                )
+                ext_score = novelty_score(ext_vec, score_centroids_external)
+            params["novelty_score_external"] = round(ext_score, 6)
         update_actions.append({
             "_op_type": "update",
-            "_id": doc_id,
+            "_id":      doc_id,
             "script": {
                 "source": update_script,
-                "params": {
-                    "cluster_id": cluster_id,
-                    "novelty_score": round(score, 6),
-                    "is_outlier": is_outlier,
-                    "scored_at": now_str,
-                },
+                "params": params,
             },
         })
     del cluster_matrix
@@ -752,6 +822,9 @@ def run_layer_clustering(
         "reference_age_days": (
             round(reference_age_days, 2) if reference_age_days is not None else None
         ),
+        # Dual novelty (5.5) — null when no external ref is loaded.
+        "reference_external_status": reference_external_status,
+        "reference_external_generation": reference_external_generation,
     }
 
     if dry_run:

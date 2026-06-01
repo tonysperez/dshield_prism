@@ -42,6 +42,10 @@ _IP_CLUSTER_UPDATE_SCRIPT = (
     "if (ip.cluster == null) { ip.cluster = [:]; }"
     "ip.cluster.id = params.cluster_id;"
     "ip.cluster.novelty_score = params.novelty_score;"
+    # Dual novelty (brutal-review 5.5).
+    "if (params.containsKey('novelty_score_external')) {"
+    "  ip.cluster.novelty_score_external = params.novelty_score_external;"
+    "}"
     "ip.cluster.is_outlier = params.is_outlier;"
     "ip.cluster.scored_at = params.scored_at;"
 )

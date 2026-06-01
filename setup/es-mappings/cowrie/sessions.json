@@ -190,10 +190,11 @@
                       },
                       "cluster": {
                         "properties": {
-                          "id":            { "type": "keyword" },
-                          "novelty_score": { "type": "float" },
-                          "is_outlier":    { "type": "boolean" },
-                          "scored_at":     { "type": "date" }
+                          "id":                     { "type": "keyword" },
+                          "novelty_score":          { "type": "float" },
+                          "novelty_score_external": { "type": "float" },
+                          "is_outlier":             { "type": "boolean" },
+                          "scored_at":              { "type": "date" }
                         }
                       },
                       "source_ip_intel": {

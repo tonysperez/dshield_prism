@@ -57,6 +57,13 @@ _SESSION_CLUSTER_UPDATE_SCRIPT = (
     "if (s.cluster == null) { s.cluster = [:]; }"
     "s.cluster.id = params.cluster_id;"
     "s.cluster.novelty_score = params.novelty_score;"
+    # Dual novelty (brutal-review 5.5) — only written when an external
+    # reference set exists for this layer. Absence on a doc means
+    # "no external reference yet"; consumers treat as no-opinion
+    # rather than as not-novel.
+    "if (params.containsKey('novelty_score_external')) {"
+    "  s.cluster.novelty_score_external = params.novelty_score_external;"
+    "}"
     "s.cluster.is_outlier = params.is_outlier;"
     "s.cluster.scored_at = params.scored_at;"
     # Re-clustering invalidates any playbook label on this session — the old
