@@ -206,11 +206,11 @@ def main() -> int:
     print(f"sampled                   {sample_size}  seed={args.seed}")
     print(f"llm.embed_context         {embed_context}")
     print(f"llm.embedding_model       {cfg.llm.embedding_model}")
-    print(f"NOTE: cooccurrence siblings are runtime-only (ES-derived) and are")
-    print(f"      NOT reproduced here. Production embed text in cluster runs")
-    print(f"      with cooccurrence.embed_cooccurrence=true appends an extra")
-    print(f"      'co-occurs with: ...' line — this audit shows everything")
-    print(f"      else byte-for-byte.")
+    print("NOTE: cooccurrence siblings are runtime-only (ES-derived) and are")
+    print("      NOT reproduced here. Production embed text in cluster runs")
+    print("      with cooccurrence.embed_cooccurrence=true appends an extra")
+    print("      'co-occurs with: ...' line — this audit shows everything")
+    print("      else byte-for-byte.")
     print()
 
     per_sample_meta: list[dict] = []

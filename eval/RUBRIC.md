@@ -1,15 +1,19 @@
-# Labeling rubric — `eval/labels-v1.yaml`
+# Labeling rubric — `eval/labels-v{1,2}.yaml`
 
-This is the rule book for filling in `eval/labels-v1.yaml` against the
-per-session markdown files under `eval/sessions-v1/`. Every later phase
-that compares pipeline output to ground truth — clustering eval (1.3),
-discovery eval (1.4), the CI gate (1.5), embedding ablation (3.3),
-threshold migrations (4.x) — joins this YAML against the unlabeled
-JSONL by `session_id`. Garbage labels here become garbage measurements
-everywhere downstream.
+The rule book for filling in `eval/labels-v1.yaml` (general stratified
+sample) and `eval/labels-v2.yaml` (divergent-pair stress test) against
+the per-session markdown files under `eval/sessions-v{1,2}/`. Every
+later phase that compares pipeline output to ground truth — clustering
+eval (1.3), discovery eval (1.4), the CI gate (1.5), embedding ablation
+(3.3), threshold migrations (4.x) — joins these YAMLs against the
+unlabeled JSONLs by `session_id`. Garbage labels here become garbage
+measurements everywhere downstream.
 
-Goal: ≥200 labeled blocks. Time budget: ~6h. Don't optimise for speed;
-the file ships once and is consulted dozens of times.
+v1 goal: ≥200 labeled blocks. v2 goal: ~40 labeled blocks (=~20 pairs)
+per the embedding-quality plan E1.2. Time budget: ~6h for v1, ~2h for
+v2 (with v2 borrowing the v1 vocabulary so the analyst isn't inventing
+labels from scratch). Don't optimise for speed; both files ship once
+and are consulted dozens of times.
 
 ---
 
@@ -38,9 +42,18 @@ the file ships once and is consulted dozens of times.
    times. Use `--min-records 200` once you're done to gate the final
    commit.
 
-Only `RUBRIC.md`, `labels-v1.yaml`, `README.md`, and (in commit 1.5)
-`baseline.json` are tracked. The rendered markdown and the unlabeled
-JSONL are local-only — anyone can rebuild them from the corpus.
+Only `RUBRIC.md`, `labels-v{1,2}.yaml`, `divergent-pairs/*.md`,
+`README.md`, and `baseline.json` are tracked. The rendered v1/v2
+session markdown and the unlabeled JSONLs are local-only — anyone
+can rebuild them from the corpus + the committed triage MDs (whose
+frontmatter carries the keep/skip decisions).
+
+For the v2 (divergent-pair) workflow — mining candidates, triaging
+pairs in `divergent-pairs/*.md` frontmatter, building
+`sessions-v2.unlabeled.jsonl`, labeling `labels-v2.yaml` — see
+[README.md](README.md#labeling-workflow--v2-divergent-pair-stress-test)
+and the [`divergent_pair_id` schema section](#divergent_pair_id--optional-string-v2-only)
+below.
 
 ---
 
@@ -160,13 +173,90 @@ when:
   reading.
 - `expected_findings` has more than one entry.
 
+### Picks-stage triage (v2 only)
+
+Before any v2 session reaches the labeling step, the analyst (or the
+[picks-triage LLM agent](picks-triage-prompt.md)) decides which pairs
+from the miner's candidate pool are worth labeling. This is a separate
+rule book from the per-session label rubric below; the picks step
+operates on pair markdown (`eval/divergent-pairs/<pair_id>.md`), not
+on individual sessions.
+
+**The MD file is the source of truth for the decision.** Each pair's
+YAML frontmatter carries `decision: pending | keep | skip` and a
+`notes:` justification — the analyst (or the LLM agent) edits those
+two fields in place. There is no separate picks YAML; `build_eval_set.py
+--mode picks` reads MD frontmatter directly to determine which pairs
+flow into v2.
+
+Each pair gets exactly one of three outcomes:
+
+| Outcome | `decision` | Meaning |
+|---|---|---|
+| **Same behavior, different text** | `keep` | The embedding *should* group them — positive test case for the v2 metric. |
+| **Different behaviors, same intent** | `keep` | The embedding is *correct* to split them — negative test case. |
+| **Junk / non-informative** | `skip` | One side is a single-command probe, corrupted, login-only, or the pair adds no signal v1 didn't already cover. |
+
+`pending` is the initial state on a fresh render. **Every MD must end
+with `keep` or `skip` before `build_eval_set.py --mode picks` will
+run** — the build refuses to materialise v2 while any decision is
+still pending.
+
+Always populate `notes:` — `decision: keep` requires a one-sentence
+justification of WHICH behavior the sessions share (or which different
+behaviors they express, for category B); `decision: skip` requires a
+phrase on what makes the pair non-informative. The build step
+validates that `keep` carries a non-empty `notes:`.
+
+Triage signals to use:
+- **The command streams in both `## Session A` and `## Session B`** — the
+  load-bearing content. Read both top-to-bottom and decide whether the
+  underlying attacker action is the same.
+- **Login attempts + file events** — corroborate the command stream.
+- **Bucket label (jaccard, playbook_name, dominant_intent)** — NOT
+  proof of anything. The miner used it as the candidacy gate, but the
+  gate is too coarse. Re-derive the comparison from the actual
+  commands.
+
+Volume target: ~20 kept pairs (= ~40 labeled sessions) per the
+embedding-quality plan E1.2. Bias toward `keep` on category A, reject
+category C decisively, and cap category B (negative test cases) at ~5
+of the total budget.
+
+What NOT to edit in a triage MD:
+- `pair_id`, `bucket_kind`, `bucket_value`, `jaccard`, `sessions` —
+  contract fields the build step validates.
+- Anything below the closing `---` of the frontmatter — that's the
+  rendered body, regenerated every time `render_divergent_candidates.py`
+  runs. Your edits there get clobbered.
+
+### `divergent_pair_id` — optional, string (v2 only)
+
+Present on `eval/labels-v2.yaml` blocks; absent on v1. The renderer
+auto-populates it from the picks-driven build
+(`scripts/build_eval_set.py --mode picks`). Do not edit the value — the
+validator cross-checks it against the JSONL and fails on drift.
+
+Label both members of a pair **independently first** — open each
+`eval/sessions-v2/<sid>.md` cold, ignore the pair_id, form your own
+judgment, write `playbook_label`. *Then* compare. Three outcomes:
+
+- **Same `playbook_label`** — the miner's "behavior-not-text" claim
+  holds; the v2 metric `divergent_pair_resolution_rate` will count this
+  pair as one the embedding *should* group together.
+- **Different `playbook_label`** — the miner falsely paired two
+  different behaviors that happen to share a coarse intent label.
+  That's a valid label; the v2 metric counts this pair as one the
+  embedding is *correct* to split. Add a `notes:` line on at least one
+  side explaining the divergence.
+- **Borderline / same family, different sub-behavior** — pick the
+  same playbook_label and explain the nuance in `notes:` on both
+  sides. The eval grades behavioral coarseness, not analyst hair-
+  splitting.
+
 ---
 
 ## Worked examples
-
-See [`labels-v1.example.yaml`](labels-v1.example.yaml) for the five
-worked examples below as a single committable file you can read
-alongside the rendered markdown.
 
 The rendered markdown for each smoke-test session lives under
 `eval/sessions-v1/<session_id>.md` after `render_eval_set.py` runs.

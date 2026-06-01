@@ -1,10 +1,23 @@
-"""Export a stratified sample of cowrie sessions for offline labeling.
+"""Export cowrie sessions for offline labeling.
 
-Companion to brutal-review phase 1: builds the unlabeled side of
-`eval/sessions-v1.unlabeled.jsonl`, which an analyst then labels into
-`eval/sessions-v1.jsonl` per `eval/RUBRIC.md`.
+Two modes:
 
-Stratification axes (per the handoff plan):
+  * ``--mode sample`` (default; v1 path) — stratified random sample
+    of cowrie sessions. The handoff plan's brutal-review phase 1 path.
+    Builds ``eval/sessions-v1.unlabeled.jsonl``.
+
+  * ``--mode picks`` — materialise sessions whose per-pair triage MD
+    set ``decision: keep`` in its YAML frontmatter. The triage MDs are
+    produced by ``scripts/render_divergent_candidates.py`` from the
+    miner's candidate pool, then edited by the analyst (or the
+    ``picks-triage-prompt.md`` LLM agent). The embedding-quality
+    plan E1.2 path. Builds ``eval/sessions-v2.unlabeled.jsonl``;
+    each emitted record carries a top-level ``divergent_pair_id`` so
+    the v2 labeller (and the v2-aware metric
+    ``divergent_pair_resolution_rate`` in E1.3) can group pair members
+    back together.
+
+Stratification axes (recorded on every record regardless of mode):
   * playbook size band (`solo`, `small`, `medium`, `large`, `unattributed`)
   * `dominant_intent` (LLM-assigned per-session intent)
   * intel-verdict label (`malicious`, `clean`, `unknown`)
@@ -16,16 +29,19 @@ Per session we emit one JSON record:
       "stratum":             {"size_band": ..., "intent": ..., "intel": ...},
       "rollup_doc":          {...},            # the rollup doc verbatim
       "raw_events":          [{...}, ...],     # cowrie.session.* events
-      "command_enrichments": [{...}, ...]      # one per unique command line
+      "command_enrichments": [{...}, ...],     # one per unique command line
+      "divergent_pair_id":   "dp-001"          # picks mode only
     }
 
 No embeddings — those get recomputed at eval time from the embedding model
-of the day. Output file is gitignored; the analyst-labeled version
-(`eval/sessions-v1.jsonl`) is the one that ships.
+of the day. Output file is gitignored; the analyst-labeled YAML siblings
+(``eval/labels-v{1,2}.yaml``) are the deliverables that ship.
 
 Run from the repo root via the console venv:
     /home/styx/git/dshield_prism/console/.venv/bin/python \\
       scripts/build_eval_set.py --n 300
+    /home/styx/git/dshield_prism/console/.venv/bin/python \\
+      scripts/build_eval_set.py --mode picks
 """
 from __future__ import annotations
 
@@ -37,6 +53,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Iterable, Iterator
+
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -441,6 +459,152 @@ def _sample_stratified(
     return out, stats
 
 
+# Matches the YAML frontmatter block at the top of a per-pair triage
+# MD. Mirror of the regex in render_divergent_candidates.py; the two
+# scripts must stay in sync because the MD is the contract.
+_FRONTMATTER_RE = re.compile(
+    r"\A---\s*\n(.*?)\n---\s*(?:\n|\Z)",
+    re.DOTALL,
+)
+
+_TRIAGE_REQUIRED_FIELDS = (
+    "pair_id", "decision", "notes",
+    "bucket_kind", "bucket_value", "jaccard", "sessions",
+)
+_TRIAGE_ALLOWED_DECISIONS = ("pending", "keep", "skip")
+
+
+def _load_triage_decisions(triage_dir: Path) -> list[dict]:
+    """Scan eval/divergent-pairs/*.md, parse each one's YAML
+    frontmatter, and return one entry per pair tagged
+    ``decision: keep``.
+
+    Order: pair_id ascending (so dp-001 < dp-010 lexically the way the
+    miner laid them down). Raises on schema problems — a bad
+    frontmatter is operator state we want surfaced loudly, not
+    silently dropped from the v2 build.
+
+    A session appearing in two kept pairs is rejected: each session in
+    v2 must belong to exactly one ``divergent_pair_id`` (the v2 metric
+    in E1.3 partitions by pair, not by session).
+
+    `decision: pending` on any MD is also rejected — it means the
+    triage step isn't complete. The build should fail loudly so the
+    operator goes back and finishes triage rather than silently shipping
+    a partial v2 set.
+    """
+    if not triage_dir.exists() or not triage_dir.is_dir():
+        raise FileNotFoundError(
+            f"triage dir not found: {triage_dir} — "
+            f"run scripts/render_divergent_candidates.py first."
+        )
+    md_paths = sorted(triage_dir.glob("*.md"))
+    if not md_paths:
+        raise ValueError(
+            f"{triage_dir}: no *.md files found — re-run "
+            f"scripts/render_divergent_candidates.py to repopulate the "
+            f"per-pair triage view."
+        )
+
+    kept: list[dict] = []
+    pending: list[str] = []
+    seen_sessions: dict[str, str] = {}
+    for md_path in md_paths:
+        text = md_path.read_text(encoding="utf-8")
+        m = _FRONTMATTER_RE.match(text)
+        if not m:
+            raise ValueError(
+                f"{md_path}: missing YAML frontmatter — re-render with "
+                f"scripts/render_divergent_candidates.py."
+            )
+        fm = yaml.safe_load(m.group(1)) or {}
+        if not isinstance(fm, dict):
+            raise ValueError(f"{md_path}: frontmatter is not a YAML mapping")
+        for f in _TRIAGE_REQUIRED_FIELDS:
+            if f not in fm:
+                raise ValueError(f"{md_path}: frontmatter missing field {f!r}")
+
+        decision = fm["decision"]
+        if decision not in _TRIAGE_ALLOWED_DECISIONS:
+            raise ValueError(
+                f"{md_path}: decision={decision!r} must be one of "
+                f"{_TRIAGE_ALLOWED_DECISIONS}"
+            )
+        if decision == "pending":
+            pending.append(fm.get("pair_id", md_path.stem))
+            continue
+        if decision == "skip":
+            continue
+
+        pid = fm["pair_id"]
+        if not isinstance(pid, str) or not pid:
+            raise ValueError(f"{md_path}: pair_id must be a non-empty string")
+        sessions = fm["sessions"]
+        if not isinstance(sessions, list) or len(sessions) != 2:
+            raise ValueError(
+                f"{md_path}: pair {pid!r} must list exactly 2 sessions, "
+                f"got {sessions!r}"
+            )
+        sid_pair: list[str] = []
+        for j, sid in enumerate(sessions):
+            if not isinstance(sid, str) or not sid:
+                raise ValueError(
+                    f"{md_path}: pair {pid!r}.sessions[{j}] must be a string"
+                )
+            if sid in seen_sessions:
+                raise ValueError(
+                    f"session {sid!r} appears in pair "
+                    f"{seen_sessions[sid]!r} AND pair {pid!r} — each "
+                    f"session may belong to only one kept pair."
+                )
+            seen_sessions[sid] = pid
+            sid_pair.append(sid)
+        notes = fm.get("notes") or ""
+        if not isinstance(notes, str) or not notes.strip():
+            # Rubric: keep decisions must justify themselves. Catching
+            # this at build time means the operator doesn't ship a v2
+            # set whose pair selections are unauditable.
+            raise ValueError(
+                f"{md_path}: pair {pid!r} is decision=keep but `notes:` "
+                f"is empty — write a 1-2 sentence justification."
+            )
+        kept.append({"pair_id": pid, "sessions": sid_pair, "notes": notes})
+
+    if pending:
+        raise ValueError(
+            f"{len(pending)} pair(s) still have decision=pending — "
+            f"complete triage before building. First few: "
+            + ", ".join(pending[:5])
+        )
+
+    return kept
+
+
+def _fetch_rollups_by_session_id(
+    es, rollup_index: str, session_ids: list[str],
+) -> dict[str, dict]:
+    """Resolve {session_id: rollup _source} via a single terms query.
+
+    The rollup index isn't keyed by ``cowrie.session_id`` (it uses
+    auto-generated ES ids), so we have to filter by the field.
+    Practical sizes for picks-mode are tiny (≤ ~40 sessions), so a
+    single search with explicit size suffices."""
+    if not session_ids:
+        return {}
+    body = {
+        "size": len(session_ids),
+        "query": {"terms": {"cowrie.session_id": session_ids}},
+    }
+    resp = es.search(index=rollup_index, **body)
+    out: dict[str, dict] = {}
+    for h in resp["hits"]["hits"]:
+        src = h["_source"]
+        sid = (src.get("cowrie") or {}).get("session_id")
+        if isinstance(sid, str) and sid:
+            out[sid] = src
+    return out
+
+
 def _build_record(es, *, raw_index: str, cmd_index: str,
                   hash_intel_index: str, url_intel_index: str,
                   rollup: dict,
@@ -485,30 +649,150 @@ def _build_record(es, *, raw_index: str, cmd_index: str,
     return _redact_record(rec)
 
 
+def _run_picks_mode(
+    es, args, *,
+    rollup_index: str, raw_index: str, cmd_index: str,
+    hash_intel_index: str, url_intel_index: str,
+) -> int:
+    """v2 build: materialise sessions whose per-pair triage MD set
+    ``decision: keep``.
+
+    The triage directory (``eval/divergent-pairs/`` by default) is the
+    source of truth. Each kept pair contributes both of its sessions
+    to the output JSONL, with the pair's id stamped onto every record
+    as ``divergent_pair_id``. The render + label + validate path
+    downstream is the same one v1 uses — the only v2-specific field on
+    the wire is ``divergent_pair_id``.
+
+    Missing rollups (a kept session not found in ES) are surfaced
+    loudly: the typical cause is a corpus reindex between mining and
+    building. Re-running the miner against the new corpus state is the
+    right fix.
+    """
+    try:
+        kept = _load_triage_decisions(args.triage_dir)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"[ERROR] {e}", file=sys.stderr)
+        return 1
+    if not kept:
+        print(
+            f"[ERROR] {args.triage_dir}: no MDs with `decision: keep` — "
+            f"complete picks-stage triage first (see "
+            f"eval/picks-triage-prompt.md or RUBRIC.md).",
+            file=sys.stderr,
+        )
+        return 1
+
+    session_ids: list[str] = [sid for p in kept for sid in p["sessions"]]
+    pair_id_by_sid: dict[str, str] = {
+        sid: p["pair_id"] for p in kept for sid in p["sessions"]
+    }
+    print(
+        f"triage dir        : {args.triage_dir}", file=sys.stderr,
+    )
+    print(
+        f"kept pairs        : {len(kept)} ({len(session_ids)} sessions)",
+        file=sys.stderr,
+    )
+
+    # Pull playbook sizes to keep the `stratum` field shape-identical
+    # with the v1 path. Cheap — one terms agg.
+    playbook_sizes = _load_playbook_sizes(es, rollup_index)
+
+    rollups = _fetch_rollups_by_session_id(es, rollup_index, session_ids)
+    missing = [sid for sid in session_ids if sid not in rollups]
+    if missing:
+        print(
+            f"[ERROR] {len(missing)} picked session(s) not found in {rollup_index}: "
+            + ", ".join(missing[:5])
+            + (" ..." if len(missing) > 5 else ""),
+            file=sys.stderr,
+        )
+        return 1
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    stratum_counts: dict[str, int] = defaultdict(int)
+    pair_counts: dict[str, int] = defaultdict(int)
+    written = 0
+    with args.output.open("w", encoding="utf-8") as f:
+        # Iterate in picks order so the JSONL groups pair members
+        # together — easier to spot-check than rollup-order grouping.
+        for sid in session_ids:
+            rec = _build_record(
+                es,
+                raw_index=raw_index,
+                cmd_index=cmd_index,
+                hash_intel_index=hash_intel_index,
+                url_intel_index=url_intel_index,
+                rollup=rollups[sid],
+                playbook_sizes=playbook_sizes,
+            )
+            if rec is None:
+                continue
+            rec["divergent_pair_id"] = pair_id_by_sid[sid]
+            f.write(json.dumps(rec, default=str) + "\n")
+            written += 1
+            stratum_counts[str(rec["stratum"])] += 1
+            pair_counts[rec["divergent_pair_id"]] += 1
+
+    print(f"wrote             : {written} records -> {args.output}", file=sys.stderr)
+    incomplete = [pid for pid, n in pair_counts.items() if n != 2]
+    if incomplete:
+        print(
+            f"[WARN] {len(incomplete)} pair(s) materialised with != 2 sessions "
+            f"(records skipped by _build_record?): "
+            + ", ".join(incomplete[:5]),
+            file=sys.stderr,
+        )
+    print("stratum counts (top 12):", file=sys.stderr)
+    for k, v in sorted(stratum_counts.items(), key=lambda kv: -kv[1])[:12]:
+        print(f"  {v:4d}  {k}", file=sys.stderr)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--mode", choices=["sample", "picks"], default="sample",
+                    help=(
+                        "`sample` = v1 stratified random sample (default). "
+                        "`picks` = build v2 from per-pair triage MD frontmatter."
+                    ))
+    ap.add_argument("--triage-dir", type=Path,
+                    default=Path("eval/divergent-pairs"),
+                    help=(
+                        "Directory of per-pair triage MDs produced by "
+                        "scripts/render_divergent_candidates.py and edited "
+                        "by the analyst (or the picks-triage LLM agent). "
+                        "Used when --mode=picks."
+                    ))
     ap.add_argument("--n", type=int, default=300,
-                    help="Target number of sampled sessions (default: 300)")
+                    help="(sample mode) Target sampled-session count.")
     ap.add_argument("--per-playbook-cap", type=int, default=5,
                     help=(
-                        "Max sessions kept per playbook_id. Unattributed "
-                        "sessions (no playbook_id assigned) each get "
-                        "their own singleton bucket so the cap doesn't "
-                        "throttle outliers. Default 5 — keeps variety "
-                        "high; lower it for tighter variety at the cost "
-                        "of total count."
+                        "(sample mode) Max sessions kept per playbook_id. "
+                        "Unattributed sessions each get their own singleton "
+                        "bucket so the cap doesn't throttle outliers."
                     ))
     ap.add_argument("--seed", type=int, default=20260531,
-                    help="random_score seed; reproducible per (corpus, seed)")
-    ap.add_argument("--output", type=Path,
-                    default=Path("eval/sessions-v1.unlabeled.jsonl"),
-                    help="Output path (gitignored by convention)")
+                    help="(sample mode) random_score seed; reproducible per (corpus, seed)")
+    ap.add_argument("--output", type=Path, default=None,
+                    help=(
+                        "Output JSONL path. Defaults: "
+                        "`eval/sessions-v1.unlabeled.jsonl` in sample mode, "
+                        "`eval/sessions-v2.unlabeled.jsonl` in picks mode."
+                    ))
     ap.add_argument("--scan-cap", type=int, default=20000,
                     help=(
-                        "Hard ceiling on rollup docs scanned to fill the "
-                        "sample. Stops early on tiny corpora."
+                        "(sample mode) Hard ceiling on rollup docs scanned "
+                        "to fill the sample."
                     ))
     args = ap.parse_args()
+
+    if args.output is None:
+        args.output = Path(
+            "eval/sessions-v2.unlabeled.jsonl" if args.mode == "picks"
+            else "eval/sessions-v1.unlabeled.jsonl"
+        )
 
     cfg = load_config()
     sec = load_secrets()
@@ -521,9 +805,19 @@ def main() -> int:
     hash_intel_index = cfg.intel.indexes.hash
     url_intel_index = cfg.intel.indexes.url
 
+    print(f"mode              : {args.mode}", file=sys.stderr)
     print(f"rollup index      : {rollup_index}", file=sys.stderr)
     print(f"raw events idx    : {raw_index}", file=sys.stderr)
     print(f"commands idx      : {cmd_index}", file=sys.stderr)
+    print(f"output            : {args.output}", file=sys.stderr)
+
+    if args.mode == "picks":
+        return _run_picks_mode(
+            es, args,
+            rollup_index=rollup_index, raw_index=raw_index, cmd_index=cmd_index,
+            hash_intel_index=hash_intel_index, url_intel_index=url_intel_index,
+        )
+
     print(f"target N          : {args.n}", file=sys.stderr)
     print(f"scan cap          : up to {args.scan_cap} rollups", file=sys.stderr)
     print(f"per-playbook cap  : {args.per_playbook_cap}", file=sys.stderr)

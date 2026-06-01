@@ -1,0 +1,29 @@
+{
+  "generated_at": "2026-06-01T07:28:01.850613+00:00",
+  "config": {
+    "jaccard_max": 0.2,
+    "jaccard_max_intra_playbook": 0.3,
+    "target_pairs": 100,
+    "max_bucket_sample": 300,
+    "max_sessions": 50000,
+    "min_unique_commands": 3,
+    "min_unique_cmd_ratio": 0.3,
+    "max_pairs_per_session": 1,
+    "max_pairs_per_comparison_axis": 2,
+    "seed": 20260601
+  },
+  "stats": {
+    "sessions_pulled": 2923,
+    "sessions_skipped_short": 1044,
+    "playbook_buckets": 7,
+    "intent_buckets": 6,
+    "raw_pairs": 72,
+    "deduped_pairs": 72,
+    "dropped_by_session_cap": 55,
+    "dropped_by_axis_cap": 8,
+    "kept_pairs": 9,
+    "unique_comparison_axes": 6,
+    "unique_hashes_resolved": 58,
+    "unique_hashes_total": 58
+  }
+}

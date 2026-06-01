@@ -124,6 +124,14 @@ def _render_session(rec: dict) -> str:
     # and would lead the analyst toward a label before they've read
     # the session.
 
+    # divergent_pair_id (E1.2): when present, surfaces the v2 pair id so
+    # the analyst can label both members consistently. The pair_id is
+    # NOT considered analyst-biasing because it carries no semantic
+    # content — it's an opaque label assigned at mine-time, and both
+    # members of the pair already share the same coarse behavior bucket
+    # by construction (the miner's input filter).
+    divergent_pair_id = rec.get("divergent_pair_id")
+
     rollup = rec.get("rollup_doc") or {}
     enrichment = _enrichment_section(rollup)
     raw_events = rec.get("raw_events") or []
@@ -157,6 +165,8 @@ def _render_session(rec: dict) -> str:
     # ----- header ----------------------------------------------------------
     out.append(f"# {sid}")
     out.append("")
+    if divergent_pair_id:
+        out.append(f"- **Divergent pair:** `{divergent_pair_id}` *(label both sides consistently)*")
     geo_bits: list[str] = []
     if geo_city:    geo_bits.append(geo_city)
     if geo_country: geo_bits.append(geo_country)
@@ -333,8 +343,22 @@ _EMPTY_LABEL_BLOCK = {
 }
 
 
+def _skeleton_for_record(rec: dict) -> dict:
+    """Per-record label skeleton. Identical to ``_EMPTY_LABEL_BLOCK``
+    for v1; for v2 records (those carrying ``divergent_pair_id``)
+    appends a pre-populated ``divergent_pair_id`` field so the analyst
+    doesn't have to copy the pair id from the markdown header. The
+    field is part of the canonical schema for that record, so the
+    merge logic round-trips it instead of dropping it as unknown."""
+    skel = dict(_EMPTY_LABEL_BLOCK)
+    pid = rec.get("divergent_pair_id")
+    if isinstance(pid, str) and pid:
+        skel["divergent_pair_id"] = pid
+    return skel
+
+
 def _merge_labels(
-    session_ids: list[str], existing_path: Path,
+    records: list[dict], existing_path: Path,
 ) -> tuple[dict, int, int]:
     """Return (merged_yaml_dict, n_new_blocks, n_orphan_blocks).
 
@@ -342,6 +366,10 @@ def _merge_labels(
     blocks for new session_ids, and reports orphan blocks (session_ids
     in the yaml that no longer appear in the unlabeled JSONL) without
     deleting them — the analyst decides.
+
+    Per-record skeleton is computed by ``_skeleton_for_record`` so the
+    v2 records' ``divergent_pair_id`` becomes a canonical field for those
+    blocks and survives the merge round-trip.
     """
     existing: dict = {}
     if existing_path.exists():
@@ -350,30 +378,54 @@ def _merge_labels(
         if isinstance(parsed, dict):
             existing = parsed
 
+    skeletons: dict[str, dict] = {}
+    for rec in records:
+        sid = rec.get("session_id")
+        if isinstance(sid, str) and sid:
+            skeletons[sid] = _skeleton_for_record(rec)
+
+    # Contract fields are sourced from the JSONL (via the skeleton),
+    # never preserved from the existing YAML — they're validated against
+    # the JSONL downstream and a stale value would just fail the gate.
+    # Adding to this set is how a new field joins the "always synced
+    # from the JSONL" contract.
+    _CONTRACT_FIELDS = ("divergent_pair_id",)
+
     merged: dict = {}
     new = 0
-    for sid in session_ids:
+    for sid, skel in skeletons.items():
         if sid in existing and isinstance(existing[sid], dict):
             # Backfill any fields the existing block is missing (e.g.
             # `annotated` added later) and re-key in canonical order.
             # Fields outside the canonical skeleton are dropped — that's
             # how schema removals (e.g. retiring `campaign_label`) flow
             # through existing labeled blocks without manual scrubbing.
-            block = dict(_EMPTY_LABEL_BLOCK)
+            block = dict(skel)
             block.update(existing[sid])
-            merged[sid] = {k: block[k] for k in _EMPTY_LABEL_BLOCK}
+            # Re-apply contract fields from the skeleton after the merge
+            # so a v2 rebuild with new pair_ids cleanly carries over the
+            # analyst's labels without leaving stale divergent_pair_id
+            # values that would fail the validator.
+            for f in _CONTRACT_FIELDS:
+                if f in skel:
+                    block[f] = skel[f]
+            merged[sid] = {k: block[k] for k in skel}
         else:
-            merged[sid] = dict(_EMPTY_LABEL_BLOCK)
+            merged[sid] = dict(skel)
             new += 1
 
-    orphans = [s for s in existing if s not in set(session_ids)]
+    orphans = [s for s in existing if s not in skeletons]
     for s in orphans:
         merged[s] = existing[s]
     return merged, new, len(orphans)
 
 
-def _write_labels_yaml(path: Path, data: dict) -> None:
-    """Write a stable, human-friendly YAML — one blank line between entries."""
+def _write_labels_yaml(path: Path, data: dict, unlabeled_path: Path) -> None:
+    """Write a stable, human-friendly YAML — one blank line between entries.
+
+    The header documents the *actual* labels + unlabeled paths so the
+    validator command is correct in both v1 and v2 outputs.
+    """
     parts: list[str] = []
     parts.append(
         "# Eval-set labels. One block per session_id. Edit by hand and\n"
@@ -381,8 +433,8 @@ def _write_labels_yaml(path: Path, data: dict) -> None:
         "# The renderer preserves your edits and backfills any new fields.\n"
         "# Validate every ~25 entries with:\n"
         "#   console/.venv/bin/python scripts/validate_eval_labels.py \\\n"
-        "#     --labels eval/labels-v1.yaml \\\n"
-        "#     --unlabeled eval/sessions-v1.unlabeled.jsonl\n"
+        f"#     --labels {path} \\\n"
+        f"#     --unlabeled {unlabeled_path}\n"
         "# Rubric: ./RUBRIC.md\n"
     )
     for sid, block in data.items():
@@ -439,7 +491,6 @@ def main() -> int:
     if not records:
         print(f"[ERROR] {args.input} is empty", file=sys.stderr)
         return 1
-    session_ids = [r.get("session_id") for r in records if r.get("session_id")]
 
     written = 0
     for rec in records:
@@ -450,8 +501,8 @@ def main() -> int:
         (args.out_dir / f"{sid}.md").write_text(body, encoding="utf-8")
         written += 1
 
-    merged, n_new, n_orphan = _merge_labels(session_ids, args.labels_yaml)
-    _write_labels_yaml(args.labels_yaml, merged)
+    merged, n_new, n_orphan = _merge_labels(records, args.labels_yaml)
+    _write_labels_yaml(args.labels_yaml, merged, args.input)
 
     print(f"rendered  : {written} sessions -> {args.out_dir}/")
     print(f"labels    : {args.labels_yaml} "

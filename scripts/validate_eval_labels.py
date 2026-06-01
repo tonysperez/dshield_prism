@@ -140,6 +140,29 @@ def _load_jsonl_session_ids(path: Path) -> set[str]:
     return out
 
 
+def _load_jsonl_divergent_pair_ids(path: Path) -> dict[str, str]:
+    """Return {session_id: divergent_pair_id} for v2 JSONLs. Empty dict
+    for v1 records — they carry no pair id, so the validator's
+    cross-check is a no-op there."""
+    out: dict[str, str] = {}
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(rec, dict):
+                continue
+            sid = rec.get("session_id")
+            pid = rec.get("divergent_pair_id")
+            if isinstance(sid, str) and sid and isinstance(pid, str) and pid:
+                out[sid] = pid
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
@@ -200,6 +223,7 @@ def main() -> int:
 
     orphans: list[str] = []
     missing: list[str] = []
+    divergent_pair_ids: dict[str, str] = {}
     if args.unlabeled and args.unlabeled.exists():
         sid_jsonl = _load_jsonl_session_ids(args.unlabeled)
         sid_yaml = set(data)
@@ -212,6 +236,35 @@ def main() -> int:
                 "to add the missing skeletons. First few: "
                 + ", ".join(missing[:5])
             )
+
+        # v2 cross-check: every session that carries `divergent_pair_id`
+        # in the unlabeled JSONL must have an identical id in its label
+        # block. Catches drift between the picks-driven build and the
+        # hand-edited YAML.
+        divergent_pair_ids = _load_jsonl_divergent_pair_ids(args.unlabeled)
+        for sid, expected_pid in divergent_pair_ids.items():
+            block = data.get(sid)
+            if not isinstance(block, dict):
+                continue
+            yaml_pid = block.get("divergent_pair_id")
+            if yaml_pid is None:
+                errors.append(
+                    f"{sid}: JSONL carries divergent_pair_id={expected_pid!r} "
+                    f"but the YAML block is missing the field — re-run "
+                    f"scripts/render_eval_set.py to repopulate it."
+                )
+                continue
+            if not isinstance(yaml_pid, str) or not yaml_pid:
+                errors.append(
+                    f"{sid}: divergent_pair_id must be a non-empty string, "
+                    f"got {yaml_pid!r}"
+                )
+                continue
+            if yaml_pid != expected_pid:
+                errors.append(
+                    f"{sid}: divergent_pair_id mismatch — JSONL "
+                    f"{expected_pid!r} vs YAML {yaml_pid!r}"
+                )
 
     if errors:
         print("Errors:", file=sys.stderr)
@@ -234,6 +287,25 @@ def main() -> int:
         print("expected findings :")
         for k, v in sorted(finding_counts.items(), key=lambda kv: -kv[1]):
             print(f"  {v:4d}  {k}")
+
+    if divergent_pair_ids:
+        # v2-only summary: how many pairs are fully labeled (both members
+        # annotated). Pair-incomplete blocks don't fail the gate — the
+        # analyst may be mid-labeling — but the count surfaces progress.
+        members_by_pair: dict[str, list[bool]] = {}
+        for sid, pid in divergent_pair_ids.items():
+            block = data.get(sid) or {}
+            annotated = bool(block.get("annotated"))
+            members_by_pair.setdefault(pid, []).append(annotated)
+        complete = sum(1 for vs in members_by_pair.values() if all(vs) and len(vs) == 2)
+        partial = sum(
+            1 for vs in members_by_pair.values()
+            if any(vs) and not (all(vs) and len(vs) == 2)
+        )
+        print(
+            f"divergent pairs   : {len(members_by_pair)} total, "
+            f"{complete} fully annotated, {partial} partially annotated"
+        )
 
     if errors:
         return 1
