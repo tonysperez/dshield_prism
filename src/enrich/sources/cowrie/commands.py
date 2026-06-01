@@ -234,6 +234,64 @@ def iter_command_events(
         search_after = hits[-1]["sort"]
 
 
+def iter_reference_command_events(
+    es: Elasticsearch,
+    reference_idx: str,
+    page_size: int = 100,
+) -> Iterator[dict]:
+    """Yield synthetic command "events" from the reference-corpus rollup
+    (brutal-review phase 5.3).
+
+    The reference index doesn't carry raw cowrie events — it carries
+    rollup-shaped docs with the source command lines under
+    ``dshield.reference.command_lines[]``. Fan those out one-per-event
+    in the same hit shape that :func:`iter_command_events` produces, so
+    the downstream enrich loop doesn't care which path produced its
+    input.
+
+    No watermark; the reference corpus is a one-shot import. Subsequent
+    invocations rely on the `prism.enriched.cowrie.command` cache to
+    skip already-enriched commands.
+    """
+    body = {
+        "size":    page_size,
+        "_source": [
+            "@timestamp",
+            "cowrie.session_id",
+            "dshield.reference.command_lines",
+        ],
+        "query":   {"match_all": {}},
+        "sort":    [{"_doc": "asc"}],
+    }
+    search_after = None
+    while True:
+        if search_after:
+            body["search_after"] = search_after
+        resp = es.search(index=reference_idx, **body)
+        hits = resp["hits"]["hits"]
+        if not hits:
+            return
+        for h in hits:
+            src = h["_source"]
+            ts = src.get("@timestamp")
+            sid = (src.get("cowrie") or {}).get("session_id")
+            ref = (src.get("dshield") or {}).get("reference") or {}
+            cmds = ref.get("command_lines") or []
+            for cmd in cmds:
+                # Mirror the iter_command_events hit shape so
+                # `_extract_command` / `_extract_session` / `_extract_ip`
+                # all see what they expect. `source.ip` is intentionally
+                # absent — reference docs have no real source.
+                yield {
+                    "_source": {
+                        "@timestamp": ts,
+                        "process":    {"command_line": cmd},
+                        "cowrie":     {"session_id": sid},
+                    }
+                }
+        search_after = hits[-1]["sort"]
+
+
 # ---------------------------------------------------------------------------
 # Normalization + hashing
 # ---------------------------------------------------------------------------
@@ -838,13 +896,29 @@ def enrich_one(
 # Enrich entry point
 # ---------------------------------------------------------------------------
 
-def run_enrich(cfg: AppConfig, secrets: Secrets, dry_run: bool = False, no_cloud: bool = False) -> dict:
-    """Main worker entry. Returns stats dict."""
+def run_enrich(
+    cfg: AppConfig, secrets: Secrets, dry_run: bool = False, no_cloud: bool = False,
+    *, reference_mode: bool = False, budget: Optional[int] = None,
+) -> dict:
+    """Main worker entry. Returns stats dict.
+
+    When ``reference_mode=True`` (brutal-review phase 5.3), the input
+    source switches from `prism.raw.cowrie.session` to the rollup-shaped
+    reference index `prism.reference.cowrie.session`. Watermark + corpus
+    cooccurrence are disabled (reference is a one-shot import with no
+    session temporality). ``budget`` caps the number of cache-miss LLM
+    calls per invocation — useful for incremental enrichment runs that
+    want bounded cost.
+    """
     es = make_client(cfg.elasticsearch, secrets)
     db = StateDB(cfg.worker.state_db)
     prompt = load_prompt(cfg, "command_enrichment")
     commands_idx = cfg.elasticsearch.indexes.cowrie.commands
-    events_idx = cfg.elasticsearch.indexes.cowrie.sessions_raw
+    events_idx = (
+        cfg.elasticsearch.indexes.cowrie.reference_sessions
+        if reference_mode
+        else cfg.elasticsearch.indexes.cowrie.sessions_raw
+    )
 
     # Analyst-authored artifact rules (ROADMAP #5). Loaded once per run;
     # cleanly empty when the subsystem is disabled or no rules exist.
@@ -915,6 +989,16 @@ def run_enrich(cfg: AppConfig, secrets: Secrets, dry_run: bool = False, no_cloud
         log.info("intel-aware triage gate enabled (cfg.cloud.triage.intel_aware=true)")
 
     cooc_cfg = cfg.cooccurrence
+    # Reference mode forces co-occurrence off — the reference corpus has
+    # no temporal session structure (atomic tests are independent), and
+    # sampling siblings from an unrelated index would just inject noise
+    # into the embed text.
+    if reference_mode and cooc_cfg.enabled:
+        log.info("reference mode: co-occurrence disabled for this run")
+        cooc_cfg = cooc_cfg.model_copy(update={
+            "enabled":            False,
+            "embed_cooccurrence": False,
+        })
     total_sessions = (
         _fetch_total_session_count(es, events_idx) if cooc_cfg.enabled else 0
     )
@@ -925,12 +1009,19 @@ def run_enrich(cfg: AppConfig, secrets: Secrets, dry_run: bool = False, no_cloud
             cooc_cfg.top_k, cooc_cfg.session_sample_size, total_sessions,
         )
 
-    since = db.get_watermark()
-    if since is None and cfg.worker.initial_lookback_days is not None:
-        from datetime import timedelta
-        since_dt = datetime.now(timezone.utc) - timedelta(days=cfg.worker.initial_lookback_days)
-        since = since_dt.isoformat()
-    log.info("Watermark: %s", since or "(none, full backfill)")
+    # Reference mode skips the watermark entirely — every invocation
+    # walks the full reference index, and the per-command cache prevents
+    # re-LLM on already-enriched commands.
+    if reference_mode:
+        since = None
+        log.info("reference mode: full reference-index scan; no watermark")
+    else:
+        since = db.get_watermark()
+        if since is None and cfg.worker.initial_lookback_days is not None:
+            from datetime import timedelta
+            since_dt = datetime.now(timezone.utc) - timedelta(days=cfg.worker.initial_lookback_days)
+            since = since_dt.isoformat()
+        log.info("Watermark: %s", since or "(none, full backfill)")
 
     stats = defaultdict(int)
     groups: dict[str, dict] = {}
@@ -941,7 +1032,12 @@ def run_enrich(cfg: AppConfig, secrets: Secrets, dry_run: bool = False, no_cloud
     from enrich.llm.schemas import reset_mitre_drop_counts
     reset_mitre_drop_counts()
 
-    for hit in iter_command_events(es, events_idx, since, cfg.worker.page_size):
+    event_iter = (
+        iter_reference_command_events(es, events_idx, cfg.worker.page_size)
+        if reference_mode
+        else iter_command_events(es, events_idx, since, cfg.worker.page_size)
+    )
+    for hit in event_iter:
         stats["events_seen"] += 1
         src = hit["_source"]
         ts = src.get("@timestamp")
@@ -1060,6 +1156,15 @@ def run_enrich(cfg: AppConfig, secrets: Secrets, dry_run: bool = False, no_cloud
                 continue
 
             stats["cache_miss"] += 1
+
+            # Budget cap (brutal-review phase 5.3) — when set, stop
+            # spending LLM cycles after `budget` cache-misses this run.
+            # Subsequent cache-miss commands are deferred to a future
+            # invocation; the cache means they'll pick up where this
+            # run left off.
+            if budget is not None and stats["cache_miss"] > budget:
+                stats["budget_skipped"] += 1
+                continue
 
             # ---- Functional-duplicate gate (ROADMAP #9) -------------------
             #
@@ -1405,7 +1510,7 @@ def run_enrich(cfg: AppConfig, secrets: Secrets, dry_run: bool = False, no_cloud
     except Exception as exc:
         log.warning("enrich refresh failed (continuing): %s", exc)
 
-    if last_ts and last_ts != since:
+    if not reference_mode and last_ts and last_ts != since:
         db.set_watermark(last_ts)
         log.info("Watermark advanced to %s", last_ts)
 

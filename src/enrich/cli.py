@@ -615,6 +615,26 @@ def _build_parser() -> argparse.ArgumentParser:
             "enrichments through a config drift."
         ),
     )
+    p_enrich.add_argument(
+        "--reference", action="store_true",
+        help=(
+            "Enrich commands in the reference-corpus rollup "
+            "(`prism.reference.cowrie.session`) instead of the live "
+            "cowrie events stream. One-shot pass; no watermark; "
+            "co-occurrence disabled. Pair with `--budget N` to cap "
+            "LLM cycles. brutal-review phase 5.3."
+        ),
+    )
+    p_enrich.add_argument(
+        "--budget", type=int, default=None,
+        help=(
+            "Cap the number of cache-miss LLM calls in this run. "
+            "Subsequent cache-miss commands are deferred to a future "
+            "invocation (the cache means they resume cleanly). Useful "
+            "with `--reference` for incremental enrichment of large "
+            "reference corpora."
+        ),
+    )
 
     # budget
     sub.add_parser("budget", help="Show today's cloud-LLM spend vs daily cap")
@@ -1209,13 +1229,20 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if getattr(args, "ignore_config_hash", False):
             cfg.worker.cache_auto_invalidate = False
-        stats = mod.run_enrich(cfg, secrets, dry_run=args.dry_run, no_cloud=args.no_cloud)
+        stats = mod.run_enrich(
+            cfg, secrets,
+            dry_run=args.dry_run, no_cloud=args.no_cloud,
+            reference_mode=getattr(args, "reference", False),
+            budget=getattr(args, "budget", None),
+        )
         # Snapshot per-corpus MITRE TTP application rates after the run
         # (phase 2.3). Aggregates from the persisted commands index so
         # the snapshot reflects the corpus state, not this run's freshly
         # emitted LLM responses (which would miss the steady-state
-        # cache-hit majority).
-        if not args.dry_run:
+        # cache-hit majority). Skip in reference mode — that snapshot
+        # is supposed to reflect the live corpus, not a one-shot
+        # external pull.
+        if not args.dry_run and not getattr(args, "reference", False):
             _write_mitre_metrics_doc(cfg, secrets, top_n=20)
         print(json.dumps(stats, indent=2, default=str))
         return 0
