@@ -196,14 +196,25 @@ def _per_label_breakdown(
     label_truth: list[str],
     cluster_pred: np.ndarray,
 ) -> dict[str, dict]:
-    """For each analyst label, compute the cluster id it lands in most
-    often and that majority's share. A label that lands in one cluster
-    (high share) = the pipeline groups it cleanly. A label split across
-    many clusters (low share) = the pipeline is fragmenting that label.
+    """For each analyst label, decompose how HDBSCAN split it. A label
+    that lands in one cluster (low fragmentation, high largest_cluster_share)
+    = the pipeline groups it cleanly. A label split across many clusters
+    (high fragmentation) = the pipeline is fragmenting that label.
 
-    `cluster_id` of -1 is HDBSCAN's outlier marker; treat it as a real
-    cluster in this view so we surface labels whose members the pipeline
-    rejected as outliers."""
+    Keys (plan E0.1):
+      * ``n_sessions``                 — label support in the eval set.
+      * ``n_hdbscan_clusters_assigned`` — distinct cluster ids the label
+        members landed in (HDBSCAN ``-1`` counts as one).
+      * ``fragmentation_ratio``        — ``n_hdbscan_clusters_assigned /
+        n_sessions``. ``1/n`` = perfect grouping; ``1.0`` = every member
+        in a different cluster.
+      * ``largest_cluster_share``      — share of the label's sessions in
+        its dominant cluster.
+
+    Extras retained for cross-referencing from diagnose_embedding_loss.py:
+      * ``majority_cluster`` — the dominant cluster id.
+      * ``outlier_share``    — share of sessions HDBSCAN tagged as ``-1``.
+    """
     by_label: dict[str, list[int]] = {}
     for lbl, c in zip(label_truth, cluster_pred):
         by_label.setdefault(lbl, []).append(int(c))
@@ -211,12 +222,15 @@ def _per_label_breakdown(
     for lbl, clusters in sorted(by_label.items()):
         counts = Counter(clusters)
         top_cluster, top_count = counts.most_common(1)[0]
+        n = len(clusters)
+        n_clusters_assigned = len(counts)
         out[lbl] = {
-            "n":                 len(clusters),
-            "distinct_clusters": len(counts),
-            "majority_cluster":  top_cluster,
-            "majority_share":    round(top_count / len(clusters), 3),
-            "outlier_share":     round(counts.get(-1, 0) / len(clusters), 3),
+            "n_sessions":                 n,
+            "n_hdbscan_clusters_assigned": n_clusters_assigned,
+            "fragmentation_ratio":         round(n_clusters_assigned / n, 3),
+            "largest_cluster_share":       round(top_count / n, 3),
+            "majority_cluster":            top_cluster,
+            "outlier_share":               round(counts.get(-1, 0) / n, 3),
         }
     return out
 
@@ -348,14 +362,20 @@ def _render_stdout(report: dict) -> str:
         out.append(f"  {k:14} {v:.4f}")
     out.append("")
     out.append("Per-label breakdown (analyst label → cluster grouping):")
-    out.append(f"  {'label':35} {'n':>4} {'clusters':>9} {'maj.share':>10} {'outlier.share':>14}")
+    out.append(
+        f"  {'label':35} {'n':>4} {'clusters':>9} {'fragmentation':>14} "
+        f"{'lgst.share':>11} {'outlier.share':>14}"
+    )
     for lbl, st in sorted(
         report["per_label"].items(),
-        key=lambda kv: (-kv[1]["n"], kv[0]),
+        key=lambda kv: (-kv[1]["n_sessions"], kv[0]),
     ):
         out.append(
-            f"  {lbl:35} {st['n']:>4} {st['distinct_clusters']:>9} "
-            f"{st['majority_share']:>10.3f} {st['outlier_share']:>14.3f}"
+            f"  {lbl:35} {st['n_sessions']:>4} "
+            f"{st['n_hdbscan_clusters_assigned']:>9} "
+            f"{st['fragmentation_ratio']:>14.3f} "
+            f"{st['largest_cluster_share']:>11.3f} "
+            f"{st['outlier_share']:>14.3f}"
         )
     return "\n".join(out)
 
