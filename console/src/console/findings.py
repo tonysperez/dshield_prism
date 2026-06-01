@@ -35,6 +35,7 @@ _DISCOVERY_KINDS: frozenset[str] = frozenset({
     "new_playbook", "outlier_burst", "novel_edge_session",
     "unattributed_active_ip", "campaign_convergence", "ip_behavior_shift",
     "intel_verdict_flip",
+    "operation_emergence",  # brutal-review 7.3
 })
 # Hypothesis-driven hunts (brutal-review phase 6.1). Distinct UI stream
 # from discovery / drift / coverage — analyst-authored hypotheses are a

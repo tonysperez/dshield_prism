@@ -191,6 +191,8 @@ def format_evidence_quality(
         return _convergence_verdict(ev)
     if kind == "unattributed_active_ip":
         return _unattributed_verdict(ev)
+    if kind == "operation_emergence":
+        return _operation_emergence_verdict(ev)
     return ""
 
 
@@ -351,6 +353,37 @@ def _unattributed_verdict(ev: dict[str, Any]) -> str:
     if sess:
         return f"Unattributed · {sess} sess"
     return "Unattributed"
+
+
+def _operation_emergence_verdict(ev: dict[str, Any]) -> str:
+    """Brutal-review 7.3 — verdict for operation_emergence findings.
+
+    Two flavors:
+      "Formed · 73 shared IPs · 60% overlap"
+      "Grew · 73 → 142 shared IPs · ×1.95"
+
+    The `event` field distinguishes the two — same finding kind, same
+    artifact, different `delta_signature`. Falls back to a minimal
+    "Operation" verdict when evidence is sparse.
+    """
+    event = (ev.get("event") or "").lower()
+    shared = _as_int(ev.get("shared_ip_count"))
+    if event == "grew":
+        prior = _as_int(ev.get("shared_ip_count_prior"))
+        if prior > 0 and shared > prior:
+            return (
+                f"Grew · {prior} → {shared} shared IPs · "
+                f"×{(shared / prior):.2f}"
+            )
+        return f"Grew · {shared} shared IPs"
+    # Default + formed path
+    overlap = ev.get("overlap_ratio")
+    parts = ["Formed"]
+    if shared:
+        parts.append(f"{shared} shared IPs")
+    if isinstance(overlap, (int, float)) and overlap > 0:
+        parts.append(f"{int(round(overlap * 100))}% overlap")
+    return " · ".join(parts)
 
 
 # ---------------------------------------------------------------------------

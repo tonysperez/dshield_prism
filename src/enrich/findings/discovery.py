@@ -676,6 +676,10 @@ DISCOVERY_MINERS = {
     "ip_behavior_shift":    mine_ip_behavior_shift,
     "outlier_burst":        mine_outlier_burst,
     "campaign_convergence": mine_campaign_convergence,
+    # operation_emergence is registered below — its `mine_*` is defined
+    # after this point because it joins against prism.findings to detect
+    # prior emergence events, and Python forward references would be
+    # noisy. The dict gets the function appended after the def.
 }
 
 # `unattributed_active_ip` and `novel_edge_session` are in the set so the
@@ -686,7 +690,155 @@ DISCOVERY_KINDS: frozenset[str] = frozenset({
     "new_playbook", "outlier_burst", "novel_edge_session",
     "unattributed_active_ip", "campaign_convergence", "ip_behavior_shift",
     "intel_verdict_flip",
+    "operation_emergence",  # brutal-review 7.3
 })
+
+
+# Growth multiplier — an existing operation that grew its shared IP
+# count by this factor since the most recent emergence finding fires
+# a new `operation_emergence` (delta_signature=grew_<bucket>). 1.5x
+# matches the spirit of the playbook_size_drift default (75% growth);
+# operations are inherently rarer than playbook size deltas so we
+# lean toward "alert on meaningful change" rather than every wiggle.
+_OPERATION_GROWTH_RATIO = 1.5
+
+
+def mine_operation_emergence(es: Elasticsearch, cfg: Any, run_id: str) -> list[dict[str, Any]]:
+    """Emit findings when an operation forms or grows materially.
+
+    Brutal-review 7.3. Operations (7.1) are bhv × inf campaign mergers
+    persisted in ``prism.operations`` with stable ``op-<16hex>`` ids.
+    This miner produces two flavors of finding, both with
+    ``kind=operation_emergence`` but distinct ``delta_signature`` slots
+    so analyst state on the formed event survives even after the
+    operation later grows:
+
+      * **formed** — first time the operation appears (no prior
+        `operation_emergence` finding for this `op-` id). One per
+        operation, ever.
+      * **grew_<bucket>** — current `shared_ip_count` is at least
+        `_OPERATION_GROWTH_RATIO` × the max recorded on any prior
+        emergence finding for this op. Bucket key is the new
+        shared-ip count itself, so a single growth event fires once
+        and re-mines find the matching prior finding instead of
+        re-emitting.
+
+    Self-anchored — no analyst confirm needed. Outlier-shape operations
+    don't exist (the underlying threshold gate in 7.1 already excluded
+    weak overlaps), so every operation in the index is finding-eligible.
+    """
+    ops_idx = cfg.elasticsearch.indexes.cowrie.operations
+    findings_idx = cfg.findings.indexes.default
+    if not es.indices.exists(index=ops_idx):
+        return []
+
+    # Pull every operation in one go. Operation docs are small and the
+    # index is bounded by the bhv×inf product, which is far smaller than
+    # session counts.
+    try:
+        resp = es.search(
+            index=ops_idx, size=1000,
+            query={"match_all": {}},
+            _source=[
+                "operation_id", "behaviour_id", "behaviour_name",
+                "infrastructure_id", "infrastructure_name",
+                "shared_ip_count", "bhv_ip_count", "inf_ip_count",
+                "overlap_ratio", "first_seen", "last_seen",
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("operation_emergence: ops scan failed: %s", exc)
+        return []
+    ops = [h["_source"] for h in (resp.get("hits") or {}).get("hits") or []]
+    if not ops:
+        return []
+
+    # Bulk-fetch the max recorded shared_ip_count from prior
+    # `operation_emergence` findings, keyed by `evidence.operation_id`.
+    # One agg = N operations vs O(N) lookups.
+    prior_max: dict[str, int] = {}
+    if es.indices.exists(index=findings_idx):
+        try:
+            agg_resp = es.search(
+                index=findings_idx, size=0,
+                query={"term": {"kind": "operation_emergence"}},
+                aggs={"by_op": {
+                    "terms": {"field": "evidence.operation_id.keyword",
+                              "size": max(len(ops) * 2, 100)},
+                    "aggs": {"max_shared": {"max": {
+                        "field": "evidence.shared_ip_count",
+                    }}},
+                }},
+            )
+            for b in (agg_resp.get("aggregations") or {}).get("by_op", {}).get("buckets") or []:
+                v = ((b.get("max_shared") or {}).get("value"))
+                if v is not None:
+                    prior_max[b["key"]] = int(v)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("operation_emergence: prior-max agg failed: %s", exc)
+
+    out: list[dict[str, Any]] = []
+    for op in ops:
+        op_id = op.get("operation_id")
+        if not op_id:
+            continue
+        shared = int(op.get("shared_ip_count") or 0)
+        prior = prior_max.get(op_id)
+        if prior is None:
+            # New operation — emit `formed`. delta_signature pins it so
+            # re-mines find the same doc.
+            event = "formed"
+            delta_sig = "formed"
+            narrative = (
+                f"Operation {op_id} formed — {shared} IPs shared between "
+                f"behaviour '{op.get('behaviour_name') or op.get('behaviour_id')}' "
+                f"and infrastructure "
+                f"'{op.get('infrastructure_name') or op.get('infrastructure_id')}'."
+            )
+        elif shared >= int(prior * _OPERATION_GROWTH_RATIO):
+            # Growth event — bucket on the new shared count so a single
+            # growth fires once. The next growth would need to clear
+            # _OPERATION_GROWTH_RATIO × `shared`.
+            event = "grew"
+            delta_sig = f"grew_{shared}"
+            narrative = (
+                f"Operation {op_id} grew — shared IP count climbed "
+                f"{prior} → {shared} "
+                f"(×{(shared / prior):.2f} since prior emergence)."
+            )
+        else:
+            continue
+        out.append({
+            "kind":             "operation_emergence",
+            "run_id":           run_id,
+            "artifact":         {"kind": "operation", "value": op_id},
+            "delta_signature":  delta_sig,
+            "score":            float(shared),
+            "narrative":        narrative,
+            "evidence": {
+                "operation_id":            op_id,
+                "event":                   event,
+                "behaviour_id":            op.get("behaviour_id"),
+                "behaviour_name":          op.get("behaviour_name"),
+                "infrastructure_id":       op.get("infrastructure_id"),
+                "infrastructure_name":     op.get("infrastructure_name"),
+                "shared_ip_count":         shared,
+                "shared_ip_count_prior":   prior,
+                "bhv_ip_count":            op.get("bhv_ip_count"),
+                "inf_ip_count":            op.get("inf_ip_count"),
+                "overlap_ratio":           op.get("overlap_ratio"),
+                "first_seen":              op.get("first_seen"),
+                "last_seen":               op.get("last_seen"),
+            },
+        })
+    out.sort(key=lambda f: f["score"], reverse=True)
+    return out
+
+
+# Register the miner now that it's defined. Keeps DISCOVERY_MINERS at
+# the top of the public-set block readable while letting the
+# operation_emergence body live near `run_discovery`.
+DISCOVERY_MINERS["operation_emergence"] = mine_operation_emergence
 
 
 def run_discovery(es: Elasticsearch, cfg: Any, run_id: str) -> dict[str, list[dict[str, Any]]]:

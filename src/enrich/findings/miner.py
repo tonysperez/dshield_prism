@@ -398,6 +398,11 @@ def _noise_denominator(artifact_kind: str, es: Elasticsearch, cfg: AppConfig) ->
             es, cfg.elasticsearch.indexes.cowrie.campaigns,
             query={"term": {"doc_type": "campaign"}},
         )
+    if artifact_kind == "operation":
+        # Brutal-review 7.3 — `operation_emergence` findings anchor on
+        # operation_id. The population is every op currently in
+        # prism.operations (already threshold-gated by 7.1).
+        return _count_or_zero(es, cfg.elasticsearch.indexes.cowrie.operations)
     # Unknown artifact kind (e.g. campaign_pair) — caller skips.
     return 0
 
