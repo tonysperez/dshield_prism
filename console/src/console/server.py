@@ -43,6 +43,7 @@ NAV_ITEMS: list[dict[str, str]] = [
     {"id": "inbox",     "label": "Inbox",    "href": "/inbox"},
     {"id": "graph",     "label": "Graph",    "href": "/graph"},
     {"id": "browse",    "label": "Browse",   "href": "/browse"},
+    {"id": "hunts",     "label": "Hunts",    "href": "/hunts"},
     {"id": "rules",     "label": "Rules",    "href": "/artifact-rules"},
     {"id": "curation",  "label": "Curation", "href": "/curation"},
     {"id": "health",    "label": "Health",   "href": "/health"},
@@ -242,6 +243,10 @@ def build_app(config_path: str | None = None) -> FastAPI:
     def curation_page(request: Request):
         return _render(request, "curation.html", active_nav="curation")
 
+    @app.get("/hunts")
+    def hunts_page(request: Request):
+        return _render(request, "hunts.html", active_nav="hunts")
+
     @app.get("/artifact/ip/{value}")
     def artifact_ip_page(request: Request, value: str):
         # Page is the same for every IP; the JS fetches the API.
@@ -376,13 +381,92 @@ def build_app(config_path: str | None = None) -> FastAPI:
         return JSONResponse({"ok": True, "message": msg})
 
     # ------------------------------------------------------------------
+    # Hunts (brutal-review phase 6.3) — read-only list view + run-now.
+    # ------------------------------------------------------------------
+    @app.get("/api/hunts")
+    def hunts_list_api() -> JSONResponse:
+        """List every hunt loaded from `config/hunts/` along with its
+        last-run finding count (queried from `prism.findings`). Read-only.
+        """
+        from enrich.findings.hunts import load_hunts
+        hunts_dir = getattr(getattr(cfg.findings, "hunts", None),
+                            "config_dir", "config/hunts")
+        try:
+            hunts = load_hunts(hunts_dir)
+        except Exception as exc:
+            log.warning("hunts list: load failed: %s", exc)
+            return JSONResponse({"hunts": [], "error": str(exc)})
+        # One agg pulls per-hunt counts in a single round-trip.
+        counts_by_id: dict[str, int] = {}
+        try:
+            findings_idx = cfg.findings.indexes.default
+            if es.indices.exists(index=findings_idx):
+                r = es.search(
+                    index=findings_idx, size=0,
+                    query={"term": {"kind": "analyst_hunt"}},
+                    aggs={"by_hunt": {"terms": {
+                        "field": "evidence.hunt_id.keyword", "size": 100,
+                    }}},
+                )
+                for b in (r.get("aggregations", {}).get("by_hunt", {}).get("buckets") or []):
+                    counts_by_id[b["key"]] = b["doc_count"]
+        except Exception as exc:
+            log.warning("hunts list: count agg failed: %s", exc)
+        out: list[dict] = []
+        for h in hunts:
+            out.append({
+                "id":           h["id"],
+                "name":         h["name"],
+                "description":  h.get("description") or "",
+                "filters":      h.get("filters") or [],
+                "enabled":      h.get("enabled", True),
+                "finding_count": int(counts_by_id.get(h["id"], 0)),
+            })
+        return JSONResponse({"hunts": out, "hunts_dir": hunts_dir})
+
+    @app.post("/api/hunts/run")
+    def hunts_run_api() -> JSONResponse:
+        """Trigger `mine hunts` on demand — same logic the backward
+        chain runs at Step 13. Read-only effects on the cluster /
+        rollup indexes; just upserts new analyst_hunt findings.
+        """
+        from enrich.findings.hunts import run_hunts
+        from enrich.findings.writer import bulk_upsert_findings
+        from enrich.es_client import init_index
+        import uuid as _uuid
+        findings_idx = cfg.findings.indexes.default
+        init_index(es, "setup/es-mappings/findings/default.json", findings_idx)
+        run_id = str(_uuid.uuid4())
+        try:
+            result = run_hunts(es, cfg, run_id)
+        except Exception as exc:
+            log.exception("hunts run failed")
+            raise HTTPException(500, f"hunts run failed: {exc}")
+        written_by_hunt: dict[str, int] = {}
+        for hid, findings in (result.get("by_hunt") or {}).items():
+            if findings:
+                n = bulk_upsert_findings(es, findings_idx, findings)
+                written_by_hunt[hid] = n
+        try:
+            es.indices.refresh(index=findings_idx)
+        except Exception:
+            pass
+        return JSONResponse({
+            "run_id":         run_id,
+            "loaded":         result.get("loaded", 0),
+            "written_by_hunt": written_by_hunt,
+            "errors":         result.get("errors") or [],
+        })
+
+    # ------------------------------------------------------------------
     # Findings (M5) — list / filter / status mutation / calibration scatter
     # ------------------------------------------------------------------
     @app.get("/api/findings")
     def findings_list_api(
         status: str = Query("new", description="Comma-separated list of statuses, or 'all'"),
         kind: Optional[str] = Query(None, description="Single finding kind to filter on"),
-        stream: Optional[str] = Query(None, description="drift | discovery | coverage"),
+        stream: Optional[str] = Query(None, description="drift | discovery | coverage | hunt"),
+        hunt_id: Optional[str] = Query(None, description="filter to a single analyst_hunt id (click-through from /hunts)"),
         # P1c facet rail — each accepts a single bucket key per dimension.
         score_band:    Optional[str] = Query(None, description="low | medium | high"),
         age_band:      Optional[str] = Query(None, description="today | week | older"),
@@ -411,7 +495,7 @@ def build_app(config_path: str | None = None) -> FastAPI:
             data = findings_mod.list_findings(
                 es, cfg,
                 status=status_list, kind=kind, stream=stream,
-                facets=facets, since=since,
+                facets=facets, since=since, hunt_id=hunt_id,
                 size=size, frm=frm, sort=sort,
             )
         except ValueError as exc:

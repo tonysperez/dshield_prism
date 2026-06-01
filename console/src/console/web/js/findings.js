@@ -115,12 +115,13 @@ function nextAction(row) {
   }
   return ACTION_TEMPLATES[row.kind] || null;
 }
-// Display labels for the three backend streams (the API contract still
-// uses drift/discovery/coverage; the UI surfaces them as a Category facet).
+// Display labels for the backend streams (the API contract uses
+// drift/discovery/coverage/hunt; the UI surfaces them as a Category facet).
 const STREAM_LABEL = {
   drift: "Changed",
   discovery: "New",
   coverage: "Confirm",
+  hunt: "Hunt",        // brutal-review 6.3 — analyst-authored hypothesis hits
 };
 // Triage state machine. Tooltip text per status — surfaced on the
 // facet-rail chips so an analyst doesn't need to read docs to know
@@ -150,6 +151,7 @@ const STREAM_TOOLTIP = {
   drift:     "Changed — playbooks/campaigns that shifted from baseline",
   discovery: "New — first appearances and intel verdict flips",
   coverage:  "Confirm — confirm a row to start tracking drift on the artifact",
+  hunt:      "Hunt — analyst-authored hypothesis hits (see /hunts)",
 };
 
 // Urgency-band priority for the default "action urgency" sort. Lower
@@ -166,9 +168,10 @@ const URGENCY_PRIORITY = {
 
 const state = {
   status: "new",     // single status (chip click), or "all"
-  stream: "",        // "" = all categories; or "drift" | "discovery" | "coverage"
+  stream: "",        // "" = all categories; or "drift" | "discovery" | "coverage" | "hunt"
   sort: "urgency",   // action verb first, recency tiebreak — score stays uncalibrated
   facets: {},        // {dim: bucket_key} — one active bucket per dim
+  hunt_id: "",       // brutal-review 6.3 — filter to a single hunt's findings (click-through from /hunts)
   selectedIds: new Set(), // multi-select for bulk status (ROADMAP #17.4)
   lastRows: [],           // most recent render, indexed by selection ops
   focusIdx: -1,           // keyboard-focused row index into lastRows (#16)
@@ -182,6 +185,7 @@ function parseQuery() {
   if (q.has("stream")) state.stream = q.get("stream");
   if (q.has("sort")) state.sort = q.get("sort");
   if (q.has("since")) state.since = q.get("since");
+  if (q.has("hunt_id")) state.hunt_id = q.get("hunt_id");
   for (const dim of FACET_DIMS) {
     if (q.has(dim)) state.facets[dim] = q.get(dim);
   }
@@ -193,6 +197,7 @@ function pushQuery() {
   if (state.stream) q.set("stream", state.stream);
   if (state.sort !== "urgency") q.set("sort", state.sort);
   if (state.since) q.set("since", state.since);
+  if (state.hunt_id) q.set("hunt_id", state.hunt_id);
   for (const dim of FACET_DIMS) {
     if (state.facets[dim]) q.set(dim, state.facets[dim]);
   }
@@ -298,6 +303,7 @@ function streamForKind(kind) {
   if (kind === "playbook" || kind === "campaign") return "coverage";
   if (kind.endsWith("_drift") || kind === "campaign_growth" ||
       kind === "playbook_resurgence") return "drift";
+  if (kind === "analyst_hunt") return "hunt";  // brutal-review 6.3
   return "discovery";
 }
 
@@ -452,6 +458,7 @@ function renderStreamChips(counts) {
     {key: "drift",     label: STREAM_LABEL.drift,     count: (counts && counts.drift)     || 0},
     {key: "discovery", label: STREAM_LABEL.discovery, count: (counts && counts.discovery) || 0},
     {key: "coverage",  label: STREAM_LABEL.coverage,  count: (counts && counts.coverage)  || 0},
+    {key: "hunt",      label: STREAM_LABEL.hunt,      count: (counts && counts.hunt)      || 0},
   ];
   for (const e of entries) {
     const tooltipKey = e.key || "all";
@@ -941,8 +948,9 @@ async function refreshSinceStrip() {
 async function fetchInbox() {
   const params = facetParams();
   params.set("status", state.status);
-  if (state.stream) params.set("stream", state.stream);
-  if (state.since)  params.set("since", state.since);
+  if (state.stream)  params.set("stream", state.stream);
+  if (state.since)   params.set("since", state.since);
+  if (state.hunt_id) params.set("hunt_id", state.hunt_id);
   params.set("size", 500);
   params.set("from", 0);
   // "urgency" is a client-side resort over a last_seen-ordered fetch;

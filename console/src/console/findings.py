@@ -61,7 +61,7 @@ def stream_for_kind(kind: str) -> str:
 
 
 def valid_streams() -> frozenset[str]:
-    return frozenset({"drift", "discovery", "coverage"})
+    return frozenset({"drift", "discovery", "coverage", "hunt"})
 
 
 def list_findings(
@@ -71,6 +71,7 @@ def list_findings(
     stream: Optional[str] = None,
     facets: Optional[dict[str, str]] = None,
     since: Optional[str] = None,
+    hunt_id: Optional[str] = None,
     size: int = 100,
     frm: int = 0,
     sort: str = "score",
@@ -113,6 +114,13 @@ def list_findings(
         must.append({"terms": {"kind": sorted(kinds_in_stream)}})
     if facets:
         must.extend(_facet_filters(facets))
+    if hunt_id:
+        # Click-through from /hunts page (brutal-review 6.3) — filter
+        # the analyst_hunt stream down to a specific hunt's findings.
+        # Implicitly scopes to `kind=analyst_hunt` since only those
+        # findings carry `evidence.hunt_id`.
+        must.append({"term": {"kind": "analyst_hunt"}})
+        must.append({"term": {"evidence.hunt_id.keyword": hunt_id}})
     if since:
         # "Changed since" = a finding either first appeared or got
         # touched after the reference timestamp. The "what changed
@@ -519,20 +527,23 @@ def facet_counts(
 
 def _kinds_for_stream(stream: str) -> frozenset[str]:
     return (
-        _COVERAGE_KINDS if stream == "coverage" else
-        _DRIFT_KINDS if stream == "drift" else
+        _COVERAGE_KINDS  if stream == "coverage"  else
+        _DRIFT_KINDS     if stream == "drift"     else
         _DISCOVERY_KINDS if stream == "discovery" else
+        _HUNT_KINDS      if stream == "hunt"      else
         frozenset()
     )
 
 
 def stream_counts(es, cfg, *, status: Optional[list[str]] = None) -> dict[str, int]:
-    """Per-stream counts (drift / discovery / coverage). Findings v2 step 3.
+    """Per-stream counts (drift / discovery / coverage / hunt).
 
-    Returns `{stream: count}`. Drives the three-section page header chips.
+    Returns `{stream: count}`. Drives the page header chips. Hunt findings
+    (brutal-review 6.1+) get their own stream so click-throughs from the
+    /hunts page render the right rows on the inbox.
     """
     counts = kind_counts(es, cfg, status=status)
-    out: dict[str, int] = {"drift": 0, "discovery": 0, "coverage": 0}
+    out: dict[str, int] = {"drift": 0, "discovery": 0, "coverage": 0, "hunt": 0}
     for k, n in counts.items():
         s = stream_for_kind(k)
         if s in out:

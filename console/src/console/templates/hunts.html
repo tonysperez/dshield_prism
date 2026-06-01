@@ -1,0 +1,165 @@
+{% extends "_base.html" %}
+{% block title %}DShield Hunts{% endblock %}
+{% block head_extra %}
+  <style>
+    /* Hypothesis-driven hunts page — brutal-review phase 6.3.
+       Read-only list of YAML-defined hunts in `config/hunts/`. Each
+       row shows the last-run match count, a "run now" button, and a
+       click-through to the matching findings.
+    */
+    #hunts-main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 16px 20px 60px;
+      display: flex;
+      flex-direction: column;
+      gap: 22px;
+    }
+    .h-section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: #6b7494;
+      margin: 0 0 4px;
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+    }
+    .h-hint {
+      font-size: 10px;
+      text-transform: none;
+      letter-spacing: 0;
+      color: #414b62;
+      font-weight: 400;
+    }
+    .h-toolbar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+    .h-btn {
+      font-size: 11px;
+      font-weight: 600;
+      background: #0e1e35;
+      border: 1px solid #4cc1ff28;
+      color: #4cc1ff;
+      border-radius: 4px;
+      padding: 6px 14px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .h-btn:hover { background: #1a2d4e; }
+    .h-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .h-status {
+      font-size: 11px;
+      color: #6b7494;
+    }
+    .h-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .h-item {
+      background: #0c1424;
+      border: 1px solid #1e2540;
+      border-radius: 7px;
+      padding: 14px 16px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+    }
+    .h-item .h-head {
+      grid-column: 1 / span 2;
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .h-item .h-id {
+      font-family: "JetBrains Mono", "SF Mono", "Consolas", monospace;
+      font-size: 12px;
+      color: #4cc1ff;
+    }
+    .h-item .h-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: #e8edf7;
+    }
+    .h-item .h-count {
+      margin-left: auto;
+      font-size: 14px;
+      font-weight: 700;
+      color: #f0c674;
+    }
+    .h-item .h-count.zero { color: #6b7494; }
+    .h-item .h-desc {
+      grid-column: 1 / span 2;
+      font-size: 12px;
+      color: #8e9bbf;
+      white-space: pre-wrap;
+      line-height: 1.5;
+    }
+    .h-item .h-filters {
+      grid-column: 1 / span 2;
+      font-family: "JetBrains Mono", "SF Mono", "Consolas", monospace;
+      font-size: 11px;
+      color: #c0c0c0;
+      background: #08101e;
+      border: 1px solid #1e2540;
+      border-radius: 4px;
+      padding: 8px 10px;
+      overflow-x: auto;
+    }
+    .h-item .h-actions {
+      grid-column: 1 / span 2;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .h-item .h-link {
+      font-size: 11px;
+      font-weight: 600;
+      color: #4cc1ff;
+      text-decoration: none;
+    }
+    .h-item .h-link:hover { text-decoration: underline; }
+    .h-empty {
+      font-size: 12px;
+      color: #414b62;
+      padding: 24px;
+      text-align: center;
+      background: #0c1424;
+      border: 1px dashed #1e2540;
+      border-radius: 6px;
+    }
+    .h-error {
+      font-size: 12px;
+      color: #f87171;
+      padding: 12px;
+      background: #1a0e0e;
+      border: 1px solid #f8717128;
+      border-radius: 6px;
+    }
+  </style>
+{% endblock %}
+{% block content %}
+  <main id="hunts-main">
+    <section class="h-section" id="sec-hunts">
+      <p class="h-section-title">Hunts
+        <span class="h-hint">analyst-authored YAML queries against the session rollup — see <code id="hunts-dir">config/hunts</code></span>
+      </p>
+      <div class="h-toolbar">
+        <button id="h-run-all" class="h-btn" type="button">Run all hunts now</button>
+        <span id="h-status" class="h-status">loading…</span>
+      </div>
+      <div id="hunts-body" class="h-list">
+        <em class="h-empty">loading…</em>
+      </div>
+    </section>
+  </main>
+{% endblock %}
+{% block scripts %}
+  <script src="/static/js/hunts.js" defer></script>
+{% endblock %}

@@ -90,11 +90,19 @@ class FindingsIndexes(BaseModel):
     default: str = "prism.finding"
 
 
+class HuntsConfig(BaseModel):
+    """Mirror of the parent HuntsConfig (brutal-review phase 6.1).
+    Console reads `config_dir` to drive the /hunts page YAML loader."""
+    config_dir: str = "config/hunts"
+    max_findings_per_hunt: int = 500
+
+
 class FindingsConfig(BaseModel):
     """Minimal mirror — the console only needs to know the index name
     and whether the feature is enabled. Thresholds live on the miner."""
     enabled: bool = True
     indexes: FindingsIndexes = FindingsIndexes()
+    hunts: HuntsConfig = HuntsConfig()
 
 
 class MetricsIndexes(BaseModel):
