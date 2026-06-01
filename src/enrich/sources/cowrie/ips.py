@@ -46,6 +46,13 @@ _IP_CLUSTER_UPDATE_SCRIPT = (
     "if (params.containsKey('novelty_score_external')) {"
     "  ip.cluster.novelty_score_external = params.novelty_score_external;"
     "}"
+    # External-match attribution (5.9).
+    "if (params.containsKey('external_match_id')) {"
+    "  ip.cluster.external_match_id = params.external_match_id;"
+    "}"
+    "if (params.containsKey('external_match_cosine')) {"
+    "  ip.cluster.external_match_cosine = params.external_match_cosine;"
+    "}"
     "ip.cluster.is_outlier = params.is_outlier;"
     "ip.cluster.scored_at = params.scored_at;"
 )

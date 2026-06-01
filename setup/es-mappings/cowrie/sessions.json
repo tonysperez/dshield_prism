@@ -193,6 +193,8 @@
                           "id":                     { "type": "keyword" },
                           "novelty_score":          { "type": "float" },
                           "novelty_score_external": { "type": "float" },
+                          "external_match_id":      { "type": "keyword" },
+                          "external_match_cosine":  { "type": "float" },
                           "is_outlier":             { "type": "boolean" },
                           "scored_at":              { "type": "date" }
                         }

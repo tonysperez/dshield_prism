@@ -120,6 +120,13 @@ _CLUSTER_UPDATE_SCRIPT = (
     "if (params.containsKey('novelty_score_external')) {"
     "  en.cluster.novelty_score_external = params.novelty_score_external;"
     "}"
+    # External-match attribution (5.9).
+    "if (params.containsKey('external_match_id')) {"
+    "  en.cluster.external_match_id = params.external_match_id;"
+    "}"
+    "if (params.containsKey('external_match_cosine')) {"
+    "  en.cluster.external_match_cosine = params.external_match_cosine;"
+    "}"
     "en.cluster.is_outlier = params.is_outlier;"
     "en.cluster.scored_at = params.scored_at;"
 )

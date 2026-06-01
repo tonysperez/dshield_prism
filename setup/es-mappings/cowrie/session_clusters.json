@@ -34,6 +34,7 @@
         "type": "text",
         "fields": { "keyword": { "type": "keyword", "ignore_above": 64 } }
       },
+      "external_match_techniques": { "type": "flattened" },
       "source_run_id": {
         "type": "text",
         "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } }

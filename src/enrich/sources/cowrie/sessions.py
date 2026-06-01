@@ -64,6 +64,15 @@ _SESSION_CLUSTER_UPDATE_SCRIPT = (
     "if (params.containsKey('novelty_score_external')) {"
     "  s.cluster.novelty_score_external = params.novelty_score_external;"
     "}"
+    # External-match attribution (5.9) — the closest external centroid
+    # id + raw cosine. Same containsKey guard so absence on a doc is the
+    # unambiguous "no external match available" signal.
+    "if (params.containsKey('external_match_id')) {"
+    "  s.cluster.external_match_id = params.external_match_id;"
+    "}"
+    "if (params.containsKey('external_match_cosine')) {"
+    "  s.cluster.external_match_cosine = params.external_match_cosine;"
+    "}"
     "s.cluster.is_outlier = params.is_outlier;"
     "s.cluster.scored_at = params.scored_at;"
     # Re-clustering invalidates any playbook label on this session — the old
@@ -1324,6 +1333,126 @@ def build_session_scalar_block(scalars_list: list[dict], weight: float) -> "np.n
     return block
 
 
+def resolve_external_match_techniques(
+    cfg: AppConfig, secrets: Secrets, *,
+    reference_generation: Optional[int] = None,
+    dry_run: bool = False,
+) -> dict:
+    """For each external session-centroid (latest generation), compute
+    the MITRE technique distribution of the AR tests its sample sessions
+    came from, and persist as ``external_match_techniques`` on the
+    centroid doc (brutal-review phase 5.9).
+
+    Example: a centroid whose 5 sample sessions came from 3 tests of
+    T1003.007 and 2 of T1003.008 ends up with
+    ``{"T1003.007": 0.6, "T1003.008": 0.4}``.
+
+    The console "Tradecraft Matches" surface (5.10) reads this field
+    to render the technique label inline next to a session's
+    ``cluster.external_match_id``.
+    """
+    from elasticsearch.helpers import bulk
+    from collections import Counter
+
+    es = make_client(cfg.elasticsearch, secrets)
+    clusters_idx = cfg.elasticsearch.indexes.cowrie.session_clusters
+    ref_idx = cfg.elasticsearch.indexes.cowrie.reference_sessions
+
+    # Find the latest external generation if not pinned.
+    if reference_generation is None:
+        try:
+            r = es.search(
+                index=clusters_idx, size=1,
+                query={"bool": {"must": [
+                    {"term": {"doc_type": "reference_centroid"}},
+                    {"term": {"reference_source.keyword": "external"}},
+                ]}},
+                sort=[{"reference_generation": {"order": "desc"}}],
+                _source=["reference_generation"],
+            )
+            hits = r["hits"]["hits"]
+            if not hits:
+                return {"resolved": 0, "skipped": 0,
+                        "reason": "no external reference centroids"}
+            reference_generation = int(hits[0]["_source"]["reference_generation"])
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[external-match-tech] gen lookup failed: %s", exc)
+            return {"resolved": 0, "errors": [str(exc)]}
+
+    # Fetch every centroid in that generation along with sample_session_ids.
+    cents = es.search(
+        index=clusters_idx, size=500,
+        query={"bool": {"must": [
+            {"term": {"doc_type": "reference_centroid"}},
+            {"term": {"reference_source.keyword": "external"}},
+            {"term": {"reference_generation": reference_generation}},
+        ]}},
+        _source=["cluster_id", "sample_session_ids"],
+    )
+    centroid_hits = cents["hits"]["hits"]
+    if not centroid_hits:
+        return {"resolved": 0, "skipped": 0, "reason": "no centroids in gen"}
+
+    # Bulk-mget every sample session by id, pulling atomic_id.
+    all_sample_ids: list[str] = []
+    per_centroid_samples: dict[str, list[str]] = {}
+    for h in centroid_hits:
+        s = h["_source"]
+        samples = s.get("sample_session_ids") or []
+        per_centroid_samples[h["_id"]] = samples
+        all_sample_ids.extend(samples)
+    sid_to_atomic: dict[str, str] = {}
+    if all_sample_ids:
+        mg = es.mget(
+            index=ref_idx, ids=list(set(all_sample_ids)),
+            _source=["dshield.reference.atomic_id"],
+        )
+        for d in (mg.get("docs") or []):
+            if not d.get("found"):
+                continue
+            src = d.get("_source") or {}
+            atomic_id = ((src.get("dshield") or {}).get("reference") or {}).get("atomic_id")
+            if atomic_id:
+                sid_to_atomic[d["_id"]] = atomic_id
+
+    # Build the technique distribution per centroid.
+    actions: list[dict] = []
+    stats = {"resolved": 0, "skipped_no_samples": 0, "skipped_no_atomic": 0}
+    for h in centroid_hits:
+        cid = h["_id"]
+        samples = per_centroid_samples.get(cid) or []
+        if not samples:
+            stats["skipped_no_samples"] += 1
+            continue
+        counter: Counter[str] = Counter()
+        for sid in samples:
+            atomic = sid_to_atomic.get(sid)
+            if atomic:
+                counter[atomic] += 1
+        total = sum(counter.values())
+        if total == 0:
+            stats["skipped_no_atomic"] += 1
+            continue
+        dist = {k: round(v / total, 4) for k, v in counter.most_common()}
+        actions.append({
+            "_op_type": "update",
+            "_index":   clusters_idx,
+            "_id":      cid,
+            "doc":      {"external_match_techniques": dist},
+        })
+        stats["resolved"] += 1
+
+    if dry_run:
+        return dict(stats, dry_run=True, actions_built=len(actions))
+    if actions:
+        n_ok, errs = bulk(es, actions, raise_on_error=False)
+        stats["bulk_ok"] = n_ok
+        stats["bulk_errors"] = len(errs) if isinstance(errs, list) else 0
+        es.indices.refresh(index=clusters_idx)
+    log.info("[external-match-tech] %s", stats)
+    return stats
+
+
 def populate_reference_session_embeddings(
     cfg: AppConfig, secrets: Secrets,
     *, dry_run: bool = False,
@@ -1547,6 +1676,19 @@ def run_cluster(
             and result.get("cluster_docs_written")):
         result["specificity"] = _persist_cluster_specificity(
             es, sessions_idx, clusters_idx, run_id, scfg.specificity_store_cap,
+        )
+
+    # External bootstrap (5.9): resolve the MITRE technique distribution
+    # for each freshly-minted external centroid and persist as
+    # `external_match_techniques` on the centroid doc. The console's
+    # Tradecraft Matches surface (5.10) reads this field to render the
+    # technique label inline next to a session's external_match_id.
+    if (is_external_bootstrap
+            and not dry_run
+            and result.get("cluster_docs_written")):
+        result["external_match_techniques"] = resolve_external_match_techniques(
+            cfg, secrets,
+            reference_generation=result.get("reference_generation"),
         )
     return result
 

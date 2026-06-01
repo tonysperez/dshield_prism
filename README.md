@@ -148,7 +148,7 @@ Prism is built to answer:
 - What commands are typically run alongside this one, and what's the intent of the sequence?
 - How does this IP behave, and what other IPs behave like it?
 - What IPs don't behave like anything else in the corpus?
-- Is this activity checked against opt-in CTI feeds, or is it novel relative to my own corpus? *(External-corpus novelty — comparing against another honeypot sensor's traffic, not just CTI feeds — is pending [ROADMAP.md](docs/ROADMAP.md) phase 5.)*
+- Is this activity novel relative to my own corpus *and* relative to documented adversary tradecraft? Novelty is scored against both the sensor's own clusters and an external reference corpus (Atomic Red Team's per-MITRE-technique adversary emulation manifests); CTI feeds layer on top as a separate verdict signal.
 
 ## Status & roadmap
 

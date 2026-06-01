@@ -709,16 +709,41 @@ def run_layer_clustering(
         # every doc against it too. Outliers get max novelty (1.0) against
         # both refs by convention — HDBSCAN already said "nothing in this
         # corpus claims you".
+        # External-match attribution (5.9): also record WHICH external
+        # centroid was the closest match + the raw cosine. Outliers
+        # carry no match (they don't claim any centroid).
         if score_centroids_external is not None:
             if is_outlier:
                 ext_score = 1.0
+                ext_match_idx = None
+                ext_match_cos = None
             else:
                 ext_vec = (
                     cluster_matrix[i] if score_external_in_augmented
                     else normalized[i]
                 )
-                ext_score = novelty_score(ext_vec, score_centroids_external)
+                # Find the nearest external centroid in one pass — same
+                # math as `novelty_score`, but we keep the index of the
+                # winning centroid alongside its cosine.
+                norm_v = float(np.linalg.norm(ext_vec))
+                best_idx = None
+                best_sim = -1.0
+                if norm_v > 0.0:
+                    for idx, c_vec in score_centroids_external.items():
+                        norm_c = float(np.linalg.norm(c_vec))
+                        if norm_c == 0.0:
+                            continue
+                        sim = float(np.dot(ext_vec, c_vec)) / (norm_v * norm_c)
+                        if sim > best_sim:
+                            best_sim = sim
+                            best_idx = idx
+                ext_score = float(1.0 - max(0.0, best_sim))
+                ext_match_idx = best_idx
+                ext_match_cos = best_sim if best_idx is not None else None
             params["novelty_score_external"] = round(ext_score, 6)
+            if ext_match_idx is not None:
+                params["external_match_id"] = f"cluster_{ext_match_idx}"
+                params["external_match_cosine"] = round(float(ext_match_cos), 6)
         update_actions.append({
             "_op_type": "update",
             "_id":      doc_id,
