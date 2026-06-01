@@ -79,6 +79,7 @@ def reasons_to_escalate(
     cfg: CloudConfig,
     embedding: Optional[list[float]] = None,
     centroids: Optional[list[list[float]]] = None,
+    centroids_external: Optional[list[list[float]]] = None,
     rng: Optional[random.Random] = None,
 ) -> list[str]:
     """Return list of reason codes that fire for this command. Empty = stay local.
@@ -86,6 +87,15 @@ def reasons_to_escalate(
     embedding + centroids are optional Phase 3 inputs. When both are provided
     and the command's novelty_score >= cfg.triage.novel_embedding_threshold,
     the "novel_embedding" reason code fires.
+
+    ``centroids_external`` (brutal-review phase 5.6) is the corresponding
+    external-reference centroid set. When supplied AND non-empty, the
+    novelty score is computed against IT instead of the in-corpus
+    ``centroids`` — a session that's locally unusual but matches
+    documented adversary tradecraft stops firing `novel_embedding`,
+    reserving cloud-LLM escalation for behavior that's novel to both
+    the sensor AND the documented catalog. Falls back to in-corpus
+    ``centroids`` when ``centroids_external`` is absent or empty.
     """
     rng = rng or random
     reasons: list[str] = []
@@ -137,7 +147,15 @@ def reasons_to_escalate(
         and parsed.confidence >= cfg.triage.novel_confidence_min
     ):
         from .clustering import novelty_score_from_lists
-        score = novelty_score_from_lists(embedding, centroids)
+        # Prefer external centroids when present (5.6). Same math,
+        # different reference geometry — the score reflects "novel vs
+        # the documented adversary catalog" rather than "novel vs this
+        # sensor's own history". The threshold stays the same so
+        # operator-level tuning carries over.
+        scoring_centroids = (
+            centroids_external if centroids_external else centroids
+        )
+        score = novelty_score_from_lists(embedding, scoring_centroids)
         if score >= cfg.triage.novel_embedding_threshold:
             reasons.append("novel_embedding")
 

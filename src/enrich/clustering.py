@@ -151,12 +151,19 @@ def novelty_score_from_lists(
     return float(1.0 - max(0.0, best))
 
 
-def load_centroids(es: Elasticsearch, clusters_index: str) -> list[list[float]]:
+def load_centroids(
+    es: Elasticsearch, clusters_index: str,
+    *, reference_source: Optional[str] = None,
+) -> list[list[float]]:
     """Load pure-embedding centroid vectors. Used by triage's novel_embedding rule.
 
-    Prefers `doc_type=reference_centroid` (highest `reference_generation`) for
-    stable across-run novelty scores; falls back to the latest `doc_type=cluster`
-    run when no reference exists (fresh deploy, pre-bootstrap).
+    Prefers `doc_type=reference_centroid` (highest `reference_generation`
+    for the requested `reference_source`) for stable across-run novelty
+    scores; falls back to the latest `doc_type=cluster` run when no
+    reference exists (fresh deploy, pre-bootstrap) AND the in-corpus
+    path is requested. When `reference_source` is explicit (e.g.
+    `"external"`), no in-run fallback is attempted — if no external
+    reference centroids exist for that source, return [].
 
     Returns [] on missing index, no data, or any query failure.
     """
@@ -164,9 +171,17 @@ def load_centroids(es: Elasticsearch, clusters_index: str) -> list[list[float]]:
         if not es.indices.exists(index=clusters_index):
             return []
 
-        ref = load_reference_centroids(es, clusters_index)
+        ref = load_reference_centroids(
+            es, clusters_index, reference_source=reference_source,
+        )
         if ref and ref.get("pure"):
             return ref["pure"]
+
+        # No in-run fallback when an explicit reference_source was
+        # requested — the caller is asking specifically "do we have
+        # an external reference?" and the honest answer is "no".
+        if reference_source is not None:
+            return []
 
         resp = es.search(
             index=clusters_index,

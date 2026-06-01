@@ -2729,9 +2729,19 @@ def run_retriage(
     # Load centroids once for the novel_embedding rule. If there are no
     # cluster centroids yet, the rule will silently no-op per
     # reasons_to_escalate's existing guard.
+    # Dual centroids (brutal-review 5.6): if an external reference set
+    # exists for this layer, the triage rule scores against it instead
+    # of the in-corpus set — reserving cloud escalation for behavior
+    # novel to BOTH the sensor AND the documented adversary catalog.
     centroids = load_centroids(es, clusters_idx)
-    log.info("[re-triage] loaded %d centroids for novel_embedding rule",
-             len(centroids))
+    centroids_external = load_centroids(
+        es, clusters_idx, reference_source="external",
+    )
+    log.info(
+        "[re-triage] loaded %d in-corpus centroids and %d external "
+        "centroids for novel_embedding rule",
+        len(centroids), len(centroids_external),
+    )
 
     deterministic_rng = random.Random(0)
     stats: dict = {
@@ -2780,6 +2790,10 @@ def run_retriage(
             cfg=cfg.cloud,
             embedding=embedding,
             centroids=centroids if embedding and centroids else None,
+            centroids_external=(
+                centroids_external if embedding and centroids_external
+                else None
+            ),
             rng=deterministic_rng,
         )
         # Keep only rule-derived reasons from the new run; merge in
