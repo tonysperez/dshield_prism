@@ -1,0 +1,19 @@
+id: novel-persistence
+name: "Persistence matching documented adversary tradecraft"
+description: |
+  Sessions classified as persistence-intent that ALSO embed-cluster
+  closely to a documented adversary technique in the external
+  reference corpus (Atomic Red Team) — cosine ≥ 0.5. This is the
+  inverse of novelty: not "what's new?" but "what looks like a known
+  technique?"
+
+  Uses the 5.5 dual-novelty + 5.9 external-match-attribution data.
+  Below the cosine floor, the "match" is structural happenstance —
+  raising to 0.7 catches only sessions that strongly resemble
+  documented tradecraft.
+filters:
+  - kind: intent_in
+    values:
+      - persistence
+  - kind: external_match_cosine_gte
+    threshold: 0.5

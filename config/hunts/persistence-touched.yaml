@@ -1,0 +1,17 @@
+id: persistence-touched
+name: "Persistence vectors touched"
+description: |
+  Sessions the local LLM classified as persistence or privilege-escalation
+  intent. Catches the "actor stuck around" axis — separate from the
+  novelty / drift inbox, which surfaces "what's new."
+
+  Tune by editing `intent_in.values` (add `defense_evasion`,
+  `execution` for noisier scope) or by adding a `command_count_gte`
+  floor to filter probes.
+filters:
+  - kind: intent_in
+    values:
+      - persistence
+      - privilege_escalation
+  - kind: command_count_gte
+    threshold: 1
