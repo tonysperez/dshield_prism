@@ -76,6 +76,51 @@
     setHTML("droppers-list", html);
   }
 
+  function renderCrossref(rows) {
+    if (!rows || rows.length === 0) {
+      setHTML("crossref-list",
+        '<em class="empty-hint">no cross-session activity recorded — run <code>mine file-crossref</code> after the next backward pass</em>');
+      return;
+    }
+    const html = rows.map((row) => {
+      const ip = row.source_ip || "(no ip)";
+      const ipLink = `<a class="gl" href="/artifact/ip/${encodeURIComponent(ip)}">${escapeHtml(ip)}</a>`;
+      const fs = row.first_seen || {};
+      const fx = row.first_executed || null;
+      const cs = row.cross_session === true;
+      const csBadge = cs
+        ? '<span class="art-badge malicious" style="font-size:10px;padding:1px 6px;margin-left:8px">CROSS-SESSION</span>'
+        : '<span class="art-badge neutral" style="font-size:10px;padding:1px 6px;margin-left:8px">same-session</span>';
+
+      const fsSidLink = fs.session_id
+        ? `<a class="gl" href="/graph?ioc=session:${encodeURIComponent(fs.session_id)}">${escapeHtml(fs.session_id)}</a>`
+        : "?";
+      const fsFile = fs.filename ? `<code>${escapeHtml(fs.filename)}</code>` : "(unnamed)";
+      const fsAction = fs.action || "drop";
+      const fsLine = `${escapeHtml(fsAction)} &nbsp;·&nbsp; ${fsFile} &nbsp;·&nbsp; session ${fsSidLink} &nbsp;·&nbsp; ${escapeHtml(fs.ts || "")}`;
+
+      let fxLine = '<div class="cmd-meta" style="margin-top:4px"><em class="empty-hint">no execution attribution yet (uploaded only, never run by this IP)</em></div>';
+      if (fx && fx.session_id) {
+        const fxSidLink = `<a class="gl" href="/graph?ioc=session:${encodeURIComponent(fx.session_id)}">${escapeHtml(fx.session_id)}</a>`;
+        const cmdHash = fx.command_hash
+          ? `<a class="gl" href="/graph?ioc=command:${encodeURIComponent(fx.command_hash)}">command ${escapeHtml(String(fx.command_hash).slice(0, 12))}…</a>`
+          : "(no command_hash)";
+        const cmdLineHtml = fx.command_line
+          ? `<div class="cmd-line" style="margin-top:4px">${escapeHtml(fx.command_line)}</div>`
+          : "";
+        fxLine = `<div class="cmd-meta" style="margin-top:4px">first exec: session ${fxSidLink} &nbsp;·&nbsp; ${cmdHash} &nbsp;·&nbsp; ${escapeHtml(fx.ts || "")}</div>${cmdLineHtml}`;
+      }
+      const counts = `<div class="cmd-meta" style="margin-top:4px;color:#6b7494">sessions dropped: ${row.n_sessions_dropped || 0} &nbsp;·&nbsp; sessions executed: ${row.n_sessions_executed || 0}</div>`;
+      return `<div class="cmd-row">
+        <div class="cmd-meta" style="color:#cdd4e6">IP ${ipLink}${csBadge}</div>
+        <div class="cmd-meta" style="margin-top:4px">first seen: ${fsLine}</div>
+        ${fxLine}
+        ${counts}
+      </div>`;
+    }).join("");
+    setHTML("crossref-list", html);
+  }
+
   function renderProviders(intel) {
     if (!intel || !intel.providers || Object.keys(intel.providers).length === 0) {
       setHTML("providers-grid",
@@ -123,12 +168,14 @@
     }
     if (data.rejected_reason) {
       setHTML("derived-card", `<em class="empty-hint">${escapeHtml(data.rejected_reason)}</em>`);
-      setHTML("droppers-list", ""); setHTML("providers-grid", "");
+      setHTML("droppers-list", ""); setHTML("crossref-list", "");
+      setHTML("providers-grid", "");
       return;
     }
     renderBadges(data);
     renderDerived(data.intel);
     renderDroppers(data.droppers);
+    renderCrossref(data.crossref);
     renderProviders(data.intel);
   }
 

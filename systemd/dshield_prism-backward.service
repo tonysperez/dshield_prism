@@ -121,6 +121,14 @@ ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/
 # backward chain. Brutal-review phase 6.1.
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml mine hunts
 
+# --- Step 14: cross-session file -> command attribution. Joins each
+# session's file_events to subsequent commands run by the same source.ip
+# (across sessions) and writes one doc per (sha256, source.ip) into
+# `prism.crossref.file_command`. Drives the artifact-hash pane's
+# "first-uploaded / first-executed" timeline. Read-only on the session
+# rollup; soft-fail. Brutal-review phase 7.6.
+ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml mine file-crossref
+
 StandardOutput=journal
 StandardError=journal
 

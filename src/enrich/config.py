@@ -47,6 +47,11 @@ class CowrieIndexes(BaseModel):
     # pair, content-addressed on `sorted([bhv_id, inf_id])` so re-mines
     # converge on the same operation_id.
     operations: str = "prism.operations"
+    # Cross-session file -> command attribution (brutal-review 7.6).
+    # One doc per (sha256, source.ip) carrying first_seen + first_executed
+    # session pointers. Drives the artifact-hash pane's "first seen
+    # uploaded in session X, first executed in session Y" surface.
+    file_command_crossref: str = "prism.crossref.file_command"
     # External reference-corpus sessions (brutal-review phase 5.2).
     # Synthetic sessions imported from Atomic Red Team — feeds the
     # `reference_source=external` centroid set built in 5.4, which 5.5

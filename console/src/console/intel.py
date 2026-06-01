@@ -311,8 +311,54 @@ def _droppers_for_hash(es, cfg, sha: str, *, size: int = 50) -> list[dict[str, A
     return out
 
 
+def _crossref_timeline_for_hash(es, cfg, sha: str, *, size: int = 50) -> list[dict[str, Any]]:
+    """Pull cross-session file -> command attribution docs for `sha` from
+    `prism.crossref.file_command` (brutal-review 7.6). One doc per
+    (sha256, source.ip); returns them sorted with cross-session pairs
+    first (those are the analyst-grade signal), then by first_seen.ts.
+
+    Soft-degrades to [] when the index is missing — no error surfaces.
+    """
+    idx = cfg.elasticsearch.indexes.cowrie.file_command_crossref
+    out: list[dict[str, Any]] = []
+    try:
+        if not es.indices.exists(index=idx):
+            return out
+        resp = es.search(
+            index=idx, size=size,
+            query={"term": {"sha256": sha}},
+            _source=[
+                "sha256", "source.ip",
+                "first_seen.session_id", "first_seen.ts", "first_seen.action",
+                "first_seen.filename", "first_seen.command_hash",
+                "first_seen.command_attribution",
+                "first_executed.session_id", "first_executed.ts",
+                "first_executed.command_hash", "first_executed.command_line",
+                "n_sessions_dropped", "n_sessions_executed", "cross_session",
+            ],
+            sort=[
+                {"cross_session": "desc"},
+                {"first_seen.ts": "asc"},
+            ],
+        )
+    except Exception as exc:                           # pragma: no cover
+        log.warning("console.intel: crossref query for %s failed: %s", sha, exc)
+        return out
+    for h in resp.get("hits", {}).get("hits", []) or []:
+        s = h.get("_source") or {}
+        out.append({
+            "source_ip":           ((s.get("source") or {}).get("ip")),
+            "first_seen":          s.get("first_seen") or {},
+            "first_executed":      s.get("first_executed") or None,
+            "n_sessions_dropped":  s.get("n_sessions_dropped") or 0,
+            "n_sessions_executed": s.get("n_sessions_executed") or 0,
+            "cross_session":       bool(s.get("cross_session")),
+        })
+    return out
+
+
 def fetch_intel_hash(es, cfg, value: str) -> dict[str, Any]:
-    """Joined view for a file-hash artifact (ROADMAP #2/#3).
+    """Joined view for a file-hash artifact (ROADMAP #2/#3 + 7.6).
 
     Shape:
     {
@@ -320,6 +366,7 @@ def fetch_intel_hash(es, cfg, value: str) -> dict[str, Any]:
       "intel":              <intel-hash doc body or None>,   # MB / ThreatFox / VT
       "intel_index_exists": bool,
       "droppers":           [{session_id, command_hash, filename, action}],
+      "crossref":           [{source_ip, first_seen, first_executed, ...}],
     }
     """
     canon = _canonical_hash(value)
@@ -327,11 +374,13 @@ def fetch_intel_hash(es, cfg, value: str) -> dict[str, Any]:
         return {
             "artifact": {"kind": "hash", "value": value},
             "intel": None, "intel_index_exists": False, "droppers": [],
+            "crossref": [],
             "rejected_reason": "value not a md5/sha1/sha256 hash",
         }
     out: dict[str, Any] = {
         "artifact": {"kind": "hash", "value": canon},
         "intel": None, "intel_index_exists": False, "droppers": [],
+        "crossref": [],
     }
     intel_idx = cfg.intel.indexes.hash
     try:
@@ -343,4 +392,5 @@ def fetch_intel_hash(es, cfg, value: str) -> dict[str, Any]:
     except Exception as exc:  # pragma: no cover
         log.warning("console.intel: hash intel GET %s failed: %s", canon, exc)
     out["droppers"] = _droppers_for_hash(es, cfg, canon)
+    out["crossref"] = _crossref_timeline_for_hash(es, cfg, canon)
     return out

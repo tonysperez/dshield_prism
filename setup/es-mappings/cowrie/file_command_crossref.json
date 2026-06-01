@@ -1,0 +1,55 @@
+{
+  "_comment": "Cross-session file -> command attribution (brutal-review 7.6). One doc per (sha256, source.ip) pair, content-addressed _id = 'fcx-<sha16(sha256:ip)>' so re-mines converge. Strict-dynamic: every field declared up front. Renamed for storage as 'crossref' (project-owned function namespace).",
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "30s",
+    "mapping.total_fields.limit": 1000
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "@timestamp":   { "type": "date" },
+      "crossref_id":  { "type": "keyword" },
+      "sha256":       { "type": "keyword" },
+      "source": {
+        "properties": {
+          "ip": { "type": "ip" }
+        }
+      },
+      "first_seen": {
+        "properties": {
+          "session_id":          { "type": "keyword" },
+          "ts":                  { "type": "date" },
+          "action":              { "type": "keyword" },
+          "filename": {
+            "type": "text",
+            "fields": {
+              "keyword": { "type": "keyword", "ignore_above": 512 }
+            }
+          },
+          "command_hash":        { "type": "keyword" },
+          "command_attribution": { "type": "keyword" }
+        }
+      },
+      "first_executed": {
+        "properties": {
+          "session_id":          { "type": "keyword" },
+          "ts":                  { "type": "date" },
+          "command_hash":        { "type": "keyword" },
+          "command_line": {
+            "type": "text",
+            "fields": {
+              "keyword": { "type": "keyword", "ignore_above": 8192 }
+            }
+          }
+        }
+      },
+      "n_sessions_dropped":   { "type": "long" },
+      "n_sessions_executed":  { "type": "long" },
+      "cross_session":        { "type": "boolean" },
+      "run_id":               { "type": "keyword" },
+      "generated_at":         { "type": "date" }
+    }
+  }
+}

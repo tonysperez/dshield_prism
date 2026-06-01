@@ -50,6 +50,10 @@ class CowrieIndexes(BaseModel):
     # promoted to first-class entities. Console reads from this index
     # for the new `operation` anchor type (7.2).
     operations: str = "prism.operations"
+    # File -> command cross-session attribution (brutal-review 7.6).
+    # Console reads from this index for the artifact-hash pane's
+    # "first-uploaded / first-executed" timeline panel.
+    file_command_crossref: str = "prism.crossref.file_command"
 
 
 class SourceIndexes(BaseModel):

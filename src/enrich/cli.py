@@ -95,6 +95,7 @@ _LAYER_MAPPINGS = {
         "playbook_anchors":  "setup/es-mappings/cowrie/playbook_anchors.json",
         "reference_session": "setup/es-mappings/cowrie/reference_session.json",
         "operations":        "setup/es-mappings/cowrie/operations.json",
+        "file_command_crossref": "setup/es-mappings/cowrie/file_command_crossref.json",
     },
     # External threat-intel — cross-source per-artifact indices.
     # `init-indexes --source intel` creates these. M1 shipped `ip`,
@@ -560,6 +561,7 @@ def _resolve_index_for_layer(cfg, source: str, layer: str) -> str:
             "playbook_anchors":  c.playbook_anchors,
             "reference_session": c.reference_sessions,
             "operations":        c.operations,
+            "file_command_crossref": c.file_command_crossref,
         }[layer]
     if source == "intel":
         i = cfg.intel.indexes
@@ -980,6 +982,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_mh.add_argument("--dry-run", action="store_true",
                       help="Load + execute but don't write findings")
+
+    # mine file-crossref — brutal-review phase 7.6. Cross-session
+    # file -> command attribution. One doc per (sha256, source.ip)
+    # in `prism.crossref.file_command` carrying first_seen + first_executed
+    # session pointers; `cross_session=true` marks pairs where the
+    # exec happened in a DIFFERENT session than the drop.
+    p_mfx = mine_sub.add_parser(
+        "file-crossref",
+        help="Mine cross-session file -> command attribution (sha256 x source.ip)",
+    )
+    p_mfx.add_argument("--dry-run", action="store_true",
+                       help="Compute pairs without writing crossref docs")
 
     # track lifecycles — Findings v2 step 1. Walks session_clusters /
     # campaigns / ips_rollup; upserts one doc per playbook_id /
@@ -1481,6 +1495,12 @@ def main(argv: list[str] | None = None) -> int:
             stats = run_mine_operations(cfg, secrets, dry_run=args.dry_run)
             print(json.dumps(stats, indent=2, default=str))
             return 0 if stats.get("bulk_errors", 0) == 0 else 1
+        if args.subject == "file-crossref":
+            # Brutal-review phase 7.6.
+            from .sources.cowrie.file_crossref import run_mine_file_crossref
+            stats = run_mine_file_crossref(cfg, secrets, dry_run=args.dry_run)
+            print(json.dumps(stats, indent=2, default=str))
+            return 0
         if args.subject == "hunts":
             # Hypothesis-driven hunts (brutal-review phase 6.1). Reads
             # YAML from cfg.findings.hunts.config_dir, executes each
