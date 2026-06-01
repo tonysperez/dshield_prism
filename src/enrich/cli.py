@@ -883,6 +883,17 @@ def _build_parser() -> argparse.ArgumentParser:
                 "read nor written."
             ),
         )
+        ref_group.add_argument(
+            "--bootstrap-from", choices=("external",), default=None,
+            help=(
+                "Read from a reference corpus (rather than the live rollup) "
+                "and mint its centroids as a NEW reference generation tagged "
+                "with the matching `reference_source`. `external` reads "
+                "`prism.reference.cowrie.session` — populated by "
+                "`import_reference_corpus.py` (5.2) + `enrich --reference` "
+                "(5.3). Brutal-review phase 5.4; session layer only."
+            ),
+        )
 
     # rollup <layer>
     p_rollup = sub.add_parser("rollup", help="Aggregate one layer up from raw events")
@@ -1354,6 +1365,14 @@ def main(argv: list[str] | None = None) -> int:
         # (commands → sessions → ips) with the same flags. Per-layer
         # verbs are still available and behave identically; this is a
         # convenience wrapper for backward-cycle runs.
+        bootstrap_from = getattr(args, "bootstrap_from", None)
+        if bootstrap_from and args.layer != "sessions":
+            print(
+                f"[ERROR] --bootstrap-from is sessions-layer only "
+                f"(got layer={args.layer!r}). Brutal-review phase 5.4.",
+                flush=True,
+            )
+            return 1
         layers = ("commands", "sessions", "ips") if args.layer == "all" else (args.layer,)
         all_stats: dict[str, object] = {}
         for layer in layers:
@@ -1362,12 +1381,14 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[ERROR] Source {args.source!r} has no {layer!r} layer", flush=True)
                 return 1
             try:
-                stats = mod.run_cluster(
-                    cfg, secrets,
+                kwargs = dict(
                     dry_run=args.dry_run,
                     refresh_reference=args.refresh_reference,
                     use_reference=not args.no_reference,
                 )
+                if bootstrap_from and layer == "sessions":
+                    kwargs["bootstrap_from"] = bootstrap_from
+                stats = mod.run_cluster(cfg, secrets, **kwargs)
             except (ImportError, RuntimeError) as exc:
                 print(f"[ERROR] cluster {layer}: {exc}", flush=True)
                 return 1

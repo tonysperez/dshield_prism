@@ -30,6 +30,10 @@
       "sample_session_ids": { "type": "keyword" },
 
       "reference_generation": { "type": "long" },
+      "reference_source": {
+        "type": "text",
+        "fields": { "keyword": { "type": "keyword", "ignore_above": 64 } }
+      },
       "source_run_id": {
         "type": "text",
         "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } }

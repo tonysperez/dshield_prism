@@ -15,7 +15,7 @@ import math
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Callable, Iterator
+from typing import Callable, Iterator, Optional
 
 from elasticsearch import Elasticsearch
 
@@ -210,7 +210,8 @@ def load_centroids(es: Elasticsearch, clusters_index: str) -> list[list[float]]:
 
 
 def load_reference_centroids(
-    es: Elasticsearch, clusters_index: str
+    es: Elasticsearch, clusters_index: str,
+    *, reference_source: Optional[str] = None,
 ) -> dict:
     """Load the active `reference_centroid` set (max `reference_generation`).
 
@@ -227,21 +228,57 @@ def load_reference_centroids(
           "scalar_weight":     float | None,
           "minted_at":         str | None,          # ISO timestamp
           "age_days":          float | None,
+          "reference_source":  str | None,          # echo of the filter
         }
+
+    ``reference_source`` filter (brutal-review phase 5.4):
+      - ``None`` (default) — match only docs WITHOUT a ``reference_source``
+        field. This is the in-corpus centroid set: every centroid that
+        existed before phase 5.4 lacks the field, so the default path
+        preserves the historical "load the latest in-corpus ref" behavior.
+      - explicit string (e.g. ``"external"``) — match docs whose
+        ``reference_source`` equals that value. Phase 5.4 mints centroids
+        with ``reference_source="external"`` from the Atomic Red Team
+        corpus; phase 5.5 reads them via this filter to populate
+        ``novelty_score_external`` alongside the in-corpus
+        ``novelty_score``.
+
+    Generation numbering is per-source: each ``reference_source`` value
+    has its own monotonic counter, so bootstrapping a new external
+    generation doesn't perturb the in-corpus counter.
 
     The caller is responsible for staleness checks (dim mismatch, scalar_weight
     delta, age). This loader only fetches.
     """
+    # Centroid-source filter — appended to every query against the
+    # reference_centroid set in this loader.
+    if reference_source is None:
+        source_filter = {
+            "bool": {"must_not": {"exists": {"field": "reference_source"}}}
+        }
+    else:
+        source_filter = {"term": {"reference_source.keyword": reference_source}}
+
     try:
         if not es.indices.exists(index=clusters_index):
             return {}
 
-        # Find max generation. `reference_generation` is a `long` and sorts cleanly.
+        # Find max generation FOR THIS SOURCE. `reference_generation` is a
+        # `long` and sorts cleanly. Per-source generation means an
+        # external bootstrap doesn't bump the in-corpus counter (and
+        # vice versa).
         resp = es.search(
             index=clusters_index,
             **{
                 "size": 1,
-                "query": {"term": {"doc_type": "reference_centroid"}},
+                "query": {
+                    "bool": {
+                        "must": [
+                            {"term": {"doc_type": "reference_centroid"}},
+                            source_filter,
+                        ]
+                    }
+                },
                 "sort": [{"reference_generation": "desc"}, {"@timestamp": "desc"}],
                 "_source": ["reference_generation"],
             },
@@ -262,6 +299,7 @@ def load_reference_centroids(
                         "must": [
                             {"term": {"doc_type": "reference_centroid"}},
                             {"term": {"reference_generation": gen}},
+                            source_filter,
                         ]
                     }
                 },
@@ -308,6 +346,7 @@ def load_reference_centroids(
             "scalar_weight": meta_src.get("scalar_weight"),
             "minted_at": minted_at,
             "age_days": age_days,
+            "reference_source": reference_source,
         }
     except Exception as exc:
         log.warning(
@@ -364,6 +403,8 @@ def run_layer_clustering(
     use_reference: bool = True,
     reference_max_age_days: int = 45,
     rescue_threshold: float | None = None,
+    reference_source: Optional[str] = None,
+    bootstrap_reference_now: bool = False,
 ) -> dict:
     """Generic HDBSCAN pipeline for one layer (commands / sessions / IPs / future).
 
@@ -506,8 +547,17 @@ def run_layer_clustering(
     score_in_augmented = persist_augmented
     score_centroids = centroids_for_novelty
 
-    if use_reference:
-        ref = load_reference_centroids(es, clusters_index) if not dry_run else {}
+    if bootstrap_reference_now:
+        # Explicit operator request: mint a new ref generation for this
+        # `reference_source` regardless of what already exists for it.
+        # In-run scoring uses this run's own centroids — the external
+        # ref doesn't make sense as a novelty target for itself.
+        reference_status = "bootstrap"
+        bootstrap_reference = True
+    elif use_reference:
+        ref = load_reference_centroids(
+            es, clusters_index, reference_source=reference_source,
+        ) if not dry_run else {}
         if not ref:
             reference_status = "bootstrap"
             bootstrap_reference = True
@@ -623,15 +673,29 @@ def run_layer_clustering(
     })
 
     if bootstrap_reference and not dry_run:
-        # Find current max generation so the new ref docs sort above existing
-        # generations on read. History is preserved (no delete) — emergency
-        # rollback is just `delete by query reference_generation=<new>`.
+        # Find current max generation FOR THIS SOURCE so the new ref docs
+        # sort above existing generations of the same source on read.
+        # History is preserved (no delete) — emergency rollback is just
+        # `delete by query reference_generation=<new> AND reference_source=<source>`.
+        if reference_source is None:
+            prev_source_filter = {
+                "bool": {"must_not": {"exists": {"field": "reference_source"}}}
+            }
+        else:
+            prev_source_filter = {"term": {"reference_source.keyword": reference_source}}
         try:
             prev_resp = es.search(
                 index=clusters_index,
                 **{
                     "size": 1,
-                    "query": {"term": {"doc_type": "reference_centroid"}},
+                    "query": {
+                        "bool": {
+                            "must": [
+                                {"term": {"doc_type": "reference_centroid"}},
+                                prev_source_filter,
+                            ]
+                        }
+                    },
                     "sort": [{"reference_generation": "desc"}],
                     "_source": ["reference_generation"],
                 },
@@ -660,15 +724,18 @@ def run_layer_clustering(
                 "scalar_weight": float(scalar_weight),
                 "reference_minted_at": now_str,
             }
+            if reference_source is not None:
+                ref_src["reference_source"] = reference_source
             if persist_augmented:
                 ref_src["centroid_augmented"] = centroids_for_novelty[lbl].tolist()
                 ref_src["augmented_dims"] = augmented_dims
             cluster_docs.append({"_op_type": "index", "_source": ref_src})
         reference_generation = new_gen
         log.info(
-            "[%s] reference_centroid %s: generation=%d, n_clusters=%d, embedding_dims=%d%s",
+            "[%s] reference_centroid %s (source=%s): generation=%d, n_clusters=%d, embedding_dims=%d%s",
             layer_label,
             "refresh" if reference_status == "refreshed" else "bootstrap",
+            reference_source or "in-corpus",
             new_gen, len(centroids), embedding_dims,
             f", augmented_dims={augmented_dims}" if persist_augmented else "",
         )

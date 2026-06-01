@@ -1317,25 +1317,180 @@ def build_session_scalar_block(scalars_list: list[dict], weight: float) -> "np.n
     return block
 
 
+def populate_reference_session_embeddings(
+    cfg: AppConfig, secrets: Secrets,
+    *, dry_run: bool = False,
+) -> dict:
+    """Mean-pool per-command embeddings into each reference rollup
+    session's ``dshield.cowrie.enrichment.session.embedding`` field
+    (brutal-review phase 5.4).
+
+    The reference-corpus rollup (`prism.reference.cowrie.session`)
+    carries `command_set` (unique command hashes per session) from the
+    5.2 importer. Phase 5.3's `enrich --reference` populates
+    `prism.enriched.cowrie.command` for those hashes. This helper
+    closes the loop: for every reference session, fetch the enriched
+    command embeddings by hash, mean-pool, and write the result back
+    to the reference rollup. After this the reference rollup looks
+    identical-shape to a live session rollup, and the existing
+    clustering iterators consume it without modification.
+
+    Skips sessions whose commands aren't all enriched yet (re-run
+    `enrich --reference` with a higher budget to enrich more).
+    Returns stats `{visited, embedded, skipped_unenriched,
+    skipped_no_commands}`.
+    """
+    import numpy as np
+    from elasticsearch.helpers import bulk
+
+    es = make_client(cfg.elasticsearch, secrets)
+    ref_idx = cfg.elasticsearch.indexes.cowrie.reference_sessions
+    cmd_idx = cfg.elasticsearch.indexes.cowrie.commands
+
+    stats = {
+        "visited":              0,
+        "embedded":             0,
+        "skipped_unenriched":   0,
+        "skipped_no_commands":  0,
+    }
+    actions: list[dict] = []
+    search_after = None
+    while True:
+        body: dict = {
+            "size": 200,
+            "_source": [
+                "cowrie.session_id",
+                "dshield.cowrie.enrichment.session.command_set",
+            ],
+            "query": {"match_all": {}},
+            "sort":  [{"_doc": "asc"}],
+        }
+        if search_after:
+            body["search_after"] = search_after
+        resp = es.search(index=ref_idx, **body)
+        hits = resp["hits"]["hits"]
+        if not hits:
+            break
+        for h in hits:
+            stats["visited"] += 1
+            src = h["_source"]
+            sid = (src.get("cowrie") or {}).get("session_id") or h["_id"]
+            s = ((src.get("dshield") or {}).get("cowrie", {})
+                 .get("enrichment", {}).get("session", {}))
+            command_set = s.get("command_set") or []
+            if not command_set:
+                stats["skipped_no_commands"] += 1
+                continue
+            # Bulk-mget the per-command enrichment docs by hash. Embeddings
+            # live at `dshield.cowrie.enrichment.embedding`.
+            mget_resp = es.mget(
+                index=cmd_idx, ids=command_set,
+                _source=["dshield.cowrie.enrichment.embedding"],
+            )
+            vectors: list[list[float]] = []
+            for doc in mget_resp.get("docs") or []:
+                if not doc.get("found"):
+                    continue
+                src_d = doc.get("_source") or {}
+                emb = ((src_d.get("dshield") or {}).get("cowrie", {})
+                       .get("enrichment", {}).get("embedding"))
+                if emb:
+                    vectors.append(emb)
+            if len(vectors) < len(command_set):
+                # Not all commands are enriched yet — skip and tell
+                # the operator to re-run enrich --reference.
+                stats["skipped_unenriched"] += 1
+                continue
+            arr = np.array(vectors, dtype=np.float32)
+            pooled = arr.mean(axis=0).tolist()
+            actions.append({
+                "_op_type": "update",
+                "_index":   ref_idx,
+                "_id":      h["_id"],
+                "script": {
+                    "source": (
+                        "if (ctx._source.dshield == null) { ctx._source.dshield = [:]; }"
+                        "if (ctx._source.dshield.cowrie == null) { ctx._source.dshield.cowrie = [:]; }"
+                        "if (ctx._source.dshield.cowrie.enrichment == null) { ctx._source.dshield.cowrie.enrichment = [:]; }"
+                        "if (ctx._source.dshield.cowrie.enrichment.session == null) { ctx._source.dshield.cowrie.enrichment.session = [:]; }"
+                        "ctx._source.dshield.cowrie.enrichment.session.embedding = params.emb;"
+                    ),
+                    "params": {"emb": pooled},
+                },
+            })
+            stats["embedded"] += 1
+        search_after = hits[-1].get("sort")
+        if not search_after:
+            break
+
+    if dry_run:
+        log.info("reference-embedding dry-run: %s", stats)
+        return dict(stats, dry_run=True)
+    if actions:
+        n_ok, errs = bulk(es, actions, raise_on_error=False)
+        stats["bulk_ok"] = n_ok
+        stats["bulk_errors"] = len(errs) if isinstance(errs, list) else 0
+        es.indices.refresh(index=ref_idx)
+    log.info("reference session embeddings populated: %s", stats)
+    return dict(stats)
+
+
 def run_cluster(
     cfg: AppConfig,
     secrets: Secrets,
     dry_run: bool = False,
     refresh_reference: bool = False,
     use_reference: bool = True,
+    bootstrap_from: Optional[str] = None,
 ) -> dict:
-    """HDBSCAN over session embeddings. Delegates to clustering core."""
+    """HDBSCAN over session embeddings. Delegates to clustering core.
+
+    ``bootstrap_from="external"`` (brutal-review phase 5.4) reads from
+    the reference-corpus rollup instead of the live rollup, runs the
+    same clustering, and writes the resulting centroids as a new
+    external reference generation tagged ``reference_source="external"``.
+    The 5.5 dual-novelty writer reads those centroids alongside the
+    in-corpus ref to populate ``novelty_score_external``.
+    """
     from ...clustering import run_layer_clustering
     es = make_client(cfg.elasticsearch, secrets)
-    sessions_idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
+
+    # External bootstrap (5.4): swap source index, mint a new external
+    # reference generation, skip the live-corpus specificity pass.
+    is_external_bootstrap = bootstrap_from == "external"
+    if is_external_bootstrap:
+        sessions_idx = cfg.elasticsearch.indexes.cowrie.reference_sessions
+        layer_label = "cowrie.sessions.reference[external]"
+        reference_source = "external"
+    else:
+        sessions_idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
+        layer_label = "cowrie.sessions"
+        reference_source = None
     clusters_idx = cfg.elasticsearch.indexes.cowrie.session_clusters
     scfg: SessionConfig = cfg.session
 
     if not es.indices.exists(index=sessions_idx):
+        if is_external_bootstrap:
+            raise RuntimeError(
+                f"Reference sessions index '{sessions_idx}' not found. "
+                "Run `import_reference_corpus.py` (5.2) then `enrich --reference` (5.3) first."
+            )
         raise RuntimeError(
             f"Sessions index '{sessions_idx}' not found. "
             "Run 'rollup sessions' first, or check elasticsearch.indexes.cowrie.sessions_rollup in config."
         )
+
+    # External path: compute reference session embeddings first (one
+    # mget per session, mean-pool against the shared enrichment index).
+    # Live path: rollup already populated this field.
+    if is_external_bootstrap:
+        emb_stats = populate_reference_session_embeddings(cfg, secrets, dry_run=dry_run)
+        log.info("[%s] reference embeddings: %s", layer_label, emb_stats)
+        if not dry_run and emb_stats.get("embedded", 0) == 0:
+            raise RuntimeError(
+                "No reference sessions could be embedded. Did `enrich --reference` "
+                "run to completion? Check `skipped_unenriched` in the embedding stats."
+            )
 
     result = run_layer_clustering(
         es=es,
@@ -1352,9 +1507,14 @@ def run_cluster(
         sample_size=_SESSION_CLUSTER_SAMPLE_SIZE,
         centroid_sample_field="sample_session_ids",
         dry_run=dry_run,
-        layer_label="cowrie.sessions",
+        layer_label=layer_label,
         refresh_reference=refresh_reference,
-        use_reference=use_reference,
+        # External path forces a fresh ref bootstrap, doesn't score
+        # against an existing one — the per-session "novelty against
+        # myself" output isn't useful.
+        use_reference=False if is_external_bootstrap else use_reference,
+        bootstrap_reference_now=is_external_bootstrap,
+        reference_source=reference_source,
         reference_max_age_days=scfg.reference_max_age_days,
         # Rescue HDBSCAN noise sessions that are within the same cosine
         # threshold the centroid-level merge uses — closes the merge's blind
@@ -1368,8 +1528,16 @@ def run_cluster(
     # docs the core just wrote (+ refreshed). Best-effort — a failure here
     # never fails the clustering run. Session docs already carry this run's
     # cluster.id, so the aggregations see the fresh membership.
+    #
+    # Skipped on external bootstrap: the reference rollup has no `source.ip`
+    # field (synthetic sessions don't have real source IPs) and the
+    # specificity aggregator joins on IP. The external centroids stand on
+    # their own as embedding-space anchors; per-cluster IP/command
+    # distinctiveness is a live-corpus property anyway.
     run_id = result.get("run_id")
-    if not dry_run and run_id and result.get("cluster_docs_written"):
+    if (not is_external_bootstrap
+            and not dry_run and run_id
+            and result.get("cluster_docs_written")):
         result["specificity"] = _persist_cluster_specificity(
             es, sessions_idx, clusters_idx, run_id, scfg.specificity_store_cap,
         )
