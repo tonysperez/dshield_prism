@@ -151,7 +151,16 @@ cooccurrence:
   # The old binary `max_corpus_session_ratio: 0.40` boilerplate cutoff was
   # replaced with continuous TF-IDF weighting (ROADMAP issue #6). Setting
   # the field here is a benign no-op — kept out of the default for clarity.
-  embed_cooccurrence: true         # also append to embed text; folded into embed_config_hash automatically
+  # embed_cooccurrence flipped to false 2026-06-01 per E2.1 sweep
+  # (eval/results/embed-input-sweep-20260601T144733Z.md): every
+  # cooccurrence-enabled config in the sweep underperformed its
+  # no-cooccurrence pair on ARI / completeness / homogeneity. Production
+  # config without cooccurrence cleared the plan's E2 success metric
+  # (ARI ≥ 0.36, completeness ≥ 0.60, homogeneity ≥ 0.80) while the
+  # cooccurrence-enabled equivalent sat at the v1+v2 baseline floor.
+  # `enabled: true` above is preserved — LLM-side enrichment still gets
+  # the cooccurrence context block; only the embed-text append is dropped.
+  embed_cooccurrence: false        # was true; see embed-input-sweep-20260601T144733Z.md
 
 prompts:
   command_enrichment:        "config/prompts/command_enrichment.txt"

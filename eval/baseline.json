@@ -1,6 +1,6 @@
 {
-  "captured_at": "2026-06-01T14:40:47.000000+00:00",
-  "captured_from": "eval/results/clustering-20260601T144047Z.json",
+  "captured_at": "2026-06-01T15:26:31.000000+00:00",
+  "captured_from": "eval/results/clustering-20260601T152631Z.json",
   "config_at_capture": {
     "min_cluster_size": 5,
     "min_samples": 2,
@@ -20,26 +20,27 @@
       "host_recon": 7
     }
   },
+  "embedding_pipeline_at_capture": "production embed_context [intent, tactics, techniques, description], cooccurrence.embed_cooccurrence=false (adopted 2026-06-01 per E2.1 sweep, eval/results/embed-input-sweep-20260601T144733Z.md)",
   "tolerance_semantic": "Each metric fails the gate when current < baseline - tolerance. Tolerance is an absolute drop, not a relative percentage.",
   "metrics": {
     "ari": {
-      "baseline": 0.355,
+      "baseline": 0.4447,
       "tolerance": 0.05
     },
     "nmi": {
-      "baseline": 0.6614,
+      "baseline": 0.7043,
       "tolerance": 0.05
     },
     "homogeneity": {
-      "baseline": 0.8338,
+      "baseline": 0.8446,
       "tolerance": 0.05
     },
     "completeness": {
-      "baseline": 0.5481,
+      "baseline": 0.604,
       "tolerance": 0.05
     },
     "v_measure": {
-      "baseline": 0.6614,
+      "baseline": 0.7043,
       "tolerance": 0.05
     },
     "divergent_pair_resolution_rate": {
