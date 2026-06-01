@@ -1162,6 +1162,96 @@ def _file_anchor(es: Elasticsearch, cfg: AppConfig, sha256: str, *, limit: int, 
 # Public dispatch
 # ----------------------------------------------------------------------------
 
+def _operation_anchor(
+    es: Elasticsearch, cfg: AppConfig, operation_id: str, *, limit: int,
+    sf: "queries.SessionFilter | None" = None,
+) -> dict:
+    """Anchor on an operation (brutal-review 7.2).
+
+    Operations are bhv × inf campaign pair mergers minted by 7.1. The
+    graph view renders the operation node connected to its two parent
+    campaigns and the shared source IPs — so the analyst can see at a
+    glance which IPs the merge attributed to.
+    """
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    op = queries.lookup_operation(es, cfg, operation_id)
+    if not op:
+        nodes.append({"data": {
+            "id":           _nid("op", operation_id),
+            "type":         "operation",
+            "operation_id": operation_id,
+            "label":        operation_id,
+            "kind":         "unknown",
+        }})
+        return _dedup({"nodes": nodes, "edges": edges})
+
+    bhv_id = op.get("behaviour_id")
+    inf_id = op.get("infrastructure_id")
+    shared_ips = (op.get("member_source_ips") or [])[:limit]
+
+    op_nid = _nid("op", operation_id)
+    nodes.append({"data": {
+        "id":                  op_nid,
+        "type":                "operation",
+        "operation_id":        operation_id,
+        "label":               f"{op.get('behaviour_name') or bhv_id} ↔ "
+                               f"{op.get('infrastructure_name') or inf_id}",
+        "bhv_ip_count":        op.get("bhv_ip_count"),
+        "inf_ip_count":        op.get("inf_ip_count"),
+        "shared_ip_count":     op.get("shared_ip_count"),
+        "overlap_ratio":       op.get("overlap_ratio"),
+    }})
+
+    # Each parent campaign as a node + an edge to the operation.
+    for camp_id, role in ((bhv_id, "behaviour"), (inf_id, "infrastructure")):
+        if not camp_id:
+            continue
+        camp = queries.lookup_campaign(es, cfg, camp_id)
+        camp_nid = _nid("camp", camp_id)
+        nodes.append({"data": {
+            "id":            camp_nid,
+            "type":          "campaign",
+            "campaign_id":   camp_id,
+            "campaign_kind": role,
+            "label":         (camp or {}).get("name") or camp_id,
+            "ip_count":      (camp or {}).get("ip_count"),
+            "session_count": (camp or {}).get("session_count"),
+        }})
+        edges.append({"data": {
+            "id":     f"{camp_nid}->{op_nid}",
+            "source": camp_nid, "target": op_nid,
+            "label":  "merged_into", "kind": "merged_into",
+        }})
+
+    # Shared source IPs as their own nodes, edged to the operation.
+    for ip in shared_ips:
+        ip_nid = _nid("ip", ip)
+        ip_doc = queries.lookup_ip(es, cfg, ip)
+        ienr: dict = {}
+        ip_asn = ip_cc = None
+        if ip_doc:
+            isrc = ip_doc["_source"]
+            ienr = (isrc.get("dshield", {}).get("cowrie", {})
+                    .get("enrichment", {}).get("ip") or {})
+            ip_asn = ((isrc.get("source") or {}).get("as") or {}).get("number")
+            ip_cc  = ((isrc.get("source") or {}).get("geo") or {}).get("country_iso_code")
+        nodes.append({"data": {
+            "id":         ip_nid, "type": "ip", "label": ip,
+            "cluster_id": (ienr.get("cluster") or {}).get("id"),
+            "is_outlier": (ienr.get("cluster") or {}).get("is_outlier"),
+            "asn":        ip_asn, "country": ip_cc,
+        }})
+        edges.append({"data": {
+            "id":     f"{ip_nid}->{op_nid}",
+            "source": ip_nid, "target": op_nid,
+            "label":  "attributed_to", "kind": "attributed_to",
+        }})
+        _emit_ip_cluster(nodes, edges, ip, ienr)
+
+    return _dedup({"nodes": nodes, "edges": edges})
+
+
 def neighbors(
     es: Elasticsearch, cfg: AppConfig, ioc_type: str, ident: str, *,
     limit: int = 50, run_cache: queries.RunCache,
@@ -1185,6 +1275,8 @@ def neighbors(
         result = _playbook_anchor(es, cfg, ident, limit=limit, sf=sf)
     elif ioc_type == "campaign":
         result = _campaign_anchor(es, cfg, ident, limit=limit, sf=sf)
+    elif ioc_type == "operation":
+        result = _operation_anchor(es, cfg, ident, limit=limit, sf=sf)
     elif ioc_type == "asn":
         result = _asn_anchor(es, cfg, ident, limit=limit)
     elif ioc_type == "country":

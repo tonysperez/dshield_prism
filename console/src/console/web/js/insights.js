@@ -147,6 +147,55 @@
     }
   }
 
+  function renderOperations(rows) {
+    // brutal-review 7.2 — bhv × inf campaign mergers from 7.1's miner.
+    // Each row carries: { operation_id, behaviour_id/name,
+    //   infrastructure_id/name, shared_ip_count, bhv_ip_count,
+    //   inf_ip_count, overlap_ratio, overlap_threshold, first_seen,
+    //   last_seen }
+    const wrap = document.getElementById("operations-body");
+    if (!wrap) return;
+    if (!rows || !rows.length) {
+      wrap.innerHTML = "";
+      wrap.appendChild(el("em", "ins-empty",
+        "No operations yet. Run `dshield_prism mine operations` to evaluate " +
+        "the current bhv × inf campaign pairs — or wait for more IP overlap " +
+        "to accumulate."));
+      return;
+    }
+    const table = el("table", "ins-table");
+    const thead = el("thead");
+    const hrow = el("tr");
+    for (const h of ["Operation", "Behaviour", "Infrastructure", "Shared IPs", "Overlap", ""]) {
+      hrow.appendChild(th(h));
+    }
+    thead.appendChild(hrow);
+    table.appendChild(thead);
+    const tbody = el("tbody");
+    for (const row of rows) {
+      const opid = row.operation_id;
+      const tr = el("tr", "clickable");
+      tr.addEventListener("click", () => pivot("operation", opid));
+      // Operation pivot link — uses the short id so the cell stays readable.
+      tr.appendChild(td("", iocLink("operation", opid, opid)));
+      tr.appendChild(td("", iocLink("campaign", row.behaviour_id,
+        row.behaviour_name || row.behaviour_id)));
+      tr.appendChild(td("", iocLink("campaign", row.infrastructure_id,
+        row.infrastructure_name || row.infrastructure_id)));
+      const shared = `${fmt(row.shared_ip_count)} of ${fmt(row.bhv_ip_count)}/${fmt(row.inf_ip_count)}`;
+      tr.appendChild(td("size-badge", shared));
+      const ratio = row.overlap_ratio !== null && row.overlap_ratio !== undefined
+        ? `${(row.overlap_ratio * 100).toFixed(1)}%`
+        : "—";
+      tr.appendChild(td("size-badge", ratio));
+      tr.appendChild(actionCell("operation", opid));
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    wrap.innerHTML = "";
+    wrap.appendChild(table);
+  }
+
   function renderMinedCampaigns(rows) {
     // Multi-session campaigns mined by `dshield_prism mine campaigns`.
     // `rows` shape (from queries.list_campaigns):
@@ -553,6 +602,7 @@
       const data = await resp.json();
       renderOverview(data.overview);
       renderPlaybooks(data.playbooks);
+      renderOperations(data.operations || []);
       renderMinedCampaigns(data.mined_campaigns || []);
       renderCommandClusters(data.command_clusters);
       renderSessionClusters(data.session_clusters);

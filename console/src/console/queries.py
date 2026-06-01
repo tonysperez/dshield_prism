@@ -380,6 +380,57 @@ def lookup_campaign(es: Elasticsearch, cfg: AppConfig, campaign_id: str) -> dict
     return hits[0]["_source"]
 
 
+def lookup_operation(es: Elasticsearch, cfg: AppConfig, operation_id: str) -> dict | None:
+    """Read one operation doc by ``operation_id`` (brutal-review 7.2).
+
+    Operations are mined by 7.1's `mine operations` step from
+    (bhv-campaign × inf-campaign) pairs whose IP overlap clears the
+    corpus-p75 threshold. Stable across re-mines because the id is
+    content-addressed on the sorted (bhv, inf) pair.
+
+    Returns None if no matching doc exists (e.g. an operation that
+    fell below threshold on the most recent re-mine).
+    """
+    idx = cfg.elasticsearch.indexes.cowrie.operations
+    try:
+        r = es.search(
+            index=idx, size=1,
+            query={"term": {"operation_id": operation_id}},
+        )
+        hits = r["hits"]["hits"]
+    except Exception as exc:
+        log.warning("lookup_operation failed for %s: %s", operation_id, exc)
+        return None
+    if not hits:
+        return None
+    return hits[0]["_source"]
+
+
+def list_operations(es: Elasticsearch, cfg: AppConfig, *, size: int = 25) -> list[dict]:
+    """Top operations by ``shared_ip_count`` (brutal-review 7.2 — used by
+    the Insights surface). Empty list when the index doesn't exist yet."""
+    idx = cfg.elasticsearch.indexes.cowrie.operations
+    try:
+        if not es.indices.exists(index=idx):
+            return []
+        r = es.search(
+            index=idx, size=size,
+            _source=[
+                "operation_id",
+                "behaviour_id", "behaviour_name",
+                "infrastructure_id", "infrastructure_name",
+                "shared_ip_count", "bhv_ip_count", "inf_ip_count",
+                "overlap_ratio", "overlap_threshold",
+                "first_seen", "last_seen",
+            ],
+            sort=[{"shared_ip_count": {"order": "desc"}}],
+        )
+        return [h["_source"] for h in r["hits"]["hits"]]
+    except Exception as exc:
+        log.warning("list_operations failed: %s", exc)
+        return []
+
+
 def list_campaigns(
     es: Elasticsearch, cfg: AppConfig, *,
     kind: str | None = None, size: int = 25,
@@ -1906,6 +1957,12 @@ def insights_summary(
     # empty list is fine if the miner hasn't run yet.
     mined_campaigns = list_campaigns(es, cfg, size=20)
 
+    # Operations (brutal-review 7.2) — bhv × inf campaign mergers from
+    # 7.1's miner. Empty until either (a) the miner ran or (b) the
+    # corpus produced a bhv×inf pair with high enough IP overlap to
+    # clear the threshold.
+    operations = list_operations(es, cfg, size=20)
+
     # Stamp a one-line evidence-quality verdict on every row consumed by
     # the /browse catalog. Same vocabulary the inbox + graph orientation
     # card carry, so the analyst learns one mental scale. Best-effort:
@@ -2049,6 +2106,7 @@ def insights_summary(
         # session patterns) are distinct surfaces.
         "playbooks":           playbooks,
         "mined_campaigns":     mined_campaigns,
+        "operations":          operations,
         "command_clusters":    command_clusters,
         "session_clusters":    session_clusters,
         "ip_clusters":         ip_clusters,

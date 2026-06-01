@@ -1519,6 +1519,22 @@ def build_app(config_path: str | None = None) -> FastAPI:
                 type="playbook", id=ident, title=f"playbook: {title}",
                 summary=data, raw=None,
             ), es=es, cfg=cfg)
+        if ioc_type == "operation":
+            # brutal-review 7.2 — operations are bhv × inf campaign pair
+            # mergers minted by 7.1 into prism.operations. Read-only
+            # entity; no status workflow attached. Detail pane shows
+            # the two parent campaign ids + IP overlap stats so the
+            # analyst can pivot back to either campaign view.
+            data = queries.lookup_operation(es, cfg, ident)
+            if not data:
+                raise HTTPException(404, f"operation not found: {ident}")
+            bhv_name = data.get("behaviour_name") or data.get("behaviour_id")
+            inf_name = data.get("infrastructure_name") or data.get("infrastructure_id")
+            title = f"operation: {bhv_name} ↔ {inf_name}"
+            return IOCDetail(
+                type="operation", id=ident,
+                title=title, summary=data, raw=None,
+            )
         if ioc_type == "campaign":
             # Multi-session campaign — mined into its own index by
             # `dshield_prism mine campaigns`. Distinct from playbook (which

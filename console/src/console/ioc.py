@@ -25,6 +25,9 @@ TYPES = (
                         # the sorted member-session-id set).
     "campaign",         # multi-session pattern mined by `mine campaigns`
                         # — anchored by campaign_id (`cmp-bhv-...` / `cmp-inf-...`).
+    "operation",        # brutal-review 7.2 — bhv × inf campaign pair
+                        # whose IP overlap clears the corpus-p75 threshold;
+                        # anchored by operation_id (`op-<16hex>`).
     "command_cluster",
     "session_cluster",
     "ip_cluster",

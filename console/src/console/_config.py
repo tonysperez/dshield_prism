@@ -46,6 +46,10 @@ class CowrieIndexes(BaseModel):
     # Default value here means the console will fall back to a sensible
     # name if the user's local.yaml hasn't been re-merged from default.yaml.
     campaigns: str = "prism.campaign.cowrie"
+    # Operations (brutal-review phase 7.1) — bhv×inf campaign pairs
+    # promoted to first-class entities. Console reads from this index
+    # for the new `operation` anchor type (7.2).
+    operations: str = "prism.operations"
 
 
 class SourceIndexes(BaseModel):
