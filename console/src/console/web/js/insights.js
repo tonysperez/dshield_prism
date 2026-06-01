@@ -386,10 +386,18 @@
   function renderNovelCommands(rows) {
     const wrap = document.getElementById("novel-body");
     if (!rows || !rows.length) { wrap.innerHTML = ""; wrap.appendChild(el("em", "ins-empty", "No novel commands found.")); return; }
+    // Brutal-review 5.7: if any row has the external score populated,
+    // show the column. Otherwise omit it entirely — keeps the table
+    // tight pre-bootstrap.
+    const showExt = rows.some(r => r.novelty_score_external !== null
+                                    && r.novelty_score_external !== undefined);
+    const headers = ["Command", "Intent", "Novel (corpus)"];
+    if (showExt) headers.push("Novel (catalog)");
+    headers.push("Sessions", "Source IPs", "MITRE", "");
     const table = el("table", "ins-table");
     const thead = el("thead");
     const hrow = el("tr");
-    for (const h of ["Command", "Intent", "Novelty", "Sessions", "Source IPs", "MITRE", ""]) hrow.appendChild(th(h));
+    for (const h of headers) hrow.appendChild(th(h));
     thead.appendChild(hrow);
     table.appendChild(thead);
     const tbody = el("tbody");
@@ -407,7 +415,7 @@
       const badge = badgeIntent(row.intent);
       if (badge) intentCell.appendChild(badge);
       tr.appendChild(intentCell);
-      // Novelty bar
+      // In-corpus novelty bar
       const novCell = document.createElement("td");
       const bar = el("div", "novelty-bar");
       const track = el("div", "novelty-track");
@@ -418,6 +426,27 @@
       bar.appendChild(el("span", "novelty-val", (row.novelty_score || 0).toFixed(2)));
       novCell.appendChild(bar);
       tr.appendChild(novCell);
+      // External novelty bar (when available). Same visual treatment,
+      // separate column — analyst reads "low corpus + high catalog =
+      // documented technique we've seen locally" or "low both = familiar
+      // everywhere" or "high both = genuinely novel".
+      if (showExt) {
+        const extCell = document.createElement("td");
+        const ext = row.novelty_score_external;
+        if (ext !== null && ext !== undefined) {
+          const eb = el("div", "novelty-bar");
+          const et = el("div", "novelty-track");
+          const ef = el("div", "novelty-fill");
+          ef.style.width = Math.round((ext || 0) * 100) + "%";
+          et.appendChild(ef);
+          eb.appendChild(et);
+          eb.appendChild(el("span", "novelty-val", ext.toFixed(2)));
+          extCell.appendChild(eb);
+        } else {
+          extCell.appendChild(document.createTextNode("—"));
+        }
+        tr.appendChild(extCell);
+      }
       tr.appendChild(td("size-badge", fmt(row.unique_sessions)));
       tr.appendChild(td("", fmt(row.unique_source_ips)));
       // MITRE

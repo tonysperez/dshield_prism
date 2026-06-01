@@ -1903,6 +1903,11 @@ def _detail_command(sha: str, doc: dict) -> IOCDetail:
         "triage_reasons": enr.get("triage_reasons"),
         "cluster_id": (enr.get("cluster") or {}).get("id"),
         "novelty_score": (enr.get("cluster") or {}).get("novelty_score"),
+        # Brutal-review 5.7: dual novelty — `novelty_score_external`
+        # is populated by the 5.5 writer when an external reference
+        # set exists at this layer. Null when no external ref is
+        # available (e.g. command layer pre-bootstrap).
+        "novelty_score_external": (enr.get("cluster") or {}).get("novelty_score_external"),
         "is_outlier": (enr.get("cluster") or {}).get("is_outlier"),
         "model": enr.get("model"),
         # Functional-duplicate gating (ROADMAP #9). `shape_role` is one

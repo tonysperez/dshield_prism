@@ -1366,10 +1366,17 @@ function renderDrawer(data) {
         class: "pivot-link", href: "#",
         onclick: (e) => { e.preventDefault(); openPivot("command", c.command_id, pivotHost); },
       }, [el("code", null, [c.command || "(empty)"])]);
+      // Brutal-review 5.7: surface external novelty next to in-corpus
+      // when the dual writer (5.5) has populated it. Format reads as
+      // "nov 0.42 · cat 0.18" — "cat" = vs documented adversary catalog.
+      const novParts = [`nov ${c.novelty?.toFixed(2) ?? "?"}`];
+      if (c.novelty_external !== null && c.novelty_external !== undefined) {
+        novParts.push(`cat ${c.novelty_external.toFixed(2)}`);
+      }
       const li = el("li", null, [
         code,
         el("span", {class: "drawer-meta", style: "margin-left:6px;"}, [
-          `nov ${c.novelty?.toFixed(2) ?? "?"}`,
+          novParts.join(" · "),
         ]),
       ]);
       const sp = specPill(c.specificity);

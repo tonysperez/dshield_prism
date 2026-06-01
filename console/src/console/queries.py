@@ -1844,6 +1844,7 @@ def insights_summary(
                 "process.command_line", "process.hash.sha256",
                 "dshield.cowrie.enrichment.intent",
                 "dshield.cowrie.enrichment.cluster.novelty_score",
+                "dshield.cowrie.enrichment.cluster.novelty_score_external",
                 "dshield.cowrie.enrichment.cluster.is_outlier",
                 "dshield.cowrie.enrichment.unique_sessions",
                 "dshield.cowrie.enrichment.unique_source_ips",
@@ -1881,6 +1882,13 @@ def insights_summary(
                 "command_line": cmd_line,
                 "intent": enr.get("intent"),
                 "novelty_score": novelty,
+                # Brutal-review 5.7: when the dual-novelty writer (5.5)
+                # is active for this corpus, surface BOTH scores so the
+                # analyst can see "this is novel to my sensor" (in-corpus)
+                # next to "this is novel to the documented adversary
+                # catalog" (external). Absent when no external ref exists
+                # at the command layer yet.
+                "novelty_score_external": cluster.get("novelty_score_external"),
                 "is_outlier": cluster.get("is_outlier", False),
                 "unique_sessions": sess,
                 "unique_source_ips": enr.get("unique_source_ips") or 0,

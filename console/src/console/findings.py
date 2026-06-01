@@ -687,6 +687,12 @@ def _top_commands_for_playbook(es, cowrie_idx, playbook_id: str) -> list[dict]:
                 "aggs": {
                     "avg_novelty": {"avg": {"field":
                         "dshield.cowrie.enrichment.cluster.novelty_score"}},
+                    # Brutal-review 5.7: surface external novelty next to
+                    # the in-corpus score whenever the dual-writer (5.5)
+                    # has populated it. Null-safe — collapses to None
+                    # when no external ref exists at the command layer.
+                    "avg_novelty_external": {"avg": {"field":
+                        "dshield.cowrie.enrichment.cluster.novelty_score_external"}},
                     "sample": {"top_hits": {"size": 1, "_source": [
                         "process.command_line",
                         "dshield.cowrie.enrichment.description",
@@ -703,9 +709,13 @@ def _top_commands_for_playbook(es, cowrie_idx, playbook_id: str) -> list[dict]:
             cmd = (src.get("process") or {}).get("command_line") or ""
             desc = (((src.get("dshield") or {}).get("cowrie") or {})
                     .get("enrichment", {}).get("description")) or ""
+            ext_avg = ((b.get("avg_novelty_external") or {}).get("value"))
             out.append({
                 "command_id":   b.get("key"),
                 "novelty":      round(float(((b.get("avg_novelty") or {}).get("value")) or 0.0), 3),
+                "novelty_external": (
+                    round(float(ext_avg), 3) if ext_avg is not None else None
+                ),
                 "command":      cmd[:240],
                 "description":  desc[:240],
             })
