@@ -1,44 +1,50 @@
 {
-  "captured_at": "2026-05-31T22:01:14.704942+00:00",
-  "captured_from": "eval/results/clustering-20260531T220114Z.json",
+  "captured_at": "2026-06-01T14:40:47.000000+00:00",
+  "captured_from": "eval/results/clustering-20260601T144047Z.json",
   "config_at_capture": {
     "min_cluster_size": 5,
     "min_samples": 2,
     "scalar_weight": 0.05
   },
   "input_at_capture": {
-    "labeled_blocks": 100,
-    "labeled_with_embed": 100,
+    "labeled_blocks": 108,
+    "labeled_with_embed": 108,
+    "v2_sessions_in_eval": 12,
+    "v2_pairs_in_eval": 6,
     "label_distribution": {
       "single_command_probe": 35,
-      "ssh_key_chattr_persistence": 26,
-      "botnet_loader": 12,
+      "ssh_key_chattr_persistence": 30,
+      "botnet_loader": 15,
+      "mirai_busybox_probe": 11,
       "shell_wrapper_only": 10,
-      "mirai_busybox_probe": 10,
       "host_recon": 7
     }
   },
   "tolerance_semantic": "Each metric fails the gate when current < baseline - tolerance. Tolerance is an absolute drop, not a relative percentage.",
   "metrics": {
     "ari": {
-      "baseline": 0.3007,
+      "baseline": 0.355,
       "tolerance": 0.05
     },
     "nmi": {
-      "baseline": 0.6506,
+      "baseline": 0.6614,
       "tolerance": 0.05
     },
     "homogeneity": {
-      "baseline": 0.8375,
+      "baseline": 0.8338,
       "tolerance": 0.05
     },
     "completeness": {
-      "baseline": 0.5319,
+      "baseline": 0.5481,
       "tolerance": 0.05
     },
     "v_measure": {
-      "baseline": 0.6506,
+      "baseline": 0.6614,
       "tolerance": 0.05
+    },
+    "divergent_pair_resolution_rate": {
+      "baseline": 0.8333,
+      "tolerance": 0.17
     }
   }
 }
