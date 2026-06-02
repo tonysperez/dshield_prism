@@ -668,12 +668,27 @@ def _build_embed_text(
     context_fields: list[str],
     cooccurring: Optional[list[tuple[str, int]]] = None,
     embed_cooccurrence: bool = False,
+    order: str = "prelude_first",
 ) -> str:
     """Build the text string to embed. Prepends enrichment fields when context_fields is set.
 
     When `embed_cooccurrence` is True and `cooccurring` is non-empty, appends a
     "co-occurs with: cmd1; cmd2; ..." line so the embedding picks up the
     behavioral neighborhood of the command, not just its surface form.
+
+    ``order`` selects the layout (E8.1):
+      * ``prelude_first`` — production default; head context first, then
+        ``Command: {command}`` on the next line. Maintains backwards
+        compatibility with every existing cache row.
+      * ``command_first`` — same content as ``prelude_first`` but the
+        command line leads, head context follows. Tests whether the
+        encoder's attention prioritises the command surface form when
+        the prelude dilutes the leading tokens.
+      * ``command_only_with_tag`` — drops the head context entirely and
+        emits ``[shell] {command}``. Tests the E0.3 "prelude/command
+        character ratio 10.6× median, 277× max" hypothesis: if the
+        prelude is noise on this corpus, removing it should not hurt
+        and may help cluster quality.
     """
     parts: list[str] = []
     if context_fields and parsed is not None:
@@ -691,12 +706,23 @@ def _build_embed_text(
         joined = "; ".join(c for c, _ in cooccurring)
         cooc_line = f"co-occurs with: {joined}."
 
+    if order == "command_only_with_tag":
+        # Prelude + cooc both dropped. The "[shell] " tag is a
+        # one-token corpus disambiguator so the embedder doesn't
+        # mistake a command for general text.
+        return f"[shell] {command}"
+
     if not parts and not cooc_line:
         return command
 
     head = " ".join(parts)
     if cooc_line:
         head = f"{head} {cooc_line}".strip()
+
+    if order == "command_first":
+        return f"Command: {command}\n{head}"
+
+    # Default: prelude_first.
     return f"{head}\nCommand: {command}"
 
 
@@ -1219,6 +1245,7 @@ def run_enrich(
                     g["command"], parent_parsed, cfg.llm.embed_context,
                     cooccurring=cooccurring,
                     embed_cooccurrence=cooc_cfg.enabled and cooc_cfg.embed_cooccurrence,
+                    order=cfg.llm.embed_input_order,
                 )
                 try:
                     embedding = llm.embed(embed_text)
@@ -1411,6 +1438,7 @@ def run_enrich(
                 g["command"], final_parsed, cfg.llm.embed_context,
                 cooccurring=cooccurring,
                 embed_cooccurrence=cooc_cfg.enabled and cooc_cfg.embed_cooccurrence,
+                order=cfg.llm.embed_input_order,
             )
             try:
                 embedding = llm.embed(embed_text)
@@ -1914,6 +1942,7 @@ def run_reembed(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) -> dict
                 doc["command"], parsed_stub, cfg.llm.embed_context,
                 cooccurring=cooccurring,
                 embed_cooccurrence=use_cooc,
+                order=cfg.llm.embed_input_order,
             )
 
             if dry_run:
@@ -2287,6 +2316,7 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
                     norm, parent_parsed, cfg.llm.embed_context,
                     cooccurring=cooccurring2,
                     embed_cooccurrence=cooc_cfg.enabled and cooc_cfg.embed_cooccurrence,
+                    order=cfg.llm.embed_input_order,
                 )
                 try:
                     embedding = llm.embed(embed_text)
@@ -2365,6 +2395,7 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
                 norm, parsed, cfg.llm.embed_context,
                 cooccurring=cooccurring,
                 embed_cooccurrence=cooc_cfg.enabled and cooc_cfg.embed_cooccurrence,
+                order=cfg.llm.embed_input_order,
             )
             try:
                 embedding = llm.embed(embed_text)
@@ -2527,6 +2558,7 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
                 norm, parent_parsed, cfg.llm.embed_context,
                 cooccurring=cooccurring2,
                 embed_cooccurrence=cooc_cfg.enabled and cooc_cfg.embed_cooccurrence,
+                order=cfg.llm.embed_input_order,
             )
             try:
                 embedding = llm.embed(embed_text)
