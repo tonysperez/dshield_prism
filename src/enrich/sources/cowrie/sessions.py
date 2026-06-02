@@ -1034,6 +1034,15 @@ def _build_session_doc(
         # so `playbook_command_drift` can compute full Jaccard at the
         # playbook level (union across member sessions).
         session_block["command_set"] = sorted_unique[:_MAX_COMMAND_SET_PER_SESSION]
+        # E4.4 (late-fusion adoption): persist the raw command stream as
+        # text so the session clusterer can compute TF-IDF features
+        # without re-fetching raw events at cluster time. Order preserves
+        # chronology (already the iteration order of session_commands).
+        # When clustering_mode stays on "hdbscan" this field is unused
+        # but harmless; consumers can opt in.
+        session_block["command_stream_text"] = " ".join(
+            cmd for _h, cmd in session_commands
+        )
     if bigrams:
         session_block["command_bigram_set"] = bigrams
         session_block["command_bigram_signature"] = command_bigram_signature
@@ -1256,6 +1265,75 @@ def run_rollup(
 # ---------------------------------------------------------------------------
 # Cluster sessions
 # ---------------------------------------------------------------------------
+
+def iter_session_docs_with_text(
+    es: Elasticsearch,
+    index: str,
+    page_size: int = 1000,
+) -> Iterator[tuple[str, list[float], str, dict, str]]:
+    """Yield (doc_id, embedding, session_id, scalars, command_stream_text).
+
+    Used by the late-fusion clustering path (E4.4 adoption) — the
+    standard ``iter_session_docs`` yields the four production fields;
+    this variant additionally pulls the persisted
+    ``command_stream_text`` field so the fusion clusterer can fit
+    TF-IDF without an extra ES round-trip per cluster run.
+
+    Sessions whose rollup lacks ``command_stream_text`` (login-only
+    sessions, plus pre-E4.4 rollups that haven't been backfilled yet)
+    yield an empty string in the text slot. TF-IDF skips empty docs
+    gracefully; backfill via
+    ``scripts/backfill_command_stream_text.py`` to populate older
+    rollups.
+    """
+    base = "dshield.cowrie.enrichment.session"
+    body: dict = {
+        "size": page_size,
+        "_source": [
+            f"{base}.embedding",
+            f"{base}.command_count",
+            f"{base}.unique_commands",
+            f"{base}.login_success_count",
+            f"{base}.login_fail_count",
+            f"{base}.mean_novelty_score",
+            f"{base}.command_stream_text",
+            "cowrie.session_id",
+        ],
+        "query": {"exists": {"field": f"{base}.embedding"}},
+        "sort": [{"@timestamp": "asc"}, {"_doc": "asc"}],
+    }
+    search_after = None
+    while True:
+        if search_after:
+            body["search_after"] = search_after
+        resp = es.search(index=index, **body)
+        hits = resp["hits"]["hits"]
+        if not hits:
+            return
+        for h in hits:
+            src = h["_source"]
+            s = (
+                ((src.get("dshield") or {}).get("cowrie") or {})
+                .get("enrichment", {})
+                .get("session", {})
+            )
+            emb = s.get("embedding")
+            if not emb:
+                continue
+            session_id = (src.get("cowrie") or {}).get("session_id", h["_id"])
+            success = s.get("login_success_count") or 0
+            fail = s.get("login_fail_count") or 0
+            total_logins = success + fail
+            scalars = {
+                "command_count": s.get("command_count") or 1,
+                "unique_commands": s.get("unique_commands") or 1,
+                "login_success_rate": success / total_logins if total_logins > 0 else 0.0,
+                "mean_novelty_score": s.get("mean_novelty_score") or 0.0,
+            }
+            text = s.get("command_stream_text") or ""
+            yield h["_id"], emb, session_id, scalars, text
+        search_after = hits[-1]["sort"]
+
 
 def iter_session_docs(
     es: Elasticsearch,
@@ -1627,9 +1705,57 @@ def run_cluster(
                 "run to completion? Check `skipped_unenriched` in the embedding stats."
             )
 
+    # Dispatch on clustering_mode (E4.4 adoption).
+    # - "hdbscan" (default): existing single-pass HDBSCAN, no change.
+    # - "late_fusion": collect (doc_id, embedding, session_id, scalars,
+    #   command_stream_text) up front, build a closure over the text
+    #   list that the core invokes in place of HDBSCAN, and feed the
+    #   first four fields through the normal docs_iter contract. The
+    #   closure runs HDBSCAN on the embedding + scalar block AND on a
+    #   TF-IDF+SVD lexical block, then fuses via Agglomerative on the
+    #   pair-disagreement distance matrix. Outlier flags from the
+    #   embedding-only pass are surfaced via outlier_flags_override so
+    #   downstream (novelty / rescue / outlier_burst) semantics stay
+    #   identical.
+    cluster_fn = None
+    docs_iter_for_core = iter_session_docs(es, sessions_idx, scfg.page_size)
+    if scfg.clustering_mode == "late_fusion":
+        from ...clustering import compute_lexical_features, fusion_cluster_labels
+        pre_materialized = list(iter_session_docs_with_text(
+            es, sessions_idx, scfg.page_size,
+        ))
+        session_texts = [t for _, _, _, _, t in pre_materialized]
+        docs_iter_for_core = (
+            (doc_id, emb, sid, sc) for doc_id, emb, sid, sc, _ in pre_materialized
+        )
+        log.info(
+            "[%s] late_fusion mode: pre-materialized %d sessions (%d with text)",
+            layer_label, len(session_texts),
+            sum(1 for t in session_texts if t),
+        )
+
+        def _fusion_cluster_fn(*, cluster_matrix, normalized, min_cluster_size, min_samples):
+            lexical_block = compute_lexical_features(
+                session_texts,
+                n_components=scfg.cluster_lexical_features_dim,
+            )
+            fusion_labels, outlier_flags, n_emb, n_lex = fusion_cluster_labels(
+                cluster_matrix, lexical_block,
+                min_cluster_size=min_cluster_size,
+                min_samples=min_samples,
+            )
+            log.info(
+                "[%s] fusion: emb HDBSCAN=%d clusters, lex HDBSCAN=%d clusters, "
+                "Agglomerative n_clusters=%d",
+                layer_label, n_emb, n_lex, max(2, n_emb, n_lex),
+            )
+            return fusion_labels, outlier_flags
+
+        cluster_fn = _fusion_cluster_fn
+
     result = run_layer_clustering(
         es=es,
-        docs_iter=iter_session_docs(es, sessions_idx, scfg.page_size),
+        docs_iter=docs_iter_for_core,
         docs_index=sessions_idx,
         clusters_index=clusters_idx,
         mapping_path=_SESSION_CLUSTERS_MAPPING,
@@ -1656,7 +1782,10 @@ def run_cluster(
         # spot for loose periphery sessions. Session layer only; command/IP
         # clusterers omit this and are unaffected. Set
         # playbook_merge_threshold=1.0 to disable (also disables centroid merge).
+        # In late_fusion mode the rescue is skipped (the override
+        # already encodes the outlier set; reassigning would mutate it).
         rescue_threshold=scfg.playbook_merge_threshold,
+        cluster_fn=cluster_fn,
     )
 
     # ROADMAP #4: per-cluster IP/command specificity, persisted on the centroid

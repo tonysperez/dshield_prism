@@ -151,6 +151,196 @@ def novelty_score_from_lists(
     return float(1.0 - max(0.0, best))
 
 
+# ---------------------------------------------------------------------------
+# Late-fusion clustering (E4.4 adoption)
+# ---------------------------------------------------------------------------
+#
+# Late fusion combines two HDBSCAN passes (one over the embedding +
+# scalar augmentation, one over a per-session TF-IDF + truncated-SVD
+# lexical view) via Agglomerative clustering on the per-pair
+# disagreement-distance matrix. Adopted for the session layer per
+# eval/results/E4-verdict.md — +0.085 ARI on the merged v1+v2 eval vs
+# the embedding-only HDBSCAN baseline, with homogeneity preserved above
+# the 0.80 binding rule.
+#
+# Outlier semantics are preserved: ``embedding_outlier_flags`` (the
+# embedding-only HDBSCAN's ``label == -1`` mask) is returned alongside
+# the fusion labels so callers can populate ``cluster.is_outlier`` from
+# the original HDBSCAN pass. Downstream consumers (novelty / rescue /
+# outlier_burst) see the same noise concept they do today; only the
+# cluster id assignment changes.
+#
+# These helpers are layer-agnostic by design (operate on prepared
+# numpy blocks) — the session caller composes them. Command + IP
+# layers don't currently have a meaningful lexical view, so they stay
+# on the single-pass run_layer_clustering path.
+
+
+def compute_lexical_features(
+    texts: list[str], n_components: int = 100,
+) -> "np.ndarray":
+    """Fit TF-IDF + truncated SVD on the corpus and return per-row
+    L2-normalized features (n_texts × n_components).
+
+    Hyperparameters mirror the E0.2 ablation and every E4 sweep:
+    max_features 5000, (1,2) ngrams, sublinear_tf, l2 norm. Refit on
+    every cluster run — the vocabulary is corpus-state-dependent and
+    persisting the vectorizer adds a versioning footgun we don't yet
+    need. Cost at production scale is single-digit seconds for tens of
+    thousands of sessions.
+
+    Empty / single-text corpora return a zero block of shape
+    ``(len(texts), 1)`` so downstream callers don't have to special-
+    case shape.
+    """
+    require_cluster_deps()
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.decomposition import TruncatedSVD
+
+    if not texts:
+        return np.zeros((0, 1), dtype=np.float32)
+
+    vectorizer = TfidfVectorizer(
+        max_features=5000,
+        ngram_range=(1, 2),
+        sublinear_tf=True,
+        norm="l2",
+    )
+    try:
+        tfidf = vectorizer.fit_transform(texts)
+    except ValueError:
+        # Empty vocabulary (e.g. all texts are punctuation-only).
+        return np.zeros((len(texts), 1), dtype=np.float32)
+
+    k = min(n_components, tfidf.shape[1], max(tfidf.shape[0] - 1, 1))
+    if k < 2:
+        return np.zeros((len(texts), 1), dtype=np.float32)
+    svd = TruncatedSVD(n_components=k, random_state=20260601)
+    reduced = svd.fit_transform(tfidf).astype(np.float32)
+    norms = np.linalg.norm(reduced, axis=1, keepdims=True)
+    norms[norms == 0.0] = 1.0
+    return (reduced / norms).astype(np.float32)
+
+
+def _disagreement_distance(
+    labels_a: "np.ndarray", labels_b: "np.ndarray",
+) -> "np.ndarray":
+    """Build the n × n pair-disagreement distance matrix used as the
+    fusion clusterer's input.
+
+    For each pair (i, j):
+      * agree_a = labels_a[i] == labels_a[j] AND labels_a[i] != -1
+      * agree_b = labels_b[i] == labels_b[j] AND labels_b[i] != -1
+      * agreement = int(agree_a) + int(agree_b)   (∈ {0, 1, 2})
+      * distance  = (2 - agreement) / 2           (∈ [0, 1])
+
+    HDBSCAN noise (-1) is never treated as "same cluster" — two noise
+    sessions enter the matrix as disagreeing, which lets the
+    Agglomerative pass place them on the periphery rather than fusing
+    them into a spurious common cluster.
+    """
+    n = len(labels_a)
+    if n == 0:
+        return np.zeros((0, 0), dtype=np.float32)
+    dist = np.zeros((n, n), dtype=np.float32)
+    for i in range(n):
+        a_i = int(labels_a[i])
+        b_i = int(labels_b[i])
+        for j in range(i + 1, n):
+            agree_a = (a_i == int(labels_a[j])) and a_i != -1
+            agree_b = (b_i == int(labels_b[j])) and b_i != -1
+            d = (2 - int(agree_a) - int(agree_b)) / 2.0
+            dist[i, j] = d
+            dist[j, i] = d
+    return dist
+
+
+def fusion_cluster_labels(
+    embedding_cluster_matrix: "np.ndarray",
+    lexical_block: "np.ndarray",
+    *,
+    min_cluster_size: int,
+    min_samples: int,
+    n_clusters: int | None = None,
+) -> tuple["np.ndarray", "np.ndarray", int, int]:
+    """Run the late-fusion clustering math on prepared inputs.
+
+    Args:
+        embedding_cluster_matrix: the matrix the production HDBSCAN
+            would consume — embedding + (optional) weighted scalar
+            block, already L2-normalized. Shape: (n_docs, embedding_dim
+            + scalar_dim).
+        lexical_block: the TF-IDF + SVD per-row-normalized lexical
+            features from ``compute_lexical_features``. Shape:
+            (n_docs, lexical_dim).
+        min_cluster_size: HDBSCAN parameter — applied to BOTH the
+            embedding and lexical clusterers identically.
+        min_samples: HDBSCAN min_samples — same as above.
+        n_clusters: target cluster count for the Agglomerative fusion
+            step. When None, defaults to
+            ``max(n_emb_clusters, n_lex_clusters)`` — the empirically-
+            tested rule from the E4.4 sweep that lands within 0.015 ARI
+            of the hand-tuned optimum on the eval set.
+
+    Returns:
+        ``(fusion_labels, embedding_outlier_flags, n_emb_clusters, n_lex_clusters)``:
+          * fusion_labels: per-doc cluster id from the Agglomerative
+            fusion (0..n_clusters-1; never -1).
+          * embedding_outlier_flags: bool array where True means the
+            embedding-only HDBSCAN tagged this doc as noise. Callers
+            populate ``cluster.is_outlier`` from this — preserves the
+            production outlier concept for novelty / rescue /
+            outlier_burst downstream.
+          * n_emb_clusters / n_lex_clusters: number of non-noise
+            clusters each base HDBSCAN found. Stats-only — useful for
+            logging and the default n_clusters rule above.
+    """
+    require_cluster_deps()
+    from sklearn.cluster import AgglomerativeClustering
+
+    n_docs = int(embedding_cluster_matrix.shape[0])
+    if n_docs < min_cluster_size:
+        # Too few docs for HDBSCAN. Return one cluster + no outliers.
+        return (
+            np.zeros(n_docs, dtype=np.int32),
+            np.zeros(n_docs, dtype=bool),
+            0, 0,
+        )
+
+    emb_clusterer = _HDBSCAN(
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
+        metric="euclidean",
+    )
+    labels_emb = emb_clusterer.fit_predict(embedding_cluster_matrix)
+    n_emb = int(len({int(l) for l in labels_emb if l >= 0}))
+
+    lex_clusterer = _HDBSCAN(
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
+        metric="euclidean",
+    )
+    labels_lex = lex_clusterer.fit_predict(lexical_block)
+    n_lex = int(len({int(l) for l in labels_lex if l >= 0}))
+
+    if n_clusters is None:
+        # E4.4 self-tuning rule. Bound below at 2 so Agglomerative has
+        # something to do even when both base clusterers produced a
+        # single cluster.
+        n_clusters = max(2, n_emb, n_lex)
+    n_clusters = max(2, min(n_clusters, n_docs))
+
+    dist = _disagreement_distance(labels_emb, labels_lex)
+    agg = AgglomerativeClustering(
+        n_clusters=n_clusters,
+        metric="precomputed",
+        linkage="average",
+    )
+    fusion_labels = agg.fit_predict(dist.astype(float)).astype(np.int32)
+    embedding_outlier_flags = (labels_emb == -1)
+    return fusion_labels, embedding_outlier_flags, n_emb, n_lex
+
+
 def load_centroids(
     es: Elasticsearch, clusters_index: str,
     *, reference_source: Optional[str] = None,
@@ -420,6 +610,7 @@ def run_layer_clustering(
     rescue_threshold: float | None = None,
     reference_source: Optional[str] = None,
     bootstrap_reference_now: bool = False,
+    cluster_fn: Optional[Callable[..., tuple["np.ndarray", Optional["np.ndarray"]]]] = None,
 ) -> dict:
     """Generic HDBSCAN pipeline for one layer (commands / sessions / IPs / future).
 
@@ -502,24 +693,58 @@ def run_layer_clustering(
         )
     del scalars_list
 
-    log.info(
-        "[%s] Running HDBSCAN (min_cluster_size=%d, min_samples=%d) on %d docs ...",
-        layer_label, min_cluster_size, min_samples, n_docs,
-    )
-    clusterer = _HDBSCAN(
-        min_cluster_size=min_cluster_size,
-        min_samples=min_samples,
-        metric="euclidean",
-    )
-    cluster_labels_arr = clusterer.fit_predict(cluster_matrix)
+    # ``cluster_fn`` hook (E4.4 late-fusion adoption): when provided,
+    # the caller supplies the clusterer instead of the default HDBSCAN
+    # pass. The hook returns ``(cluster_labels_arr,
+    # outlier_flags_override)``:
+    #   * cluster_labels_arr — per-doc cluster ids. May or may not use
+    #     -1 as a noise marker depending on the algorithm (Agglomerative
+    #     fusion never does; the embedding HDBSCAN inside fusion still
+    #     does, but its result is surfaced via outlier_flags_override).
+    #   * outlier_flags_override — optional bool array (length n_docs).
+    #     When set, takes precedence over ``labels == -1`` for the
+    #     ``cluster.is_outlier`` output and the ``n_outliers`` stat.
+    #     Lets fusion mode preserve the embedding-HDBSCAN's noise
+    #     concept for downstream (novelty / rescue / outlier_burst)
+    #     without changing the production cluster.id semantics that
+    #     non-noise sessions enjoy.
+    outlier_flags_override: Optional["np.ndarray"] = None
+    if cluster_fn is None:
+        log.info(
+            "[%s] Running HDBSCAN (min_cluster_size=%d, min_samples=%d) on %d docs ...",
+            layer_label, min_cluster_size, min_samples, n_docs,
+        )
+        clusterer = _HDBSCAN(
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples,
+            metric="euclidean",
+        )
+        cluster_labels_arr = clusterer.fit_predict(cluster_matrix)
+    else:
+        log.info(
+            "[%s] Running provided cluster_fn on %d docs (HDBSCAN replaced)",
+            layer_label, n_docs,
+        )
+        cluster_labels_arr, outlier_flags_override = cluster_fn(
+            cluster_matrix=cluster_matrix,
+            normalized=normalized,
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples,
+        )
 
     # Optional noise rescue (session layer): reassign outliers within
     # `rescue_threshold` pure-embedding cosine of a cluster centroid. Closes the
     # blind spot in the centroid-level merge, which never sees noise points.
     # Runs before centroid/size/novelty computation so all downstream data
     # reflects the rescued membership. Default off → command/IP layers unchanged.
+    #
+    # Rescue is skipped in cluster_fn mode (e.g. fusion) — the override
+    # already encodes which sessions count as outliers, and reassigning
+    # them to the nearest centroid would silently mutate that
+    # contract. Fusion mode's "every session gets a cluster_id"
+    # property makes the rescue irrelevant by construction.
     n_rescued = 0
-    if rescue_threshold is not None and rescue_threshold > 0.0:
+    if rescue_threshold is not None and rescue_threshold > 0.0 and cluster_fn is None:
         cluster_labels_arr, n_rescued = rescue_noise_points(
             normalized, cluster_labels_arr, rescue_threshold,
         )
@@ -528,12 +753,24 @@ def run_layer_clustering(
                 "[%s] noise rescue: reassigned %d outlier(s) to nearest centroid "
                 "(cosine >= %.3f)", layer_label, n_rescued, rescue_threshold,
             )
+    elif rescue_threshold is not None and rescue_threshold > 0.0:
+        log.info(
+            "[%s] noise rescue: skipped (cluster_fn override present)",
+            layer_label,
+        )
 
     unique_labels = [int(l) for l in np.unique(cluster_labels_arr)]
     valid_cluster_ids = [l for l in unique_labels if l >= 0]
     n_clusters = len(valid_cluster_ids)
-    n_outliers = int(np.sum(cluster_labels_arr == -1))
-    log.info("[%s] HDBSCAN: %d clusters, %d outliers", layer_label, n_clusters, n_outliers)
+    if outlier_flags_override is not None:
+        n_outliers = int(np.asarray(outlier_flags_override, dtype=bool).sum())
+    else:
+        n_outliers = int(np.sum(cluster_labels_arr == -1))
+    log.info(
+        "[%s] %s: %d clusters, %d outliers",
+        layer_label, "HDBSCAN" if cluster_fn is None else "cluster_fn",
+        n_clusters, n_outliers,
+    )
 
     # Pure-embedding centroids — persisted to ES for triage / external use.
     centroids = compute_centroids(normalized, cluster_labels_arr)
@@ -692,13 +929,26 @@ def run_layer_clustering(
     update_actions: list[dict] = []
     for i, (doc_id, lbl) in enumerate(zip(doc_ids, cluster_labels_arr)):
         lbl = int(lbl)
-        is_outlier = lbl < 0
-        cluster_id = "outlier" if is_outlier else f"cluster_{lbl}"
-        if is_outlier:
-            score = 1.0
-        else:
+        if outlier_flags_override is not None:
+            # Fusion / cluster_fn mode: outliers are decided by the
+            # override (sourced from the embedding-only HDBSCAN inside
+            # fusion), independent of the fused cluster_labels_arr.
+            # Every session still gets a cluster_id from the fusion
+            # result; outliers don't get the legacy "outlier" sentinel
+            # — downstream consumers should filter on cluster.is_outlier
+            # instead of pattern-matching the id string.
+            is_outlier = bool(outlier_flags_override[i])
+            cluster_id = f"cluster_{lbl}"
             doc_vec = cluster_matrix[i] if score_in_augmented else normalized[i]
             score = novelty_score(doc_vec, score_centroids)
+        else:
+            is_outlier = lbl < 0
+            cluster_id = "outlier" if is_outlier else f"cluster_{lbl}"
+            if is_outlier:
+                score = 1.0
+            else:
+                doc_vec = cluster_matrix[i] if score_in_augmented else normalized[i]
+                score = novelty_score(doc_vec, score_centroids)
         params: dict = {
             "cluster_id":    cluster_id,
             "novelty_score": round(score, 6),

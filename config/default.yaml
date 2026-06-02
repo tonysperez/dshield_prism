@@ -53,6 +53,22 @@ llm:
     - tactics
     - techniques
     - description
+  # E8.1 — layout of the embed-input string. Three options:
+  #   - "prelude_first" (default, unchanged from pre-E8.1 behavior):
+  #       "{enrichment-context}\nCommand: {command}"
+  #   - "command_first":
+  #       "Command: {command}\n{enrichment-context}"
+  #   - "command_only_with_tag":
+  #       "[shell] {command}"  — prelude dropped entirely.
+  # Folded into embed_config_hash automatically; a flip invalidates the
+  # embed cache and reembed re-runs every command. See
+  # eval/results/embed-input-order-sweep-*.md (E8.2) for sweep results.
+  # First-deploy note: adding this field to the hash payload triggers
+  # one full reembed cycle on the first run after E8.1 lands, even
+  # though "prelude_first" produces byte-identical embeddings to the
+  # pre-E8.1 layout. Expected and idempotent — the second reembed will
+  # show `skipped_fresh: 4571` as the cache settles.
+  embed_input_order: "prelude_first"
 
 worker:
   state_db: "/var/lib/dshield_prism/state.sqlite"
@@ -69,6 +85,7 @@ worker:
   # When true, the cache key carries two auto-derived hashes:
   #   - llm_config_hash:   prompt-file content + LLM-side cooccurrence params
   #   - embed_config_hash: llm.embed_context + llm.embedding_model +
+  #                        llm.embed_input_order +
   #                        cooccurrence.embed_cooccurrence toggle
   # Editing any of those then invalidates the appropriate cache side on
   # the next pipeline run. The embed-only side can be refreshed by
@@ -231,11 +248,15 @@ session:
   # linkage union-find) collapse into one playbook before LLM naming. Fixes
   # the failure mode where HDBSCAN splits a behaviourally-identical group
   # across two clusters (verified by `scripts/diagnose_centroid_similarity.py`).
-  # 1.0 disables merging (1 cluster = 1 playbook). Lowering past ~0.93 risks
-  # transitive mega-merges through borderline edges; 0.96 is a safe default.
-  # Future tightening: a complete-linkage guard (require every pair in a
-  # merged group to clear `threshold - δ`) — not implemented yet, tracked in README.
-  playbook_merge_threshold: 0.96
+  # 1.0 disables merging (1 cluster = 1 playbook). Complete-linkage merging
+  # (every pair in a group must clear the threshold) already guards against
+  # transitive mega-merges through borderline edges, so low values can't
+  # chain unrelated centroids — but below ~0.93 distinct behaviours start
+  # merging and homogeneity drops. 0.94 chosen per the F-phase merge sweep:
+  # consolidates over-fragmented playbooks (uname-recon + ssh-key variants)
+  # while homogeneity holds at 0.86 and density fragments are absorbed; 0.92
+  # over-merges. See eval/results/F-spike-verdict.md.
+  playbook_merge_threshold: 0.94
   # ROADMAP #4 — cluster specificity. Max keys kept per centroid in each of
   # ip_specificity / command_specificity. Set well past realistic cluster
   # sizes so every member carries a score (drawer / graph can show commodity
@@ -246,6 +267,27 @@ session:
   # via /api/config/ui; an analyst can override per-browser via the
   # `prism.spotlightThreshold` localStorage key.
   specificity_threshold: 0.5
+  # Session-layer clustering mode (E4.4 adoption).
+  # - "hdbscan" (default): production behaviour pre-2026-06-01; single
+  #   HDBSCAN pass over embedding + weighted scalar block.
+  # - "late_fusion": two HDBSCAN passes (one over embedding+scalars, one
+  #   over a per-session TF-IDF + truncated-SVD lexical view of
+  #   `command_stream_text`), fused via Agglomerative on the per-pair
+  #   disagreement-distance matrix. +0.085 ARI vs hdbscan on the merged
+  #   v1+v2 eval (eval/results/E4-verdict.md). Reversible by flipping
+  #   back to "hdbscan" — every other code path is unchanged.
+  # Outlier semantics are preserved in either mode: `cluster.is_outlier`
+  # is sourced from the embedding-HDBSCAN pass, so novelty / rescue /
+  # outlier_burst downstream behaviour does not change.
+  # NOTE: late_fusion requires `command_stream_text` populated on the
+  # session rollups. Newly-built rollups get it for free; older rollups
+  # need a one-shot backfill via
+  # `scripts/backfill_command_stream_text.py`.
+  clustering_mode: "hdbscan"
+  # Lexical-view dimensionality for the late_fusion path. 100-d is the
+  # E0.2 ablation baseline that has carried through every subsequent
+  # sweep. Ignored when `clustering_mode == "hdbscan"`.
+  cluster_lexical_features_dim: 100
 
 # IP-level rollup + clustering.
 ip:

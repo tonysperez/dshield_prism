@@ -85,6 +85,18 @@ class LLMConfig(BaseModel):
     embed_context: list[str] = Field(
         default_factory=lambda: ["intent", "tactics", "description"]
     )
+    # Layout of the embed-input string (E8.1). Three layouts that
+    # ``_build_embed_text`` will materialise:
+    #   - ``prelude_first`` (default, unchanged):
+    #         "{enrichment-context}\nCommand: {command}"
+    #   - ``command_first``:
+    #         "Command: {command}\n{enrichment-context}"
+    #   - ``command_only_with_tag``:
+    #         "[shell] {command}"  — prelude dropped entirely; only the
+    #         command + a corpus-disambiguation tag goes to the encoder.
+    # Folded into ``compute_embed_config_hash`` so a flip invalidates the
+    # embed cache and reembed re-runs every command under the new layout.
+    embed_input_order: str = "prelude_first"
 
 
 class CooccurrenceConfig(BaseModel):
@@ -241,6 +253,25 @@ class SessionConfig(BaseModel):
     specificity_threshold: float = 0.5
     # ROADMAP P1: see CommandClusterConfig.reference_max_age_days.
     reference_max_age_days: int = 45
+    # Session-layer clustering mode. Default "hdbscan" reproduces the
+    # historical behaviour: a single HDBSCAN pass over the embedding +
+    # weighted scalar block. "late_fusion" runs HDBSCAN twice (once over
+    # the embedding+scalar augmentation, once over a per-session
+    # TF-IDF+SVD lexical view) then re-clusters via Agglomerative on the
+    # per-pair disagreement distance matrix. Adopted per the E4.4 sweep
+    # (eval/results/E4-verdict.md): +0.085 ARI vs production while
+    # keeping homogeneity above the plan's 0.80 binding rule. Outlier
+    # semantics are preserved — `cluster.is_outlier` is still sourced
+    # from the embedding-only HDBSCAN pass, so novelty / rescue /
+    # outlier_burst downstream behaviour does not change. Reversible by
+    # config flip.
+    clustering_mode: str = "hdbscan"
+    # Lexical-view dimensionality for the late-fusion path. 100-d is the
+    # E0.2 ablation baseline that has carried through every subsequent
+    # sweep. Lower values (50) collapse semantic distinctions; higher
+    # values (200+) start fitting per-corpus noise. Ignored when
+    # clustering_mode == "hdbscan".
+    cluster_lexical_features_dim: int = 100
 
 
 class IPConfig(BaseModel):
@@ -1082,6 +1113,7 @@ def compute_embed_config_hash(cfg: AppConfig) -> str:
       - `llm.embed_context` (which stored fields get prepended to the
         embed text — sorted JSON so list ordering is stable).
       - `llm.embedding_model` (changing models obviously changes vectors).
+      - `llm.embed_input_order` (E8.1 — prelude/command layout selector).
       - `cooccurrence.embed_cooccurrence` (whether siblings get appended
         to the embed text — independent of whether they were fetched for
         the LLM prompt).
@@ -1097,6 +1129,7 @@ def compute_embed_config_hash(cfg: AppConfig) -> str:
     embed_payload = json.dumps({
         "embed_context": sorted(cfg.llm.embed_context or []),
         "embedding_model": cfg.llm.embedding_model,
+        "embed_input_order": cfg.llm.embed_input_order,
         "cooc": cooc_subset,
     }, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(embed_payload.encode("utf-8")).hexdigest()[:_CONFIG_HASH_LEN]
