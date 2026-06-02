@@ -58,9 +58,29 @@ from sklearn.metrics import (
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from enrich.clustering import l2_normalize
+from enrich.clustering import compute_centroids, l2_normalize
 from enrich.config import load_config
 from enrich.sources.cowrie.sessions import build_session_scalar_block
+
+
+# ---------------------------------------------------------------------------
+# F-phase small-cluster + outlier metrics (handoff-small-cluster-surfacing-plan
+# F0.1). Shared with eval_production_scale.py + the F3/F4 sweeps so every
+# F-phase intervention scores on the same multi-objective axis.
+# ---------------------------------------------------------------------------
+
+# Cluster size bands. Small clusters are the surfacing target (metrics 2-3);
+# large clusters are the shard reference set the distinctness proxy (3b)
+# measures small clusters against. A cluster of size 1-2 falls below the
+# small band and counts toward neither — it is effectively residual noise.
+SMALL_BAND = (3, 10)        # size ∈ [3, 10]   — the user-stated objective
+MEDIUM_BAND = (11, 100)     # size ∈ [11, 100] — context only
+LARGE_MIN = 101             # size > 100       — the shard reference set
+# Metric 3b textual-homogeneity clause: a small cluster is only a *shard* of a
+# big playbook when its members run (near-)identical command sets. 0.8 mirrors
+# the `modal_signature_share ≥ 0.8` "copy/paste tight" floor in
+# scripts/eval_cluster_purity.py.
+SHARD_MODAL_SIGNATURE_FLOOR = 0.8
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +134,235 @@ def _extract_session_features(rec: dict) -> tuple[list[float], dict] | None:
         "mean_novelty_score": enr.get("mean_novelty_score") or 0.0,
     }
     return emb, scalars
+
+
+def _modal_share(values: list) -> float | None:
+    """Fraction of non-empty ``values`` equal to the modal value. None when
+    no non-empty value is present (e.g. a layer/snapshot that doesn't carry
+    the field). Used for both the intent-purity (3a) and the
+    modal-signature-share (3b) clauses."""
+    vals = [v for v in values if v]
+    if not vals:
+        return None
+    _, top_count = Counter(vals).most_common(1)[0]
+    return top_count / len(vals)
+
+
+def small_cluster_metrics(
+    cluster_pred: np.ndarray,
+    normalized: np.ndarray,
+    intents: list,
+    signatures: list,
+    *,
+    merge_threshold: float,
+) -> dict:
+    """Compute the F-phase small-cluster + outlier axis (plan F0.1).
+
+    Args:
+      cluster_pred:  per-row integer cluster label (-1 = HDBSCAN noise).
+      normalized:    (n, d) L2-normalized *pure-embedding* matrix — the same
+                     geometry ``rescue_noise_points`` + the
+                     ``playbook_merge_threshold`` centroid merge use, so the
+                     nearest-large-centroid cosine (3b) matches production.
+      intents:       per-row ``dominant_intent`` (sessions) / ``intent``
+                     (commands), or ``None`` where unavailable. Drives 3a.
+      signatures:    per-row ``command_signature`` (or per-layer analog), or
+                     ``None`` where unavailable. Drives the 3b modal clause.
+      merge_threshold: cosine floor for the shard test (0.96 in production).
+
+    Returns a dict with the scalar metrics (mergeable into ``report['metrics']``)
+    plus a per-small-cluster ``small_cluster_detail`` list and two
+    ``*_available`` flags so a redacted input (e.g. the embeddings-only
+    production snapshot) degrades to ``None`` on 3a/3b rather than silently
+    reporting a wrong zero.
+    """
+    labels = np.asarray(cluster_pred)
+    n = int(len(labels))
+    n_outliers = int((labels == -1).sum())
+    outlier_rate = round(n_outliers / n, 4) if n else 0.0
+
+    sizes = Counter(int(c) for c in labels if c >= 0)
+    small_lbls = [l for l, s in sizes.items() if SMALL_BAND[0] <= s <= SMALL_BAND[1]]
+    n_small = len(small_lbls)
+    n_medium = sum(1 for s in sizes.values() if MEDIUM_BAND[0] <= s <= MEDIUM_BAND[1])
+    large_lbls = [l for l, s in sizes.items() if s >= LARGE_MIN]
+    n_large = len(large_lbls)
+
+    intent_available = any(bool(i) for i in intents)
+    signature_available = any(bool(s) for s in signatures)
+
+    # Centroids in the pure-embedding space; re-unit-normalize for cosine.
+    centroids = compute_centroids(normalized, labels)
+
+    def _unit(v: np.ndarray) -> np.ndarray:
+        nv = float(np.linalg.norm(v))
+        return v / nv if nv > 0.0 else v
+
+    large_centroids = [_unit(centroids[l]) for l in large_lbls if l in centroids]
+
+    details: list[dict] = []
+    purities: list[float] = []
+    shard_flags: list[bool] = []
+    n_near_large = 0       # density-redundant: centroid within threshold of a big playbook
+    n_distinct = 0         # genuinely distant from every big playbook
+    for l in sorted(small_lbls):
+        idx = np.where(labels == l)[0]
+        member_intents = [intents[i] for i in idx]
+        member_sigs = [signatures[i] for i in idx]
+        intent_share = _modal_share(member_intents)
+        modal_sig = _modal_share(member_sigs)
+
+        nearest_large_cos: float | None = None
+        if l in centroids and large_centroids:
+            cu = _unit(centroids[l])
+            nearest_large_cos = max(float(np.dot(cu, lc)) for lc in large_centroids)
+
+        # Density-redundancy (broader than the lexical shard test): a small
+        # cluster whose centroid is within merge_threshold cosine of a big
+        # playbook is the *same behaviour* as that playbook — a density
+        # fragment — regardless of textual homogeneity. This catches the
+        # gap 3b's modal-signature clause leaves open: textually-diverse
+        # fragments hugging a big centroid (cos≈1.0, low modal_sig) that
+        # read as "distinct" to 3b but are not new behaviours.
+        near_large = nearest_large_cos is not None and nearest_large_cos >= merge_threshold
+        if near_large:
+            n_near_large += 1
+        else:
+            n_distinct += 1
+
+        # 3b shard test: within merge_threshold cosine of a big centroid AND
+        # textually homogeneous (same copy/paste script). Undeterminable when
+        # signatures are absent — leave is_shard None so it's excluded from
+        # the fraction rather than counted as "not a shard".
+        is_shard: bool | None = None
+        if signature_available and modal_sig is not None:
+            is_shard = bool(near_large and modal_sig >= SHARD_MODAL_SIGNATURE_FLOOR)
+            shard_flags.append(is_shard)
+
+        if intent_share is not None:
+            purities.append(intent_share)
+
+        top_intent = None
+        if intent_available:
+            named = [i for i in member_intents if i]
+            if named:
+                top_intent = Counter(named).most_common(1)[0][0]
+
+        details.append({
+            "cluster_label":         int(l),
+            "size":                  int(sizes[l]),
+            "dominant_intent":       top_intent,
+            "intent_share":          round(intent_share, 4) if intent_share is not None else None,
+            "modal_signature_share": round(modal_sig, 4) if modal_sig is not None else None,
+            "nearest_large_cosine":  round(nearest_large_cos, 4) if nearest_large_cos is not None else None,
+            "is_shard":              is_shard,
+            "near_large":            near_large,
+        })
+
+    small_cluster_purity = (
+        round(sum(purities) / len(purities), 4) if purities else None
+    )
+    small_cluster_shard_fraction = (
+        round(sum(1 for x in shard_flags if x) / len(shard_flags), 4)
+        if shard_flags else None
+    )
+    small_cluster_near_large_fraction = (
+        round(n_near_large / n_small, 4) if n_small else None
+    )
+
+    return {
+        "metrics": {
+            "outlier_rate":                 outlier_rate,
+            "n_small_clusters":             n_small,
+            "n_medium_clusters":            n_medium,
+            "n_large_clusters":             n_large,
+            "small_cluster_purity":         small_cluster_purity,
+            "small_cluster_shard_fraction": small_cluster_shard_fraction,
+            # Density-redundancy decomposition of the small-cluster count.
+            # n_small_clusters_distinct = genuinely distant from every big
+            # playbook (the real surfacing yield); near_large_fraction =
+            # share that are density fragments of a big playbook.
+            "n_small_clusters_distinct":         n_distinct,
+            "small_cluster_near_large_fraction": small_cluster_near_large_fraction,
+        },
+        "small_cluster_detail":   details,
+        "intent_available":       intent_available,
+        "signature_available":    signature_available,
+        "n_outliers":             n_outliers,
+        "n_total":                n,
+    }
+
+
+def render_small_cluster_block(metrics: dict, sc: dict) -> list[str]:
+    """Stdout lines for the F-phase small-cluster axis. ``metrics`` is the
+    report's merged metric dict; ``sc`` is the report's ``small_cluster``
+    block (availability flags + per-cluster detail). Shared by
+    eval_clustering.py + eval_production_scale.py."""
+    out: list[str] = []
+    out.append("Small-cluster + outlier axis (F-phase):")
+    out.append(f"  {'outlier_rate':28} {metrics.get('outlier_rate'):.4f}")
+    out.append(
+        f"  {'clusters S/M/L':28} "
+        f"{metrics.get('n_small_clusters')} / "
+        f"{metrics.get('n_medium_clusters')} / "
+        f"{metrics.get('n_large_clusters')}   "
+        f"(small=[3,10], medium=[11,100], large>100)"
+    )
+    purity = metrics.get("small_cluster_purity")
+    shard = metrics.get("small_cluster_shard_fraction")
+    intent_ok = sc.get("intent_available")
+    sig_ok = sc.get("signature_available")
+    out.append(
+        f"  {'small_cluster_purity (3a)':28} "
+        + (f"{purity:.4f}" if purity is not None
+           else ("—  (no small clusters)" if intent_ok else "—  (intent unavailable)"))
+    )
+    out.append(
+        f"  {'small_cluster_shard_frac (3b)':28} "
+        + (f"{shard:.4f}" if shard is not None
+           else ("—  (no small clusters)" if sig_ok else "—  (signature unavailable)"))
+    )
+    distinct = metrics.get("n_small_clusters_distinct")
+    near = metrics.get("small_cluster_near_large_fraction")
+    if distinct is not None:
+        out.append(
+            f"  {'distinct (cos<thr) / near-big':28} "
+            f"{distinct}"
+            + (f"  ·  near_large_fraction {near:.4f}" if near is not None else "")
+            + "   (distinct = genuine surfacing yield)"
+        )
+    detail = sc.get("detail") or []
+    if detail:
+        out.append("  small clusters (label · size · intent · intent_share · "
+                   "modal_sig · near_large_cos · shard):")
+        for d in detail:
+            cos = d["nearest_large_cosine"]
+            out.append(
+                f"    #{d['cluster_label']:<6} n={d['size']:<3} "
+                f"{str(d['dominant_intent'] or '—'):22} "
+                f"is={_fmt_opt(d['intent_share'])} "
+                f"sig={_fmt_opt(d['modal_signature_share'])} "
+                f"cos={'—' if cos is None else f'{cos:.3f}'} "
+                f"{'SHARD' if d['is_shard'] else ('ok' if d['is_shard'] is False else '?')}"
+            )
+    return out
+
+
+def _fmt_opt(v) -> str:
+    return "—" if v is None else f"{v:.2f}"
+
+
+def _extract_session_intent_signature(rec: dict) -> tuple:
+    """Pull ``(dominant_intent, command_signature)`` from a JSONL record's
+    rollup doc — the 3a/3b inputs. Either may be ``None`` on a record that
+    doesn't carry it (login-only sessions have no commands, hence no
+    signature)."""
+    enr = (
+        (((rec.get("rollup_doc") or {}).get("dshield") or {}).get("cowrie") or {})
+        .get("enrichment", {})
+        .get("session", {})
+    )
+    return enr.get("dominant_intent"), enr.get("command_signature")
 
 
 def _extract_session_text(rec: dict) -> str | None:
@@ -374,6 +623,8 @@ def _evaluate(
     label_truth: list[str] = []
     embeddings: list[list[float]] = []
     scalars: list[dict] = []
+    intents: list = []      # per-session dominant_intent (3a input)
+    signatures: list = []   # per-session command_signature (3b input)
     skipped_no_embedding: list[str] = []
     session_texts: list[str] = []  # populated only when embedding_source=tfidf-svd
     v2_session_ids: set[str] = set()
@@ -413,11 +664,14 @@ def _evaluate(
                     skipped_no_embedding.append(sid)
                     continue
                 session_texts.append(text)
+            intent, signature = _extract_session_intent_signature(rec)
             seen_sids.add(sid)
             session_ids.append(sid)
             label_truth.append(label_blocks[sid]["playbook_label"])
             embeddings.append(emb)
             scalars.append(sc)
+            intents.append(intent)
+            signatures.append(signature)
             if is_v2 or sid in v2_label_blocks:
                 # A session loaded via v1 but ALSO carrying a v2 label
                 # still counts toward v2 for the divergent-pair lookup —
@@ -463,6 +717,17 @@ def _evaluate(
         )
         metrics.update(v2_metrics)
 
+    # F-phase small-cluster + outlier axis (plan F0.1). Computed over the
+    # eval-isolated 108-session clustering — advisory at this scale (no
+    # size>100 clusters exist, so the shard test is near-vacuous); the
+    # binding numbers come from eval_production_scale.py (F0.2).
+    norm_for_centroids = l2_normalize(np.array(embeddings, dtype=np.float32))
+    sc_result = small_cluster_metrics(
+        cluster_pred, norm_for_centroids, intents, signatures,
+        merge_threshold=cfg.session.playbook_merge_threshold,
+    )
+    metrics.update(sc_result["metrics"])
+
     n_clusters = len({int(c) for c in cluster_pred if c >= 0})
     n_outliers = int(sum(1 for c in cluster_pred if c == -1))
 
@@ -473,6 +738,7 @@ def _evaluate(
             "min_cluster_size": cfg.session.cluster_min_cluster_size,
             "min_samples":      cfg.session.cluster_min_samples,
             "scalar_weight":    cfg.session.cluster_scalar_weight,
+            "playbook_merge_threshold": cfg.session.playbook_merge_threshold,
         },
         "input": {
             "labels_path":          str(labels_path),
@@ -492,6 +758,11 @@ def _evaluate(
             "cluster_sizes":  dict(Counter(int(c) for c in cluster_pred).most_common()),
         },
         "metrics":         metrics,
+        "small_cluster": {
+            "intent_available":    sc_result["intent_available"],
+            "signature_available": sc_result["signature_available"],
+            "detail":              sc_result["small_cluster_detail"],
+        },
         "per_label":       _per_label_breakdown(session_ids, label_truth, cluster_pred),
         "divergent_pairs": pair_outcomes,
     }
@@ -562,6 +833,8 @@ def _render_stdout(report: dict) -> str:
         )
         if skipped:
             out.append(f"    skipped (member missing):    {skipped}")
+    out.append("")
+    out.extend(render_small_cluster_block(report["metrics"], report.get("small_cluster", {})))
     out.append("")
     out.append("Per-label breakdown (analyst label → cluster grouping):")
     out.append(
