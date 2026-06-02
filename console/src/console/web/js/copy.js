@@ -679,6 +679,74 @@
     return JSON.stringify(obj, null, 2);
   }
 
+  // ----- defang -----------------------------------------------------------
+  // Neuter network IOCs so a pasted report can't auto-link or be
+  // fat-fingered into a live request. Two entry points:
+  //   defangIp(s)   — the cell IS a bare IP (v4 dot-bracket, v6 colon-bracket)
+  //   defangText(s) — free text that may EMBED urls / ipv4 / domains
+  // defangText runs scheme → ipv4 → domain in that order so each pass only
+  // sees raw separators (earlier passes replace `.`/`:` with bracketed
+  // forms the later regexes no longer match, so there's no double-defang).
+  function defangIp(s) {
+    if (!s) return s;
+    return s.includes(":") ? s.replace(/:/g, "[:]") : s.replace(/\./g, "[.]");
+  }
+  // URL scheme: http://→hxxp://, https://→hxxps://, ftp://→fxp:// . The `://`
+  // is kept so the value still reads as a URL. Anchored on `://` so `https`
+  // isn't clipped by the `http` rule.
+  function _defangScheme(s) {
+    return s
+      .replace(/\bhttps:\/\//gi, "hxxps://")
+      .replace(/\bhttp:\/\//gi, "hxxp://")
+      .replace(/\bftp:\/\//gi, "fxp://");
+  }
+  const _IPV4_RE = /\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b/g;
+  // Domain-like token requiring an alphabetic TLD (≥2 letters) so all-numeric
+  // runs (version strings, the already-defanged ipv4) don't match. This is
+  // the deliberately broad "embedded" pass — it will also dot-defang
+  // file extensions (foo.sh → foo[.]sh), the accepted cost of catching
+  // domains buried in command text.
+  const _DOMAIN_RE = /\b([a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,})\b/gi;
+  function defangText(s) {
+    if (!s) return s;
+    let out = _defangScheme(String(s));
+    out = out.replace(_IPV4_RE, "$1[.]$2[.]$3[.]$4");
+    out = out.replace(_DOMAIN_RE, (m) => m.replace(/\./g, "[.]"));
+    return out;
+  }
+
+  // Which (section header → column → mode) cells carry network IOCs. `ip`
+  // mode treats the whole cell as a bare IP; `text` mode scans for embedded
+  // IOCs. Everything else (sha256, credentials, the repro Source URL in the
+  // provenance header) is left raw on purpose.
+  const _DEFANG_COLS = {
+    "IPs":               { ip: "ip" },
+    "URLs":              { url: "text" },
+    "Commands":          { command: "text" },
+    "File hashes":       { dropping_cmd: "text" },
+    "Analyst artifacts": { value: "text" },
+    "Session sequences": { command_line: "text" },
+  };
+  // Mutates sections in place (rebuild() always rebuilds them fresh, so
+  // there's no stale state to corrupt). Session-sequence grouped renderers
+  // read the same rows, so they pick the defanged text up too.
+  function applyDefang(sections) {
+    for (const sec of sections) {
+      const colModes = _DEFANG_COLS[sec.header];
+      if (!colModes) continue;
+      const targets = [];
+      sec.columns.forEach((c, i) => { if (colModes[c]) targets.push([i, colModes[c]]); });
+      if (!targets.length) continue;
+      for (const r of sec.rows) {
+        for (const [i, mode] of targets) {
+          if (r[i] == null) continue;
+          r[i] = mode === "ip" ? defangIp(String(r[i])) : defangText(String(r[i]));
+        }
+      }
+    }
+    return sections;
+  }
+
   function render(sections, format, header) {
     if (format === "markdown") return renderMarkdown(sections, header);
     if (format === "csv")      return renderCsv(sections, header);
@@ -1196,6 +1264,11 @@
     const el = document.querySelector('input[name="copy-format"]:checked');
     return el ? el.value : "plain";
   }
+  function getDefang() {
+    const el = document.getElementById("copy-defang-toggle");
+    // Default-on: absent toggle (older markup) shouldn't disable defanging.
+    return el ? el.checked : true;
+  }
   function setStatus(msg, tone = "neutral") {
     const el = document.getElementById("copy-status");
     if (!el) return;
@@ -1292,6 +1365,7 @@
 
     const sections = await buildAll(pulled, fetched);
     refreshCountsFromSections(sections);
+    if (getDefang()) applyDefang(sections);
     const headerOn = !!document.getElementById("copy-header-toggle")?.checked;
     const header = headerOn ? provenance(scope, pulled) : null;
     const text = render(sections, getFormat(), header);
@@ -1396,6 +1470,13 @@
       const r = document.querySelector(`input[name="copy-format"][value="${prefs.format}"]`);
       if (r) r.checked = true;
     }
+    // defang toggle — only override the default-on markup when a prior
+    // pref explicitly set it (so existing prefs from before this feature,
+    // which have no `defang` key, keep defanging on).
+    if (prefs.defang != null) {
+      const d = document.getElementById("copy-defang-toggle");
+      if (d) d.checked = !!prefs.defang;
+    }
     // scope is intentionally not persisted — it's contextual to the
     // current view, not a long-running preference.
   }
@@ -1407,7 +1488,7 @@
       opts[el.dataset.cat] = opts[el.dataset.cat] || {};
       opts[el.dataset.cat][el.dataset.opt] = el.checked;
     });
-    return { cats, opts, format: getFormat() };
+    return { cats, opts, format: getFormat(), defang: getDefang() };
   }
 
   function openModal() {
@@ -1445,6 +1526,11 @@
     });
     const headerToggle = document.getElementById("copy-header-toggle");
     if (headerToggle) headerToggle.addEventListener("change", () => {
+      savePrefs(captureCurrentPrefs());
+      rebuild();
+    });
+    const defangToggle = document.getElementById("copy-defang-toggle");
+    if (defangToggle) defangToggle.addEventListener("change", () => {
       savePrefs(captureCurrentPrefs());
       rebuild();
     });
