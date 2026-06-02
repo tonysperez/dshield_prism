@@ -238,6 +238,23 @@ PUT _ingest/pipeline/prism.cowrie.session
       }
     },
     {
+      "rename": {
+        "description": "I1: preserve the direct-tcpip relayed payload under a dedicated proxy namespace. The proxy target ip:port already ride on destination.ip/destination.port via the generic renames above (a value-duplicate, so not re-promoted); the relayed payload and forwarding channel id are the only fields unique to these proxy-abuse events.",
+        "field": "cowrie.data",
+        "target_field": "cowrie.proxy.payload",
+        "if": "ctx.event?.action != null && ctx.event.action.startsWith('cowrie.direct-tcpip')",
+        "ignore_missing": true
+      }
+    },
+    {
+      "rename": {
+        "field": "cowrie.id",
+        "target_field": "cowrie.proxy.channel_id",
+        "if": "ctx.event?.action != null && ctx.event.action.startsWith('cowrie.direct-tcpip')",
+        "ignore_missing": true
+      }
+    },
+    {
       "convert": {
         "field": "source.port",
         "type": "integer",
@@ -311,7 +328,7 @@ PUT _ingest/pipeline/prism.cowrie.session
       "script": {
         "description": "ECS event.category / event.type / event.outcome per Cowrie eventid",
         "lang": "painless",
-        "source": "String a = ctx.event?.action; if (a == null) return; if (a == 'cowrie.login.success') { ctx.event.category = ['authentication']; ctx.event.type = ['start']; ctx.event.outcome = 'success'; } else if (a == 'cowrie.login.failed') { ctx.event.category = ['authentication']; ctx.event.type = ['start']; ctx.event.outcome = 'failure'; } else if (a == 'cowrie.session.connect') { ctx.event.category = ['network']; ctx.event.type = ['connection']; ctx.event.outcome = 'success'; } else if (a == 'cowrie.session.closed') { ctx.event.category = ['network']; ctx.event.type = ['end']; ctx.event.outcome = 'success'; } else if (a == 'cowrie.client.version') { ctx.event.category = ['network']; ctx.event.type = ['info']; } else if (a == 'cowrie.client.kex') { ctx.event.category = ['network']; ctx.event.type = ['info']; } else if (['cowrie.command.input', 'cowrie.command.failed', 'cowrie.command.success'].contains(a)) { ctx.event.category = ['process']; ctx.event.type = ['info']; } else if (['cowrie.session.file_download', 'cowrie.session.file_upload', 'cowrie.session.file_download.failed'].contains(a)) { ctx.event.category = ['file']; ctx.event.type = ['creation']; } else if (a.startsWith('cowrie.direct-tcpip')) { ctx.event.category = ['intrusion_detection']; ctx.event.type = ['info']; }"
+        "source": "String a = ctx.event?.action; if (a == null) return; if (a == 'cowrie.login.success') { ctx.event.category = ['authentication']; ctx.event.type = ['start']; ctx.event.outcome = 'success'; } else if (a == 'cowrie.login.failed') { ctx.event.category = ['authentication']; ctx.event.type = ['start']; ctx.event.outcome = 'failure'; } else if (a == 'cowrie.session.connect') { ctx.event.category = ['network']; ctx.event.type = ['connection']; ctx.event.outcome = 'success'; } else if (a == 'cowrie.session.closed') { ctx.event.category = ['network']; ctx.event.type = ['end']; ctx.event.outcome = 'success'; } else if (a == 'cowrie.client.version') { ctx.event.category = ['network']; ctx.event.type = ['info']; } else if (a == 'cowrie.client.kex') { ctx.event.category = ['network']; ctx.event.type = ['info']; } else if (['cowrie.command.input', 'cowrie.command.failed', 'cowrie.command.success'].contains(a)) { ctx.event.category = ['process']; ctx.event.type = ['info']; if (a == 'cowrie.command.failed') { ctx.event.outcome = 'failure'; } else if (a == 'cowrie.command.success') { ctx.event.outcome = 'success'; } } else if (['cowrie.session.file_download', 'cowrie.session.file_upload', 'cowrie.session.file_download.failed'].contains(a)) { ctx.event.category = ['file']; ctx.event.type = ['creation']; } else if (a.startsWith('cowrie.direct-tcpip')) { ctx.event.category = ['intrusion_detection']; ctx.event.type = ['info']; }"
       }
     },
     {

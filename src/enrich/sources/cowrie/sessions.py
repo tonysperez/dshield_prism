@@ -500,7 +500,7 @@ def _fetch_session_events(
             "network.protocol", "network.type",
             "user.name", "user_agent.original",
             "cowrie.session_id", "cowrie.password", "cowrie.hassh_algorithms",
-            "cowrie.hassh",
+            "cowrie.hassh", "cowrie.proxy",
             "process.command_line",
             # File-event hashes (ROADMAP #3). The ingest pipeline already
             # structures the cowrie shasum at `file.hash.sha256`; `destfile`
@@ -663,11 +663,38 @@ _MAX_ARTIFACTS_PER_SESSION = 200
 # rarely drops/uploads more than a handful of files; 50 bounds the rollup doc
 # against a pathological dropper loop while keeping every real chain intact.
 _MAX_FILE_EVENTS_PER_SESSION = 50
+# Cap on per-session direct-tcpip proxy-attempt records (Phase I1). A session
+# abusing the honeypot as a TCP relay can fire many connect requests; 50 bounds
+# the doc while keeping the distinct-target signal. `proxy_request_count` carries
+# the true total even when the list caps out (mirrors file_download_count).
+_MAX_PROXY_ATTEMPTS_PER_SESSION = 50
 # P1a follow-up: literal unique-command hash list per session, so the
 # playbook-level union (terms agg across member sessions) can be Jaccard'd
 # against an anchor's command_set for drift detection. 128 covers the
 # 99.9th percentile session — most have <20 unique commands.
 _MAX_COMMAND_SET_PER_SESSION = 128
+
+
+def _record_proxy_attempt(out: list[dict], ev: dict) -> None:
+    """Append a `{target_ip, target_port, ts}` record for a direct-tcpip.request.
+
+    On these events Cowrie reuses `dst_ip`/`dst_port` for the *proxy target*
+    (the third-party host the attacker asked the honeypot to relay to), which
+    the ingest pipeline promotes to `destination.ip`/`destination.port` via the
+    generic renames. The attempt itself is the behavioural signal — honeypot-
+    as-proxy abuse, otherwise invisible at the session layer. Caller enforces
+    the per-session cap.
+    """
+    dest = ev.get("destination") or {}
+    rec: dict = {}
+    if dest.get("ip"):
+        rec["target_ip"] = dest["ip"]
+    if dest.get("port") is not None:
+        rec["target_port"] = dest["port"]
+    if ev.get("@timestamp"):
+        rec["ts"] = ev["@timestamp"]
+    if rec:
+        out.append(rec)
 
 
 def _record_credential(credentials_set: set[str], ev: dict) -> None:
@@ -827,6 +854,19 @@ def _build_session_doc(
     login_fail_count = 0
     file_download_count = 0
     file_upload_count = 0
+    # Phase I1 — command-outcome signal. On this corpus Cowrie emits
+    # `command.failed` densely (~87% of command-bearing sessions) and
+    # `command.success` almost never, so this is really a failed-command rate
+    # (attacker probing an unfamiliar/emulated shell), not a success/fail split.
+    command_failure_count = 0
+    command_success_count = 0
+    # Phase I1 — direct-tcpip proxy abuse (honeypot used as a TCP relay).
+    # `proxy_attempts` records distinct targets (capped); the two counters carry
+    # the true totals: request events (relay asked for) vs data events (bytes
+    # actually relayed).
+    proxy_attempts: list[dict] = []
+    proxy_request_count = 0
+    proxy_data_count = 0
     # ROADMAP #3: cowrie-computed file hashes (structured at `file.hash.sha256`
     # by the ingest pipeline). One record per download/upload that carries a
     # hash; capped at `_MAX_FILE_EVENTS_PER_SESSION`.
@@ -865,6 +905,16 @@ def _build_session_doc(
         elif action == "cowrie.session.file_upload":
             file_upload_count += 1
             _record_file_event(file_events, ev, "upload", last_command)
+        elif action == "cowrie.command.failed":
+            command_failure_count += 1
+        elif action == "cowrie.command.success":
+            command_success_count += 1
+        elif action == "cowrie.direct-tcpip.request":
+            proxy_request_count += 1
+            if len(proxy_attempts) < _MAX_PROXY_ATTEMPTS_PER_SESSION:
+                _record_proxy_attempt(proxy_attempts, ev)
+        elif action == "cowrie.direct-tcpip.data":
+            proxy_data_count += 1
         elif action == "cowrie.command.input":
             cmd = (ev.get("process") or {}).get("command_line")
             if cmd:
@@ -1025,9 +1075,20 @@ def _build_session_doc(
         "login_fail_count": login_fail_count,
         "file_download_count": file_download_count,
         "file_upload_count": file_upload_count,
+        # Phase I1 — always present (like the login counters) so downstream can
+        # compute a failed-command rate without missing-field handling.
+        "command_failure_count": command_failure_count,
+        "command_success_count": command_success_count,
         "command_entropy": round(entropy, 4),
         "embed_version": cfg.session.embed_version,
     }
+    # Phase I1 — proxy-abuse block, only on the ~0.8% of sessions that fire a
+    # direct-tcpip request (keeps the other 99% of docs byte-for-byte unchanged).
+    if proxy_request_count:
+        session_block["proxy_request_count"] = proxy_request_count
+        session_block["proxy_data_count"] = proxy_data_count
+        if proxy_attempts:
+            session_block["proxy_attempts"] = proxy_attempts
     if command_signature:
         session_block["command_signature"] = command_signature
         # P1a follow-up: store the literal unique-command hash list (capped)

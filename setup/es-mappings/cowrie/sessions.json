@@ -108,6 +108,21 @@
                       "login_fail_count":      { "type": "long" },
                       "file_download_count":   { "type": "long" },
                       "file_upload_count":     { "type": "long" },
+                      "command_failure_count": { "type": "long" },
+                      "command_success_count": { "type": "long" },
+                      "proxy_request_count":   { "type": "long" },
+                      "proxy_data_count":      { "type": "long" },
+                      "proxy_attempts": {
+                        "type": "nested",
+                        "properties": {
+                          "target_ip": {
+                            "type": "text",
+                            "fields": { "keyword": { "type": "keyword", "ignore_above": 64 } }
+                          },
+                          "target_port": { "type": "long" },
+                          "ts":          { "type": "date" }
+                        }
+                      },
                       "dominant_intent":       { "type": "keyword" },
                       "intent_distribution": {
                         "properties": {
