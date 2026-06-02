@@ -1,4 +1,4 @@
-name: Eval
+name: Clustering Quality
 
 on:
   push:

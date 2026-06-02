@@ -10,7 +10,8 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue.svg" alt="License: GPL-3.0"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+"></a>
   <a href="https://github.com/tonysperez/dshield_prism/commits/main"><img src="https://img.shields.io/github/last-commit/tonysperez/dshield_prism" alt="Last commit"></a>
-  <a href="https://github.com/tonysperez/dshield_prism/actions/workflows/ci.yml"><img src="https://github.com/tonysperez/dshield_prism/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/tonysperez/dshield_prism/actions/workflows/ci.yml"><img src="https://github.com/tonysperez/dshield_prism/actions/workflows/ci.yml/badge.svg" alt="Lint"></a>
+  <a href="https://github.com/tonysperez/dshield_prism/actions/workflows/eval.yml"><img src="https://github.com/tonysperez/dshield_prism/actions/workflows/eval.yml/badge.svg" alt="Clustering Quality"></a>
 </p>
 
 <p align="center">
@@ -32,7 +33,7 @@ Behavioral campaign mining surfaces the chattr+cron *subset* of a broader shared
 - **SSH Key Injection with chattr Locking** (T1098.004, T1222.002) — installs an `authorized_keys` entry, then sets the immutable bit on `.ssh` so the key can't be removed without first unsetting it.
 - **SSH Key Installer: Crontab list** (T1098.004, T1222.002, T1053.003) — installs the same `authorized_keys` entry, plus reconnaissance and `crontab -l` for cron-based re-installation.
 
-The combination is defense-in-depth persistence: install the key, lock it with chattr, re-install via cron if it disappears. Two campaign axes (behavior and infrastructure) corroborate the same finding from different angles: the infra axis names the shared-key pool; the behavior axis names the chattr+cron sub-population *inside* that pool. Frequent-itemset mining (FP-growth) over each IP's playbook set is what surfaces *"these 73 IPs run this exact combination"* — and the playbooks themselves only exist because session embeddings clustered into stable named behaviors.
+The combination is defense-in-depth persistence: install the key, lock it with chattr, re-install via cron if it disappears. Two campaign axes (behavior and infrastructure) corroborate the same finding from different angles: the infra axis names the shared-key pool; the behavior axis names the chattr+cron sub-population *inside* that pool. Frequent-itemset mining (FP-growth) over each IP's playbook set is what surfaces *"these 73 IPs run this exact combination"* — and the playbooks themselves only exist because session embeddings clustered into stable named behaviors. That manual two-axis corroboration is now detected automatically: when a behavior campaign and an infrastructure campaign overlap, Prism promotes the intersection to an **Operation** (`cmp-ope-…`).
 
 ## What the clustering actually does — measured
 
@@ -63,9 +64,9 @@ The same invariance shows up over shell-wrapping: `echo "…" | sh` and the bare
 
 **See behavior, not individual actions.** Every unique command, session, and source IP becomes a behavioral fingerprint with a semantic vector, intent, extracted IOCs, and MITRE TTP IDs.
 
-**Grounded in threat intel.** Artifacts (IP and URL today; hash and domain planned) are checked against freely available CTI feeds. A consensus engine collates verdicts and feeds them back into the pipeline: known-good scanners get quieted, commodity-malicious IPs get cheaper triage.
+**Grounded in threat intel.** Artifacts (IP, URL, and file hash today; domain planned) are checked against freely available CTI feeds. A consensus engine collates verdicts and feeds them back into the pipeline: known-good scanners get quieted, commodity-malicious IPs get cheaper triage. Novelty is scored twice: against the sensor's own corpus *and* against an external reference corpus of documented adversary tradecraft (Atomic Red Team).
 
-**Watch behavior change over time.** Recurring activity gets named as a playbook; coordinated multi-session activity gets grouped as a campaign. Both keep stable identities across re-analysis runs, so drift and emergence surface as findings in a curated inbox with a confirm/reject workflow that turns analyst decisions into a growing knowledge base.
+**Watch behavior change over time.** Recurring activity gets named as a playbook; coordinated multi-session activity gets grouped as a campaign — by shared behavior, by shared infrastructure, or (when those two overlap) as an Operation. All keep stable identities across re-analysis runs, so drift and emergence surface as findings in a curated inbox with a confirm/reject workflow that turns analyst decisions into a growing knowledge base.
 
 **Private by default.** A local LLM does the cognitive work; cloud escalation is budget-capped and opt-in; CTI feeds are integrated but disabled by default. Nothing about your honeypot traffic leaves your environment unless you say so.
 
@@ -123,17 +124,23 @@ A local LLM + embedding model drives per-command enrichment, with optional escal
 
 ## Console
 
+Seven pages, one analyst workflow: **Inbox · Graph · Browse · Hunts · Rules · Curation · Health**.
+
 **Findings inbox.** Every drift, novel pattern, and coverage gap surfaces here. The facet rail narrows on score, age, IP-count band, intent, or intel verdict; status flows from new → ack → confirmed as the analyst works the queue.
 
-<p align="center"><img src=".github/screenshots/findings.png" alt="Findings inbox with facet rail" width="900"></p>
+<p align="center"><img src=".github/screenshots/inbox.png" alt="Findings inbox with facet rail" width="900"></p>
 
-**Investigation pivot.** Click any IOC and follow it through a graph of its behavioral neighborhood — linked IP clusters, session clusters, and constituent commands, with a side panel of overview details for whatever's selected.
+**Investigation pivot.** Click any IOC and follow it through a graph of its behavioral neighborhood — linked IP clusters, session clusters, and constituent commands, with a side panel of overview details for whatever's selected. Right from that detail pane you can pick a peer for an **inline comparison** that shows what makes two clusters, playbooks, or campaigns separate: cosine similarity vs. the merge threshold, scalar-by-scalar deltas, and a plain-language explanation alongside the math.
 
 <p align="center"><img src=".github/screenshots/graph.png" alt="Graph-based investigation pivot" width="900"></p>
 
-**Cluster comparison.** Shows what makes two clusters separate, mathematically: cosine similarity vs. the merge threshold, scalar-by-scalar deltas, and a plain-language explanation generated alongside the technical detail.
+**Report tool.** Gather every in-view artifact — IPs, commands, credentials, file hashes, MITRE chain, session sequences — into a copy-ready writeup, with IOCs defanged by default and a choice of plain / markdown / CSV / JSON output.
 
-<p align="center"><img src=".github/screenshots/compare.png" alt="Cluster comparison view" width="900"></p>
+<p align="center"><img src=".github/screenshots/report.png" alt="Report tool with category and format options" width="900"></p>
+
+**Hunts.** Hypothesis-driven, YAML-defined session filters (AND-combined) that turn a hunch — "sessions that touched `/proc/cpuinfo` and were classified as non-recon intent" — into a repeatable, run-now finding stream. Ships with a preconfigured set. A parallel **Tradecraft Matches** view ranks sessions by how closely they mirror documented adversary tradecraft from the external reference corpus (Atomic Red Team).
+
+<p align="center"><img src=".github/screenshots/hunt.png" alt="Hypothesis-driven hunts" width="900"></p>
 
 ## Why I built this
 
