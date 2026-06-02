@@ -195,6 +195,15 @@ class CommandClusterConfig(BaseModel):
     page_size: int = 1000
     batch_size: int = 200
     scalar_weight: float = 0.05
+    # Noise-rescue cosine threshold (F1b). Outlier commands within this
+    # pure-embedding cosine of a cluster centroid are reassigned to it
+    # post-HDBSCAN instead of left as noise — the same safety valve the
+    # session layer has. Model default 0.0 = disabled (any config missing
+    # the key stays off); config/default.yaml ships it enabled at 0.94.
+    # The F1 diagnostic found 91.7% of command outliers sit within 0.94 of a
+    # centroid (median 0.993, 100% intent-matching) — HDBSCAN density noise,
+    # not novelty — so rescue cuts the command outlier rate ~27.7% -> ~2.3%.
+    rescue_threshold: float = 0.0
     # Reference centroids older than this trigger a stats warning but still
     # score (operator decides when to `cluster commands --refresh-reference`).
     # ROADMAP P1.

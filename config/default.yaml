@@ -203,6 +203,15 @@ command_cluster:
   # session_reuse_rate) appended to the L2-normalized embedding matrix.
   # Semantic signal (1.0 norm) dominates; scalars break ties. Tune 0.0–0.15.
   scalar_weight: 0.05
+  # Noise-rescue cosine threshold (F1b) — brings the command layer to parity
+  # with the session layer, which already rescues. Outlier commands within
+  # this pure-embedding cosine of a cluster centroid are reassigned to it
+  # post-HDBSCAN. 0.0 disables. The F1 diagnostic found 91.7% of command
+  # outliers sit within 0.94 of a centroid (median 0.993, 100% intent-match) —
+  # HDBSCAN density noise, not novelty — so 0.94 cuts the command outlier rate
+  # ~27.7% -> ~2.3%. Light scalar augmentation (0.05) keeps pure-embedding
+  # rescue geometry-safe, same as sessions. See eval/results/F1-outlier-diagnostic.md.
+  rescue_threshold: 0.94
 
 # Session-level rollup + clustering + playbook naming.
 session:

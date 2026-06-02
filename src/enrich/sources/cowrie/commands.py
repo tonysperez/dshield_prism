@@ -3022,4 +3022,8 @@ def run_cluster(
         refresh_reference=refresh_reference,
         use_reference=use_reference,
         reference_max_age_days=ccfg.reference_max_age_days,
+        # F1b: bring noise-rescue to parity with the session layer. Outlier
+        # commands within this cosine of a centroid join it rather than
+        # staying noise (default off in the model; default.yaml ships 0.94).
+        rescue_threshold=ccfg.rescue_threshold,
     )
