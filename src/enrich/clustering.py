@@ -222,6 +222,31 @@ def compute_lexical_features(
     return (reduced / norms).astype(np.float32)
 
 
+def cluster_bag_labels(
+    bag_texts: list[str], *,
+    min_cluster_size: int, min_samples: int, n_components: int = 64,
+) -> tuple["np.ndarray", "np.ndarray"]:
+    """G1 Arm B — cluster sessions on a TF-IDF bag of *command-cluster ids*.
+
+    ``bag_texts`` is per-session space-joined command-cluster-id tokens with
+    multiplicity (e.g. ``"cluster_20 cluster_20 cluster_7"``). Reuses
+    ``compute_lexical_features`` — the tokenizer treats each cluster-id as
+    one token, and the vocabulary is bounded by the command-cluster count,
+    so the SVD geometry stays stable across corpus scales (the property raw
+    command tokens lack — they proliferate, which is why E4.4 fragmented to
+    72). Returns ``(labels, lexical_block)``; the per-row-normalized lexical
+    block is also the geometry to rescue noise points in.
+    """
+    require_cluster_deps()
+    block = compute_lexical_features(bag_texts, n_components=n_components)
+    labels = _HDBSCAN(
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
+        metric="euclidean",
+    ).fit_predict(block)
+    return labels, block
+
+
 def _disagreement_distance(
     labels_a: "np.ndarray", labels_b: "np.ndarray",
 ) -> "np.ndarray":

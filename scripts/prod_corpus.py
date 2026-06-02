@@ -38,6 +38,9 @@ _SOURCE_FIELDS = [
     "dshield.cowrie.enrichment.session.dominant_intent",
     "dshield.cowrie.enrichment.session.command_signature",
     "dshield.cowrie.enrichment.session.command_stream_text",
+    # command_set = the session's unique command hashes; the G1 Arm B
+    # cluster_bag representation maps these to command-cluster ids.
+    "dshield.cowrie.enrichment.session.command_set",
     "cowrie.session_id",
 ]
 
@@ -52,6 +55,7 @@ class SessionCorpus:
     intents:     list = field(default_factory=list)
     signatures:  list = field(default_factory=list)
     texts:       list[str] = field(default_factory=list)
+    command_sets: list[list[str]] = field(default_factory=list)
 
     def __len__(self) -> int:
         return len(self.doc_ids)
@@ -102,6 +106,7 @@ def pull_session_corpus(
             corpus.intents.append(s.get("dominant_intent"))
             corpus.signatures.append(s.get("command_signature"))
             corpus.texts.append(s.get("command_stream_text") or "")
+            corpus.command_sets.append(list(s.get("command_set") or []))
             if limit is not None and len(corpus) >= limit:
                 return corpus
         search_after = hits[-1]["sort"]
