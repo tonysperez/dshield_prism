@@ -11,8 +11,10 @@ Reproduce: `console/.venv/bin/python scripts/diagnose_outlier_subclusters.py --l
 session layer's noise-rescue valve into the command layer at 0.94 cuts the
 command outlier rate to ~2.3%, with 100% of rescued commands joining an
 intent-matching cluster.** Shipped as `command_cluster.rescue_threshold:
-0.94` (F1b). The IP layer is a different story — rescue won't help it, and
-it has a separate coverage anomaly (below).
+0.94` (F1b). The IP layer is a different story — its outliers are
+behaviourally near-identical to existing clusters but **attributionally
+distinct** (different country/ASN), so they cluster apart by design and
+pure-embedding rescue would misassign them (below).
 
 This is the plan's metric-1 target (outlier rate ↓ ≥20% relative) hit by a
 wide margin — a 92% relative reduction — on the layer where the mass
@@ -51,34 +53,53 @@ call ([commands.py](../../src/enrich/sources/cowrie/commands.py)). Deploy +
 verify on the production box: re-run `cluster commands`, expect
 `n_rescued ≈ 1,170` in the run summary and the outlier rate to fall to ~2%.
 
-## IP layer — rescue does NOT help, and a coverage anomaly
+## IP layer — pure-embedding rescue would misassign (augmented-space geometry)
 
 | | value |
 |---|---|
-| embedded IPs | 2,231 |
-| **scored IPs** | **28** |
-| non-outlier clusters | 2 |
-| outliers | 21 (75%) |
-| median outlier→nearest-centroid cosine | **0.757** |
-| rescuable at 0.94 | **0** |
+| scored IPs | 2,237 |
+| non-outlier clusters | 206 |
+| outliers | 309 (**13.8%**) |
+| median outlier→nearest-centroid cosine (pure embedding) | **1.000** |
+| "rescuable" at 0.94 (pure embedding) | 286 (92.6%) |
+| of those, **differ in country** from nearest centroid | **94%** |
+| of those, **differ in ASN** from nearest centroid | **97%** |
 
-Two problems, neither solved by rescue:
+> **Correction.** An earlier draft of this doc reported "28 of 2,231 IPs
+> scored, 2 clusters, median cosine 0.757" and called it a coverage
+> anomaly. That was a **measurement artifact** — the query landed mid-
+> rollup-rebuild, when `cluster ips` hadn't re-run on the freshly re-pooled
+> rollup. The IP layer is healthy: it clusters all ~2,237 IPs into ~206
+> clusters every run. The numbers above are from the settled pipeline.
 
-1. **IP outliers are genuinely distant** (median 0.757; 0 within 0.94).
-   Unlike commands, these aren't density noise next to a centroid —
-   rescue at any reasonable threshold is a no-op. So **no IP
-   `rescue_threshold` was wired** (the plan's F1b.2 is data-rejected here).
-2. **Only 28 of 2,231 embedded IPs are scored** — the IP clusterer is
-   running on a tiny fraction of the population (2 clusters total). That,
-   not rescue, is the IP layer's real issue, and it's why the diagnostic is
-   thin. Tracked as a follow-up (ROADMAP, IP layer); likely a coverage
-   filter or a stale/partial cluster run, not addressed by F-phase rescue.
+The IP layer is **not** a rescue win, but for the opposite reason from the
+old draft. IP outliers sit essentially *on top of* existing centroids in
+pure-embedding space (median cosine 1.000) — behaviourally near-identical.
+But the IP clusterer runs in the **augmented** space (embedding +
+`cluster_attribution_weight=0.10` over country / ASN / cred-hash / intel /
+HASSH), and **94% of the would-be-rescued differ in country, 97% in ASN**
+from the cluster they're near. They are outliers *by design*: same
+behaviour, different attribution. Pure-embedding rescue (the
+`rescue_noise_points` mechanism) would pull 286 IPs into clusters they
+don't belong to in HDBSCAN's actual geometry, erasing the attribution
+distinction the IP layer deliberately preserves — exactly the geometry
+caveat the plan flagged for IPs.
+
+So **no IP `rescue_threshold` was wired** (the plan's F1b.2 is correctly
+declined). A correct IP rescue would need an *augmented-space* variant
+(rescue on the same embedding+attribution geometry HDBSCAN clustered in),
+and even then it is questionable whether collapsing attribution-distinct
+IPs is desirable — for IPs, a different ASN is arguably a different actor.
+The 13.8% IP outlier rate is plausibly *correct*, not a defect.
 
 ## What this means for the rest of the plan
 
-- **F1b: ship command rescue (done), skip IP rescue (data-rejected).**
+- **F1b: ship command rescue (done), decline IP rescue** — pure-embedding
+  rescue is geometry-wrong for the attribution-augmented IP space.
 - **F2 (secondary HDBSCAN on outliers) is now low-value for commands** —
   after rescue only ~106 command outliers remain, and they're the genuinely
   novel tail. Not worth the `small_` machinery.
-- **F5 (IP layer) is blocked on the coverage anomaly**, not on rescue —
-  fixing "28 of 2,231 scored" is the prerequisite, separate from this plan.
+- **F5 (IP layer): no rescue/merge intervention warranted.** The IP layer
+  is healthy and its outliers are meaningfully attribution-distinct. Any
+  future IP outlier work is an augmented-space-rescue research item, not an
+  F-phase parity fix.

@@ -193,7 +193,7 @@ def _pair_header_body(meta: dict) -> str:
     plus the triage rules. Stable across re-renders so the agent's
     Edit calls only ever touch the frontmatter."""
     pid = meta["pair_id"]
-    a, b = meta["sessions_a_id"], meta["sessions_b_id"]
+    a = meta["sessions_a_id"]
     shared = meta["shared_commands"]
     union = meta["union_commands"]
 

@@ -48,37 +48,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-from sklearn.cluster import HDBSCAN
 from sklearn.metrics import (
     adjusted_rand_score,
-    completeness_score,
-    homogeneity_score,
-    normalized_mutual_info_score,
-    v_measure_score,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from enrich.clustering import l2_normalize, rescue_noise_points
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
 from enrich.llm import make_llm_client
 from enrich.sources.cowrie.commands import _build_embed_text
-from enrich.sources.cowrie.sessions import (
-    _idf_pool_weight, _mean_pool, build_session_scalar_block,
-)
 
 from eval_clustering import (  # type: ignore
     _load_labels,
-    _per_label_breakdown,
-    _divergent_pair_metrics,
 )
 
 # Reuse the production-data-pull helpers from the order sweep — same
 # rollup iteration, same enrichment mget, same labels-merge logic.
 from sweep_embed_input_order import (  # type: ignore
-    SessionFacts,
     _pull_sessions,
     _pull_command_enrichments,
     _pool_sessions,
@@ -309,7 +297,6 @@ def main() -> int:
         # ES roundtrip below.
     # Lightweight baseline pass: query the persisted embedding for each
     # session we just pulled. Faster than another full search loop.
-    sids = [s.session_id for s in sessions]
     sid_to_facts = {s.session_id: s for s in sessions}
     body: dict = {
         "size": scfg.page_size,

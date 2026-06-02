@@ -79,3 +79,42 @@ jobs:
             --snapshot eval/production-snapshot-v1.jsonl.gz \
             --baseline eval/baseline-prod-scale.json \
             --no-json
+
+  command-scale-gate:
+    # F1b: command-layer clustering regression gate. The session layers have
+    # an analyst-labeled eval set; the command layer doesn't, so this gate is
+    # self-consistency only — it re-runs the command clustering (HDBSCAN +
+    # noise rescue) offline against a committed command snapshot and guards the
+    # F1b rescue win: outlier_rate ceiling (catches rescue silently turning off
+    # → ~2% spiking back to ~28%), n_rescued floor, intent-purity floor.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            touched:
+              - 'src/enrich/clustering.py'
+              - 'src/enrich/sources/cowrie/commands.py'
+              - 'config/default.yaml'
+              - 'scripts/eval_command_scale.py'
+              - 'eval/command-snapshot-v1.jsonl.gz'
+              - 'eval/baseline-command-scale.json'
+      - if: steps.filter.outputs.touched == 'true' || github.event_name == 'push'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - if: steps.filter.outputs.touched == 'true' || github.event_name == 'push'
+        name: Install deps
+        run: pip install -e .[cluster]
+      - if: steps.filter.outputs.touched == 'true' || github.event_name == 'push'
+        name: Run command-scale eval against snapshot + baseline
+        # Reads eval/command-snapshot-v1.jsonl.gz (committed, refreshed via
+        # scripts/refresh_command_snapshot.py) and clusters all commands
+        # offline. Re-base via --write-baseline after an intentional change.
+        run: |
+          python scripts/eval_command_scale.py \
+            --snapshot eval/command-snapshot-v1.jsonl.gz \
+            --baseline eval/baseline-command-scale.json \
+            --no-json

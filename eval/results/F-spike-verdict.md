@@ -195,5 +195,9 @@ this is the input-signal direction (A), not any merge/partition knob.
 - `scripts/inspect_small_clusters.py` — F2.0 eyeball harness.
 - `scripts/sweep_hdbscan.py --prod` — F4.1.
 - `scripts/sweep_late_fusion_prod.py` — F3.1.
-- Sweep outputs: `hdbscan-prod-sweep-*.md`, `late-fusion-prod-sweep-*.md`,
-  `small-cluster-inspect-sessions-*.md`.
+- The per-run sweep / inspect renders (`hdbscan-prod-sweep-*.md`,
+  `late-fusion-prod-sweep-*.md`, `merge-threshold-sweep-*.md`,
+  `small-cluster-inspect-sessions-*.md`) are **not committed** — they are
+  `eval/results/` "generated, not tracked" outputs (and the inspect render
+  contains raw attacker command streams). Regenerate from the scripts above;
+  the decisive tables are inlined in this verdict.

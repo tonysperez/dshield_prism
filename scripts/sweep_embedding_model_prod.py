@@ -39,8 +39,6 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
-from sklearn.metrics import adjusted_rand_score, completeness_score
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))

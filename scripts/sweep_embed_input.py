@@ -47,7 +47,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
 from sklearn.metrics import (
     adjusted_rand_score,
     completeness_score,

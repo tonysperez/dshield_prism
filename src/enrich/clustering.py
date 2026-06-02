@@ -1029,6 +1029,16 @@ def run_layer_clustering(
             "n_outliers": n_outliers,
             "n_rescued": n_rescued,
             "runtime_seconds": round(time.monotonic() - t_start, 2),
+            # Effective clustering config this run used — lets a deploy be
+            # verified from ES alone (e.g. "did the latest command run cluster
+            # with rescue_threshold=0.94?") without shell access to the box.
+            # Mappings are dynamic, so these auto-map.
+            "clustering_config": {
+                "min_cluster_size": min_cluster_size,
+                "min_samples": min_samples,
+                "scalar_weight": scalar_weight,
+                "rescue_threshold": rescue_threshold,
+            },
         },
     })
 

@@ -1,0 +1,26 @@
+{
+  "captured_at": "2026-06-02T01:55:23.435463+00:00",
+  "captured_from": "scripts/eval_command_scale.py --write-baseline",
+  "config_at_capture": {
+    "min_cluster_size": 5,
+    "min_samples": 2,
+    "scalar_weight": 0.05,
+    "rescue_threshold": 0.94
+  },
+  "n_commands_at_capture": 4631,
+  "tolerance_semantic": "outlier_rate: ceiling (fail if > baseline + 0.05). cluster_intent_purity: floor (fail if < baseline - 0.05). n_rescued: relative floor (fail if < 80% of baseline). n_clusters: informational.",
+  "metrics": {
+    "outlier_rate": {
+      "baseline": 0.0231
+    },
+    "cluster_intent_purity": {
+      "baseline": 0.9747
+    },
+    "n_rescued": {
+      "baseline": 1173
+    },
+    "n_clusters": {
+      "baseline": 68
+    }
+  }
+}

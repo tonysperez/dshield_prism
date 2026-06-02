@@ -33,7 +33,6 @@ import json
 import logging
 import sys
 import time
-from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path

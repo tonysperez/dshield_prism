@@ -123,13 +123,6 @@ def _refresh_one(
             if isinstance(sid, str):
                 session_ids.append(sid)
             for ce in rec.get("command_enrichments") or []:
-                cid = (
-                    (ce.get("process") or {})
-                    .get("hash", {}) if isinstance((ce.get("process") or {}).get("hash"), dict)
-                    else None
-                )
-                # Prefer the doc id (sha256 of normalized command) when
-                # present at the top level.
                 # Persisted command_enrichment docs typically carry
                 # `process.hash.sha256` (full) but the index _id is the
                 # 16-hex prefix. We bypass by walking `event.id` which
