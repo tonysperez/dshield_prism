@@ -1,0 +1,80 @@
+PUT _ingest/pipeline/prism.dshield.firewall
+{
+  "description": "DShield-firewall batched JSON (localdshield.log) -> ECS. Each Elastic-Agent line is one submission {type, logs[], authheader}; this parses it, DROPS the DShield API credential (authheader), keeps the per-connection events in the `logs` nested array (an ingest pipeline cannot fan an array into separate docs), and reroutes to the project-owned prism.raw.dshield.firewall index. The per-source rollup (`rollup firewall-ips`) aggregates across the nested events.",
+  "processors": [
+    {
+      "json": {
+        "description": "Parse the batched submission line into the doc root (gives type, logs[], authheader). Skipped if the agent integration already decoded it.",
+        "field": "message",
+        "add_to_root": true,
+        "if": "ctx.logs == null",
+        "ignore_failure": true
+      }
+    },
+    {
+      "remove": {
+        "description": "Drop the DShield API credential and the raw line that carries it — never index or store the secret.",
+        "field": ["authheader", "message"],
+        "ignore_missing": true
+      }
+    },
+    {
+      "remove": {
+        "field": "type",
+        "ignore_missing": true
+      }
+    },
+    {
+      "script": {
+        "description": "Per-batch event_count + @timestamp from the first connection's epoch-second time.",
+        "lang": "painless",
+        "source": "if (ctx.logs instanceof List && ctx.logs.size() > 0) { ctx.dshield = ctx.dshield ?: [:]; ctx.dshield.event_count = ctx.logs.size(); def t = ctx.logs[0].time; if (t != null) { ctx['@timestamp'] = Instant.ofEpochSecond(((Number)t).longValue()).toString(); } }",
+        "ignore_failure": true
+      }
+    },
+    {
+      "set": { "field": "event.kind", "value": "event" }
+    },
+    {
+      "set": { "field": "event.category", "value": "network" }
+    },
+    {
+      "set": { "field": "event.type", "value": "connection" }
+    },
+    {
+      "set": { "field": "event.action", "value": "firewall" }
+    },
+    {
+      "set": { "field": "event.module", "value": "dshield" }
+    },
+    {
+      "set": { "field": "event.dataset", "value": "dshield.firewall" }
+    },
+    {
+      "set": { "field": "event.provider", "value": "dshield" }
+    },
+    {
+      "set": { "field": "network.direction", "value": "inbound" }
+    },
+    {
+      "set": { "field": "observer.type", "value": "honeypot" }
+    },
+    {
+      "set": { "field": "observer.vendor", "value": "SANS-ISC" }
+    },
+    {
+      "reroute": {
+        "description": "Route into the project-owned prism.raw.dshield.firewall index, outside Fleet's logs-*-* territory.",
+        "destination": "prism.raw.dshield.firewall"
+      }
+    }
+  ],
+  "on_failure": [
+    {
+      "append": {
+        "field": "tags",
+        "value": "_pipeline_error_dshield_firewall"
+      }
+    }
+  ]
+}

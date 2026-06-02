@@ -61,9 +61,24 @@ class CowrieIndexes(BaseModel):
     reference_sessions: str = "prism.reference.cowrie.session"
 
 
+class DshieldIndexes(BaseModel):
+    """Index names for the DShield-firewall source (Phase I3).
+
+    `firewall` is the raw per-connection event stream the sensor's DShield
+    client submits (`localdshield.log`), fanned out one doc per attempt by the
+    upstream Logstash `split` and ECS-normalised by the `prism.dshield.firewall`
+    ingest pipeline. `firewall_ip` is the per-source-IP rollup built by
+    `rollup firewall-ips` (I3.3). Defaults so deploys without a `dshield:` block
+    still parse.
+    """
+    firewall: str = "prism.raw.dshield.firewall"
+    firewall_ip: str = "prism.rollup.dshield.firewall_ip"
+
+
 class SourceIndexes(BaseModel):
     """Top-level container. Add a sibling model + field per new source."""
     cowrie: CowrieIndexes
+    dshield: DshieldIndexes = Field(default_factory=DshieldIndexes)
 
 
 class ESConfig(BaseModel):

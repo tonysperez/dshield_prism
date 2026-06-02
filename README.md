@@ -9,9 +9,10 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue.svg" alt="License: GPL-3.0"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+"></a>
-  <a href="https://github.com/tonysperez/dshield_prism/commits/main"><img src="https://img.shields.io/github/last-commit/tonysperez/dshield_prism" alt="Last commit"></a>
-  <a href="https://github.com/tonysperez/dshield_prism/actions/workflows/ci.yml"><img src="https://github.com/tonysperez/dshield_prism/actions/workflows/ci.yml/badge.svg" alt="Lint"></a>
   <a href="https://github.com/tonysperez/dshield_prism/actions/workflows/eval.yml"><img src="https://github.com/tonysperez/dshield_prism/actions/workflows/eval.yml/badge.svg" alt="Clustering Quality"></a>
+  <a href="https://github.com/tonysperez/dshield_prism/actions/workflows/ci.yml"><img src="https://github.com/tonysperez/dshield_prism/actions/workflows/ci.yml/badge.svg" alt="Lint"></a>
+  <a href="https://github.com/tonysperez/dshield_prism/commits/main"><img src="https://img.shields.io/github/last-commit/tonysperez/dshield_prism" alt="Last commit"></a>
+
 </p>
 
 <p align="center">

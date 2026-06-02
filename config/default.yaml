@@ -33,6 +33,12 @@ elasticsearch:
       # Write-once playbook-identity anchors (ROADMAP #1): one doc per
       # stable_playbook_id pinning its first-mint centroid.
       playbook_anchors:  "prism.identity.cowrie.playbook_anchor"
+    # DShield-firewall source (Phase I3). Raw per-connection events from the
+    # sensor's localdshield.log (every IP that touched the sensor, not just the
+    # SSH/telnet ports Cowrie emulates); firewall_ip is the per-source rollup.
+    dshield:
+      firewall:      "prism.raw.dshield.firewall"
+      firewall_ip:   "prism.rollup.dshield.firewall_ip"
 
 llm:
   # provider: "ollama" (Ollama API) or "openai_compat" (LM Studio, vLLM, llama.cpp server)

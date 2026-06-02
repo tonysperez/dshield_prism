@@ -97,6 +97,12 @@ _LAYER_MAPPINGS = {
         "operations":        "setup/es-mappings/cowrie/operations.json",
         "file_command_crossref": "setup/es-mappings/cowrie/file_command_crossref.json",
     },
+    # DShield-firewall source (Phase I3). `firewall` is the raw per-batch
+    # event index the Elastic Agent + `prism.dshield.firewall` pipeline write;
+    # `firewall_ip` (the per-source rollup) lands with I3.3.
+    "dshield": {
+        "firewall": "setup/es-mappings/dshield/firewall.json",
+    },
     # External threat-intel — cross-source per-artifact indices.
     # `init-indexes --source intel` creates these. M1 shipped `ip`,
     # M4 added `url`, #2 added `hash` (MalwareBazaar / ThreatFox);
@@ -562,6 +568,12 @@ def _resolve_index_for_layer(cfg, source: str, layer: str) -> str:
             "reference_session": c.reference_sessions,
             "operations":        c.operations,
             "file_command_crossref": c.file_command_crossref,
+        }[layer]
+    if source == "dshield":
+        d = cfg.elasticsearch.indexes.dshield
+        return {
+            "firewall":    d.firewall,
+            "firewall_ip": d.firewall_ip,
         }[layer]
     if source == "intel":
         i = cfg.intel.indexes

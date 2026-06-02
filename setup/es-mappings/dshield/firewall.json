@@ -1,0 +1,55 @@
+{
+  "_comment": "Raw DShield-firewall events (Phase I3). The sensor's DShield client writes localdshield.log as batched JSON — one line per submission: {\"type\":\"firewall\",\"logs\":[{time,flags,sip,dip,proto,sport,dport,version},...],\"authheader\":...}. An Elastic Agent policy pulls each line to the `prism.dshield.firewall` ingest pipeline, which json-parses it, DROPS the authheader (DShield API credential — never stored), and reroutes here. One ES doc per submission batch; the per-connection events live in the `logs` nested array (the ingest pipeline cannot fan an array into separate docs). The per-source rollup (`rollup firewall-ips`) aggregates across the nested events. Created by `init-indexes --source dshield --layer firewall` so sip/dip get `ip` type before the agent writes. dynamic:true so the agent's host.*/agent.*/ecs.* metadata auto-maps. nested_objects.limit raised so a large flush doesn't get rejected.",
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "30s",
+    "index.mapping.nested_objects.limit": 100000
+  },
+  "mappings": {
+    "properties": {
+      "@timestamp": { "type": "date" },
+      "event": {
+        "properties": {
+          "kind":     { "type": "keyword" },
+          "category": { "type": "keyword" },
+          "type":     { "type": "keyword" },
+          "action":   { "type": "keyword" },
+          "module":   { "type": "keyword" },
+          "dataset":  { "type": "keyword" },
+          "provider": { "type": "keyword" }
+        }
+      },
+      "observer": {
+        "properties": {
+          "name":   { "type": "keyword" },
+          "type":   { "type": "keyword" },
+          "vendor": { "type": "keyword" }
+        }
+      },
+      "network": {
+        "properties": {
+          "direction": { "type": "keyword" }
+        }
+      },
+      "dshield": {
+        "properties": {
+          "event_count": { "type": "long" }
+        }
+      },
+      "logs": {
+        "type": "nested",
+        "properties": {
+          "time":    { "type": "date", "format": "epoch_second" },
+          "flags":   { "type": "keyword" },
+          "sip":     { "type": "ip" },
+          "dip":     { "type": "ip" },
+          "proto":   { "type": "long" },
+          "sport":   { "type": "long" },
+          "dport":   { "type": "long" },
+          "version": { "type": "long" }
+        }
+      }
+    }
+  }
+}
