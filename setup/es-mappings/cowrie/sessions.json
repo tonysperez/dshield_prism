@@ -158,6 +158,9 @@
                           "keyword": { "type": "keyword", "ignore_above": 64 }
                         }
                       },
+                      "command_stream_text": {
+                        "type": "text"
+                      },
                       "artifact_set": {
                         "type": "text",
                         "fields": {
