@@ -29,3 +29,53 @@ jobs:
         # improvement, regenerate eval/baseline.json on a feature branch
         # and commit the new file — the next CI run on that branch will
         # gate against the updated numbers.
+
+  production-scale-gate:
+    # E6.2: production-scale eval. The eval-isolated gate above scores
+    # 108 sessions in vacuum; production HDBSCAN runs on ~4000+. The
+    # E4 postmortem showed a metric win at eval scale can regress at
+    # production scale, so any change to the clustering pipeline must
+    # clear the production-scale floor too.
+    #
+    # Scoped via dorny/paths-filter: only runs when a PR touches the
+    # clustering math, the cowrie source, production config, the
+    # rollup ES mapping, or the snapshot/baseline files themselves.
+    # Pushes to main always run it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            touched:
+              - 'src/enrich/clustering.py'
+              - 'src/enrich/sources/cowrie/**'
+              - 'config/default.yaml'
+              - 'setup/es-mappings/cowrie/sessions.json'
+              - 'scripts/eval_production_scale.py'
+              - 'eval/production-snapshot-v1.jsonl.gz'
+              - 'eval/baseline-prod-scale.json'
+      - if: steps.filter.outputs.touched == 'true' || github.event_name == 'push'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - if: steps.filter.outputs.touched == 'true' || github.event_name == 'push'
+        name: Install deps
+        run: pip install -e .[cluster]
+      - if: steps.filter.outputs.touched == 'true' || github.event_name == 'push'
+        name: Run production-scale eval against snapshot + baseline
+        # Reads eval/production-snapshot-v1.jsonl.gz (committed, ~23 MB
+        # gzipped, refreshed quarterly via scripts/refresh_production_snapshot.py)
+        # and clusters all rollups offline through the full session pipeline —
+        # HDBSCAN + noise rescue + cluster→playbook merge (merge on by default;
+        # --no-merge reproduces the pre-merge numbers). Scores the eval-labeled
+        # subset against eval/baseline-prod-scale.json. Exits non-zero on: any
+        # metric > tolerance below baseline, any label whose cluster
+        # count grew by more than +1, or the snapshot exceeding the 180d
+        # hard-fail age. Re-base via --write-baseline after an intentional change.
+        run: |
+          python scripts/eval_production_scale.py \
+            --snapshot eval/production-snapshot-v1.jsonl.gz \
+            --baseline eval/baseline-prod-scale.json \
+            --no-json
