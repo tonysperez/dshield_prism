@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
 
+from compare_clusterings import disagreement_sessions
 from eval_clustering import SMALL_BAND, small_cluster_metrics
 from prod_corpus import (
     SessionCorpus,
@@ -192,6 +193,99 @@ def _run_live(args, cfg, mode_desc: str):
     return md, tally
 
 
+def _cluster_ctx(indices: list[int], corpus: SessionCorpus,
+                 n_samples: int, sample_chars: int) -> tuple[int, str, list[str]]:
+    """(size, dominant_intent, sample command streams) for a cluster's
+    corpus indices."""
+    from collections import Counter
+    named = [corpus.intents[i] for i in indices if corpus.intents[i]]
+    dom = Counter(named).most_common(1)[0][0] if named else "—"
+    samples = [
+        _truncate(corpus.texts[i], sample_chars) or "_(no command text)_"
+        for i in indices[:n_samples]
+    ]
+    return len(indices), dom, samples
+
+
+def _render_disagreements(corpus, labels, arm, base, mode_desc, args) -> str:
+    """G0.2 disagreement render: one section per session the arm places
+    differently than the baseline, with both clusters' context side by side
+    and a `decision:` field for the G4 analyst go/no-go."""
+    from collections import defaultdict
+    sid_to_idx = {s: i for i, s in enumerate(corpus.session_ids)}
+    arm_members: dict[int, list[int]] = defaultdict(list)
+    for i, lbl in enumerate(labels):
+        arm_members[int(lbl)].append(i)
+    base_members: dict[int, list[int]] = defaultdict(list)
+    for s, bc in base.items():
+        if s in sid_to_idx:
+            base_members[int(bc)].append(sid_to_idx[s])
+
+    disagree = disagreement_sessions(base, arm)
+    n_common = len(set(base) & set(arm))
+
+    out: list[str] = []
+    out.append("# Cross-arm disagreement render — sessions layer")
+    out.append("")
+    out.append(f"_Captured {datetime.now(timezone.utc).isoformat()}_")
+    out.append("")
+    out.append(f"- **Arm:** {mode_desc}")
+    out.append(f"- **Baseline:** `{args.compare}`")
+    out.append(f"- **Disagreements:** {len(disagree)} of {n_common} common sessions "
+               f"({len(disagree)/n_common:.1%} if any); rendering first "
+               f"{min(len(disagree), args.max_disagreements)}")
+    out.append("")
+    out.append("> For each session below the arm and baseline disagree on placement. "
+               "Read the session's commands, then both clusters' members, and set "
+               "`decision:` to **g_better** (arm's placement is right), "
+               "**baseline_better**, **equivalent**, or **both_wrong**. "
+               "Adoption (G4) needs `g_better ≥ 40% AND both_wrong ≤ 20%`.")
+    out.append("")
+    for n, (sid, bc, ac) in enumerate(disagree[: args.max_disagreements], 1):
+        i = sid_to_idx[sid]
+        bsize, bintent, bsamp = _cluster_ctx(base_members[bc], corpus, args.samples, args.sample_chars)
+        asize, aintent, asamp = _cluster_ctx(arm_members[ac], corpus, args.samples, args.sample_chars)
+        out.append(f"## disagreement {n} — session `{sid}`")
+        out.append("")
+        out.append("```yaml")
+        out.append("decision: pending  # g_better | baseline_better | equivalent | both_wrong")
+        out.append("```")
+        out.append(f"- **this session** (intent `{corpus.intents[i] or '—'}`): "
+                   f"`{_truncate(corpus.texts[i], args.sample_chars) or '(no command text)'}`")
+        out.append(f"- **baseline cluster {bc}** — n={bsize}, intent `{bintent}`:")
+        for s in bsamp:
+            out.append(f"    - `{s}`")
+        out.append(f"- **arm cluster {ac}** — n={asize}, intent `{aintent}`:")
+        for s in asamp:
+            out.append(f"    - `{s}`")
+        out.append("")
+    return "\n".join(out)
+
+
+def _run_compare(args, cfg, mode_desc) -> str:
+    import json
+    sec = load_secrets()
+    es = make_client(cfg.elasticsearch, sec)
+    index = cfg.elasticsearch.indexes.cowrie.sessions_rollup
+    corpus = pull_session_corpus(es, index, cfg.session.page_size, args.limit)
+    rescue = cfg.session.playbook_merge_threshold if args.rescue_threshold is None \
+        else args.rescue_threshold
+    labels, _ = cluster_hdbscan(
+        corpus, min_cluster_size=args.mcs, min_samples=args.ms,
+        scalar_weight=cfg.session.cluster_scalar_weight, rescue_threshold=rescue,
+    )
+    arm = {corpus.session_ids[i]: int(labels[i]) for i in range(len(corpus))}
+    base_rec = json.loads(Path(args.compare).read_text(encoding="utf-8"))
+    base = base_rec.get("assignments")
+    if not base:
+        raise SystemExit(
+            f"--compare {args.compare} has no `assignments` — produce it with "
+            "eval_production_scale.py --dump-assignments."
+        )
+    base = {str(k): int(v) for k, v in base.items()}
+    return _render_disagreements(corpus, labels, arm, base, mode_desc, args)
+
+
 def _self_test() -> int:
     """Synthetic dry-run (plan F2.0 verify): one big cluster + three
     size-∈[3,10] clusters, one of them a deliberate shard (centroid within
@@ -259,6 +353,39 @@ def _self_test() -> int:
     return 0 if ok else 1
 
 
+def _self_test_compare() -> int:
+    """Synthetic dry-run (plan G0.2 verify): a hand-built disagreement set —
+    baseline groups {s2,s3,s4,s5}, arm pulls s2 into {s0,s1}. Asserts the
+    render produces exactly one disagreement section for s2 with both
+    clusters' context + a decision field."""
+    from types import SimpleNamespace
+    corpus = SessionCorpus()
+    for k in range(6):
+        corpus.doc_ids.append(f"s{k}")
+        corpus.session_ids.append(f"s{k}")
+        corpus.embeddings.append([0.0])
+        corpus.scalars.append({})
+        corpus.intents.append("reconnaissance" if k < 3 else "persistence")
+        corpus.signatures.append("")
+        corpus.texts.append(f"command stream {k}")
+    labels = np.array([0, 0, 0, 1, 1, 1])           # arm partition
+    arm = {f"s{k}": int(labels[k]) for k in range(6)}
+    base = {"s0": 0, "s1": 0, "s2": 1, "s3": 1, "s4": 1, "s5": 1}  # baseline
+    args = SimpleNamespace(compare=Path("synthetic-base.json"),
+                           max_disagreements=30, samples=3, sample_chars=80)
+    md = _render_disagreements(corpus, labels, arm, base, "synthetic-arm", args)
+    print(md)
+    ok = (
+        md.count("## disagreement") == 1
+        and "session `s2`" in md
+        and "decision: pending" in md
+        and "baseline cluster 1" in md
+        and "arm cluster 0" in md
+    )
+    print("SELF-TEST-COMPARE:", "PASS" if ok else "FAIL")
+    return 0 if ok else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--layer", choices=["sessions", "commands", "ips"],
@@ -279,15 +406,26 @@ def main() -> int:
                     help="Truncate each rendered command stream to N chars.")
     ap.add_argument("--limit", type=int, default=None,
                     help="Cap the corpus pull (dev tool).")
+    ap.add_argument("--compare", type=Path, default=None,
+                    help="G0.2: a baseline run JSON (eval_production_scale "
+                         "--dump-assignments). Switches to disagreement-render "
+                         "mode — one section per session this arm places "
+                         "differently than the baseline, for the G4 go/no-go.")
+    ap.add_argument("--max-disagreements", type=int, default=30,
+                    help="Max disagreement sessions rendered in --compare mode.")
     ap.add_argument("--output-dir", type=Path, default=Path("eval/results"))
     ap.add_argument("--no-md", action="store_true",
                     help="Print to stdout only; skip the markdown file.")
     ap.add_argument("--self-test", action="store_true",
                     help="Run the synthetic shard-detection dry-run and exit.")
+    ap.add_argument("--self-test-compare", action="store_true",
+                    help="Run the synthetic disagreement-render dry-run and exit.")
     args = ap.parse_args()
 
     if args.self_test:
         return _self_test()
+    if args.self_test_compare:
+        return _self_test_compare()
 
     if args.layer != "sessions":
         raise SystemExit(
@@ -305,15 +443,19 @@ def main() -> int:
     mode_desc = (f"hdbscan (mcs={args.mcs}, ms={args.ms}, "
                  f"rescue={rescue}, scalar_weight={cfg.session.cluster_scalar_weight})")
 
-    md, tally = _run_live(args, cfg, mode_desc)
-    print(md)
-    print("\n" + "=" * 60)
-    print(f"TALLY: {tally['n_small_clusters']} small clusters · "
-          f"{tally['n_shard']} shard · {tally['n_non_shard']} non-shard"
-          + (f" · {tally['n_undetermined']} undetermined" if tally['n_undetermined'] else ""))
-    if tally["shard_fraction"] is not None:
-        print(f"       shard_fraction = {tally['shard_fraction']} "
-              f"(adoption needs < 0.50 AND analyst 'go')")
+    if args.compare is not None:
+        md = _run_compare(args, cfg, mode_desc)
+        print(md)
+    else:
+        md, tally = _run_live(args, cfg, mode_desc)
+        print(md)
+        print("\n" + "=" * 60)
+        print(f"TALLY: {tally['n_small_clusters']} small clusters · "
+              f"{tally['n_shard']} shard · {tally['n_non_shard']} non-shard"
+              + (f" · {tally['n_undetermined']} undetermined" if tally['n_undetermined'] else ""))
+        if tally["shard_fraction"] is not None:
+            print(f"       shard_fraction = {tally['shard_fraction']} "
+                  f"(adoption needs < 0.50 AND analyst 'go')")
 
     if not args.no_md:
         args.output_dir.mkdir(parents=True, exist_ok=True)

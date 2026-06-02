@@ -319,6 +319,7 @@ def _evaluate(
     limit_rollups: int | None,
     run_label: str | None,
     snapshot_path: Path | None,
+    dump_assignments: bool = False,
 ) -> dict:
     sid_to_label, pair_to_sessions = _load_eval_session_ids_and_labels(
         labels_v1, labels_v2,
@@ -507,6 +508,14 @@ def _evaluate(
             eval_sids_found, eval_label_truth, eval_cluster_pred_arr,
         ),
         "divergent_pairs": pair_outcomes,
+        # Full-corpus {session_id: cluster_id} — the input the G-phase
+        # cross-arm comparison (compare_clusterings.py) reads. Gated because
+        # it adds ~4k entries the gate doesn't need; the G capture runs ask
+        # for it. Post-merge labels when merge ran.
+        "assignments": (
+            {sid: int(c) for sid, c in zip(session_ids, labels)}
+            if dump_assignments else None
+        ),
     }
 
 
@@ -856,6 +865,10 @@ def main() -> int:
                     help="Where to write the machine-readable JSON.")
     ap.add_argument("--no-json", action="store_true",
                     help="Skip writing the JSON dump (stdout only).")
+    ap.add_argument("--dump-assignments", action="store_true",
+                    help="Include the full-corpus {session_id: cluster_id} map "
+                         "in the JSON, for G-phase cross-arm comparison "
+                         "(scripts/compare_clusterings.py).")
     args = ap.parse_args()
 
     cfg = load_config(args.config_path)
@@ -868,6 +881,7 @@ def main() -> int:
         labels_v2=args.labels_v2,
         rescue=not args.no_rescue,
         merge=not args.no_merge,
+        dump_assignments=args.dump_assignments,
         limit_rollups=args.limit_rollups,
         run_label=args.label,
         snapshot_path=args.snapshot,
