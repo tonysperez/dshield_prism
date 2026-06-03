@@ -612,6 +612,127 @@ def _validate_reference(
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Cluster-run retention (scale-hardening P2.1)
+# ---------------------------------------------------------------------------
+#
+# Each cluster run appends a fresh `cluster` centroid set + one `run_summary`
+# doc and never prunes, so the cluster indices accumulate dead per-run state
+# forever — only the *latest* run is ever read (see `load_centroids` and the
+# console's run-cache, which resolve the newest run_id then filter to it).
+# `prune_cluster_runs` caps each index by keeping only the newest `keep_runs`
+# runs' `cluster` + `run_summary` docs.
+#
+# `reference_centroid` docs are NEVER touched: they are read across runs (the
+# stable across-run novelty anchors) and deleting any generation breaks
+# novelty scoring. The delete query is scoped to `doc_type in {cluster,
+# run_summary}`, which structurally excludes `reference_centroid`.
+
+
+def _select_keep_run_ids(run_summaries: list[dict], keep_runs: int) -> list[str]:
+    """The `run_id`s of the newest `keep_runs` runs.
+
+    `run_summaries` is a list of dicts each with at least `run_id` and
+    `@timestamp`. Sorted by `@timestamp` desc (ties broken by run_id for
+    determinism); the first `keep_runs` distinct run_ids are returned. Pure —
+    no ES, so the retention rule is unit-tested directly.
+    """
+    keep_runs = max(1, keep_runs)
+    ordered = sorted(
+        (rs for rs in run_summaries if rs.get("run_id")),
+        key=lambda rs: (rs.get("@timestamp") or "", rs.get("run_id") or ""),
+        reverse=True,
+    )
+    keep: list[str] = []
+    for rs in ordered:
+        rid = rs["run_id"]
+        if rid not in keep:
+            keep.append(rid)
+        if len(keep) >= keep_runs:
+            break
+    return keep
+
+
+def prune_cluster_runs(
+    es: Elasticsearch,
+    clusters_index: str,
+    *,
+    keep_runs: int = 5,
+    dry_run: bool = False,
+    layer_label: str = "",
+) -> dict:
+    """Delete `cluster` + `run_summary` docs older than the newest `keep_runs`
+    runs from one cluster index. Keeps every `reference_centroid` generation.
+
+    Safety: if the index is missing, or no `run_summary` doc exists (we can't
+    tell which run is newest), the prune is SKIPPED — never a blind delete
+    (mirrors the findings-tombstone empty-live-set guard).
+    """
+    label = layer_label or clusters_index
+    try:
+        if not es.indices.exists(index=clusters_index):
+            return {"index": clusters_index, "status": "missing", "deleted": 0}
+    except Exception as exc:
+        log.warning("[prune %s] exists() failed: %s", label, exc)
+        return {"index": clusters_index, "status": "error", "deleted": 0, "error": str(exc)}
+
+    # Newest `keep_runs` run_ids, straight from the run_summary docs. Bounded
+    # by `keep_runs` (small), so this stays cheap even before the first prune.
+    try:
+        resp = es.search(
+            index=clusters_index,
+            size=max(1, keep_runs),
+            query={"term": {"doc_type": "run_summary"}},
+            sort=[{"@timestamp": "desc"}],
+            _source=["run_id"],
+        )
+        keep = _select_keep_run_ids(
+            [h.get("_source", {}) for h in resp["hits"]["hits"]], keep_runs,
+        )
+    except Exception as exc:
+        log.warning("[prune %s] could not read run_summary docs: %s", label, exc)
+        return {"index": clusters_index, "status": "error", "deleted": 0, "error": str(exc)}
+
+    if not keep:
+        # No run_summary docs → can't establish a keep set → do nothing.
+        return {"index": clusters_index, "status": "no_run_summaries", "deleted": 0}
+
+    # Delete the per-run state of every OTHER run. The `doc_type` filter keeps
+    # reference_centroid docs structurally out of scope.
+    del_query = {
+        "bool": {
+            "must":     [{"terms": {"doc_type": ["cluster", "run_summary"]}}],
+            "must_not": [{"terms": {"run_id": keep}}],
+        }
+    }
+
+    if dry_run:
+        try:
+            n = int(es.count(index=clusters_index, query=del_query)["count"])
+        except Exception as exc:
+            log.warning("[prune %s] dry-run count failed: %s", label, exc)
+            n = -1
+        return {"index": clusters_index, "status": "dry_run",
+                "kept_runs": len(keep), "would_delete": n}
+
+    try:
+        resp = es.delete_by_query(
+            index=clusters_index, body={"query": del_query},
+            conflicts="proceed", refresh=False,
+        )
+        deleted = int(resp.get("deleted") or 0)
+    except Exception as exc:
+        log.warning("[prune %s] delete_by_query failed: %s", label, exc)
+        return {"index": clusters_index, "status": "error", "deleted": 0, "error": str(exc)}
+
+    if deleted:
+        log.info(
+            "[prune %s] kept newest %d run(s); deleted %d dead cluster/run_summary doc(s)",
+            label, len(keep), deleted,
+        )
+    return {"index": clusters_index, "status": "ok", "kept_runs": len(keep), "deleted": deleted}
+
+
 def run_layer_clustering(
     *,
     es: Elasticsearch,

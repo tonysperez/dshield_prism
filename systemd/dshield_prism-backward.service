@@ -49,6 +49,14 @@ ExecStart=/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/b
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml cluster sessions
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml cluster ips
 
+# --- Step 5b: cap the cluster indices. Each cluster run appends a fresh
+# centroid set + run_summary and never prunes; only the latest run is ever
+# read. Keep the newest few runs per layer, delete the dead rest. Every
+# reference_centroid generation is preserved (cross-run novelty anchors).
+# Runs after all clustering so the newest run is always retained. Soft-fail —
+# a prune hiccup must never abort the chain. Scale-hardening P2.1.
+ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml prune-clusters
+
 # --- Step 6: cloud escalation re-runs against the freshly-clustered
 # novelty scores. May skip everything if daily budget is exhausted —
 # `-` is fine because the local-only enrichments stay in place.

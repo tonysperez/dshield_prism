@@ -81,6 +81,25 @@ def _commands_layer(source: str):
     return _load_source_layer(source, "commands")
 
 
+# Default cluster-run retention (scale-hardening P2.1). Only the latest run is
+# ever read; the rest is rollback buffer. Shared by the `prune-clusters` verb
+# default and the `pipeline`/backward prune step so the two can't drift.
+_DEFAULT_CLUSTER_KEEP_RUNS = 5
+
+
+def _cluster_indices_for_source(cfg, source: str):
+    """[(layer_label, index), ...] of the cluster-centroid indices for a
+    source, or None if the source has none. Used by `prune-clusters`."""
+    if source == "cowrie":
+        c = cfg.elasticsearch.indexes.cowrie
+        return [
+            ("command", c.command_clusters),
+            ("session", c.session_clusters),
+            ("ip",      c.ip_clusters),
+        ]
+    return None
+
+
 # --- mapping files for init-indexes ----------------------------------------
 
 _LAYER_MAPPINGS = {
@@ -441,6 +460,23 @@ def _run_pipeline(cfg, secrets, args) -> int:
         from .findings.lifecycle import run_track_lifecycles
         return run_track_lifecycles(cfg, secrets, dry_run=dry)
 
+    def _prune_clusters():
+        """Cap each cluster index to the newest _DEFAULT_CLUSTER_KEEP_RUNS runs
+        (scale-hardening P2.1). reference_centroid generations are preserved.
+        Runs after clustering so the newest run is always in the keep set."""
+        from .es_client import make_client
+        from .clustering import prune_cluster_runs
+        es = make_client(cfg.elasticsearch, secrets)
+        targets = _cluster_indices_for_source(cfg, args.source) or []
+        results = [
+            prune_cluster_runs(
+                es, idx, keep_runs=_DEFAULT_CLUSTER_KEEP_RUNS,
+                dry_run=dry, layer_label=label,
+            )
+            for label, idx in targets
+        ]
+        return {"indices": results}
+
     def _reset_rollup_watermarks():
         """Clear the session + IP rollup watermarks so the next rollup
         re-pools from every session/IP. Mirrors `reset --session-watermark
@@ -500,6 +536,11 @@ def _run_pipeline(cfg, secrets, args) -> int:
         ("rollup ips",                 lambda: ips_mod.run_rollup(cfg, secrets, dry_run=dry),                             False),
         ("cluster ips",                lambda: ips_mod.run_cluster(cfg, secrets, dry_run=dry),                            False),
         ("name ip-clusters",           lambda: ips_mod.run_name_ip_clusters(cfg, secrets, dry_run=dry),                   True),
+
+        # ---- cap the cluster indices (P2.1): keep newest K runs per layer,
+        # delete dead per-run state. reference_centroid generations preserved.
+        # After all clustering so the newest run is always in the keep set.
+        ("prune clusters",             _prune_clusters,                                                                   True),
 
         # ---- multi-session campaign mining (frequent-itemset + shared-artifact)
         ("mine campaigns",             lambda: campaigns_mod.run_mine(cfg, secrets, kind="all", dry_run=dry),             True),
@@ -804,6 +845,33 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true",
         help="Count docs that would be stamped without writing.")
 
+    # prune-clusters — scale-hardening P2.1. Cap each cluster index by keeping
+    # only the newest --keep-runs runs' cluster + run_summary docs; delete the
+    # rest. reference_centroid generations are always preserved. Also wired
+    # into the backward chain so the indices stay bounded automatically.
+    p_prune_clusters = sub.add_parser(
+        "prune-clusters",
+        help=(
+            "Delete dead per-run cluster + run_summary docs, keeping only the "
+            "newest --keep-runs runs per cluster index. reference_centroid "
+            "generations are always preserved. Caps the otherwise unbounded "
+            "cluster indices. Scale-hardening P2.1."
+        ),
+    )
+    p_prune_clusters.add_argument(
+        "--source", default="cowrie", help="Source name (default: cowrie)")
+    p_prune_clusters.add_argument(
+        "--keep-runs", type=int, default=_DEFAULT_CLUSTER_KEEP_RUNS,
+        help=(
+            f"Most-recent runs to retain per cluster index "
+            f"(default: {_DEFAULT_CLUSTER_KEEP_RUNS}). Only the latest run is "
+            "ever read; the remainder is rollback buffer."
+        ),
+    )
+    p_prune_clusters.add_argument(
+        "--dry-run", action="store_true",
+        help="Count would-be deletions per index without deleting.")
+
     # apply-artifact-rules — retroactive scan for analyst-authored rules
     # (ROADMAP #5). Walks the commands index, stamps
     # `dshield.cowrie.enrichment.analyst_artifacts` for every match.
@@ -1084,7 +1152,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "Run every processing step end-to-end: re-enrich-stale → reembed → "
             "enrich → reset rollup watermarks → rollup sessions → cluster commands → "
             "escalate → cluster sessions → name playbooks → rollup ips → cluster ips → "
-            "name ip-clusters → mine campaigns → intel refresh → mine findings. "
+            "name ip-clusters → prune clusters → mine campaigns → intel refresh → "
+            "mine findings. "
             "Serialised with the systemd timers via an exclusive flock; pass "
             "--no-lock to skip when the timers are already stopped."
         ),
@@ -1355,6 +1424,26 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         stats = mod.run_backfill_shape(cfg, secrets, dry_run=args.dry_run)
         print(json.dumps(stats, indent=2, default=str))
+        return 0
+
+    if args.verb == "prune-clusters":
+        from .es_client import make_client
+        from .clustering import prune_cluster_runs
+        targets = _cluster_indices_for_source(cfg, args.source)
+        if targets is None:
+            print(f"[ERROR] Source {args.source!r} has no cluster indices", flush=True)
+            return 1
+        es = make_client(cfg.elasticsearch, secrets)
+        out: dict = {
+            "source": args.source, "keep_runs": args.keep_runs,
+            "dry_run": args.dry_run, "indices": [],
+        }
+        for label, idx in targets:
+            out["indices"].append(prune_cluster_runs(
+                es, idx, keep_runs=args.keep_runs,
+                dry_run=args.dry_run, layer_label=label,
+            ))
+        print(json.dumps(out, indent=2, default=str))
         return 0
 
     if args.verb == "apply-artifact-rules":
