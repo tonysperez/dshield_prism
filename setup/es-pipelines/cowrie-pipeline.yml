@@ -76,8 +76,10 @@ PUT _ingest/pipeline/prism.cowrie.session
     },
     {
       "rename": {
+        "description": "cowrie.sensor -> observer.name, but only when a per-sensor wrapper pipeline (prism.cowrie.session.<sensor>) hasn't already stamped observer.name. observer.name is the sensor namespace for the session-rollup _id (P6.2), so a wrapper-set value must win over the (usually empty) cowrie.sensor.",
         "field": "cowrie.sensor",
         "target_field": "observer.name",
+        "if": "ctx.observer?.name == null",
         "ignore_missing": true
       }
     },
