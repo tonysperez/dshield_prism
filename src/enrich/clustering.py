@@ -805,9 +805,11 @@ def run_layer_clustering(
       5. Compute centroids in BOTH spaces (pure + augmented when scalar_weight>0).
       6. Resolve scoring centroids (reference if available + valid, else this run).
       7. Score per-doc novelty against the scoring centroids.
-      8. Bulk-update doc cluster fields via update_script.
-      9. Persist pure-embedding centroids + run_summary docs to clusters_index.
-     10. Auto-bootstrap or refresh the reference_centroid set if asked / needed.
+      8. Persist pure-embedding centroids (+ reference_centroids) to clusters_index.
+      9. Bulk-update doc cluster fields via update_script.
+     10. Write the run_summary sentinel LAST (P3.3), stamped with write-error
+         counts, so its presence means the run's writes finished.
+     11. Auto-bootstrap or refresh the reference_centroid set if asked / needed.
 
     Why two centroid sets (ROADMAP #12): HDBSCAN labels come from
     `cluster_matrix` (pure embedding + weighted scalar block). Scoring a row's
@@ -1211,35 +1213,36 @@ def run_layer_clustering(
                 centroid_sample_field: sample_map.get(lbl, []),
             },
         })
-    cluster_docs.append({
-        "_op_type": "index",
-        "_source": {
-            "@timestamp": now_str,
-            "run_id": run_id,
-            "doc_type": "run_summary",
-            "total_docs": n_docs,
-            "n_clusters": n_clusters,
-            "n_outliers": n_outliers,
-            "n_rescued": n_rescued,
-            # P1.2 — 0 = all-time (full corpus); >0 = the run only saw sessions
-            # from the last N days. The lifecycle tracker reads this off the
-            # latest run_summary to decide whether a playbook's absence means
-            # "gone from the corpus" (full run) or just "no recent sessions"
-            # (windowed run) — only the former advances silent-run accounting.
-            "window_days": int(window_days or 0),
-            "runtime_seconds": round(time.monotonic() - t_start, 2),
-            # Effective clustering config this run used — lets a deploy be
-            # verified from ES alone (e.g. "did the latest command run cluster
-            # with rescue_threshold=0.94?") without shell access to the box.
-            # Mappings are dynamic, so these auto-map.
-            "clustering_config": {
-                "min_cluster_size": min_cluster_size,
-                "min_samples": min_samples,
-                "scalar_weight": scalar_weight,
-                "rescue_threshold": rescue_threshold,
-            },
+    # P3.3 — the run_summary is the run-complete sentinel and is written LAST
+    # (after the per-doc cluster.id updates below), not here, so its existence
+    # always means "this run's writes finished". Build its body now (all the
+    # values are in hand); the final-write block appends the actual write-error
+    # counts and the true end-to-end runtime before indexing it.
+    run_summary_source: dict = {
+        "@timestamp": now_str,
+        "run_id": run_id,
+        "doc_type": "run_summary",
+        "total_docs": n_docs,
+        "n_clusters": n_clusters,
+        "n_outliers": n_outliers,
+        "n_rescued": n_rescued,
+        # P1.2 — 0 = all-time (full corpus); >0 = the run only saw sessions
+        # from the last N days. The lifecycle tracker reads this off the
+        # latest run_summary to decide whether a playbook's absence means
+        # "gone from the corpus" (full run) or just "no recent sessions"
+        # (windowed run) — only the former advances silent-run accounting.
+        "window_days": int(window_days or 0),
+        # Effective clustering config this run used — lets a deploy be
+        # verified from ES alone (e.g. "did the latest command run cluster
+        # with rescue_threshold=0.94?") without shell access to the box.
+        # Mappings are dynamic, so these auto-map.
+        "clustering_config": {
+            "min_cluster_size": min_cluster_size,
+            "min_samples": min_samples,
+            "scalar_weight": scalar_weight,
+            "rescue_threshold": rescue_threshold,
         },
-    })
+    }
 
     if bootstrap_reference and not dry_run:
         # Find current max generation FOR THIS SOURCE so the new ref docs
@@ -1334,6 +1337,13 @@ def run_layer_clustering(
 
     init_index(es, mapping_path, clusters_index)
 
+    # P3.3 — write order makes the run_summary a trustworthy completion sentinel:
+    #   1. centroid + reference_centroid docs   (clusters_index)
+    #   2. per-doc cluster.id patches            (docs_index)
+    #   3. run_summary LAST                      (clusters_index)
+    # A crash before step 3 leaves NO run_summary, so a reader that resolves
+    # "latest run" via the run_summary (lifecycle, prune, miner) falls back to
+    # the previous complete run instead of a half-applied one.
     ok, errs = bulk_write(es, clusters_index, cluster_docs)
     stats["cluster_docs_written"] = ok
     stats["cluster_doc_errors"] = len(errs)
@@ -1350,6 +1360,23 @@ def run_layer_clustering(
         if errs:
             log.warning("[%s] update errors (%d): %s", layer_label, len(errs), errs[:2])
         log.debug("[%s] Updated %d/%d docs", layer_label, start + len(chunk), n_docs)
+
+    # Step 3 — the run_summary sentinel, written last and stamped with the
+    # actual write-error counts (P3.3 + P4 bulk-error surfacing) and the true
+    # end-to-end runtime. `write_errors > 0` on the latest run_summary tells a
+    # reader the run completed but some docs didn't land, without shell access.
+    run_summary_source["cluster_doc_errors"] = stats["cluster_doc_errors"]
+    run_summary_source["update_errors"] = bulk_errors
+    run_summary_source["write_errors"] = stats["cluster_doc_errors"] + bulk_errors
+    run_summary_source["runtime_seconds"] = round(time.monotonic() - t_start, 2)
+    rs_ok, rs_errs = bulk_write(
+        es, clusters_index, [{"_op_type": "index", "_source": run_summary_source}],
+    )
+    if rs_errs:
+        # The sentinel itself failed to write — better to surface loudly than to
+        # leave readers resolving a stale run with no signal that this one ran.
+        log.warning("[%s] run_summary write failed (%d): %s", layer_label, len(rs_errs), rs_errs[:1])
+    stats["run_summary_written"] = rs_ok
 
     # Explicit refresh on both indexes we just wrote to. The mapping default
     # is refresh_interval=30s, which would otherwise leave a window where

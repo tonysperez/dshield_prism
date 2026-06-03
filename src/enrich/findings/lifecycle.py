@@ -494,63 +494,68 @@ def retire_silent_lifecycles(
 # Orchestrator
 # ---------------------------------------------------------------------------
 
-def _latest_session_cluster_window_days(
-    es: Elasticsearch, session_clusters_idx: str
-) -> int:
-    """`window_days` from the most recent session-cluster `run_summary` (P1.2).
+def _latest_cluster_run(
+    es: Elasticsearch, clusters_idx: str
+) -> tuple[Optional[str], int]:
+    """`(run_id, window_days)` of the most recent COMPLETED cluster run.
 
-    0 = the latest `cluster sessions` run was full-corpus (all-time); >0 = it
-    was windowed to that many days. The playbook silence accounting keys on
-    this: a playbook absent from a *windowed* run only means "no sessions in
-    the last N days", not "gone from the corpus", so windowed runs must NOT
-    advance `silent_runs_current` — otherwise the entire >Nd-dormant long tail
-    would be marked resurged (and eventually retired) at every weekly full
-    pass. Absent index / no run_summary / pre-P1.2 docs without the field → 0
-    (treat as full: the historical bump-every-run behaviour, which is safe on
-    an append-only corpus where a full run always re-sees every playbook).
+    Resolves "latest run" via the `run_summary` sentinel, which the clustering
+    writer emits LAST (P3.3) — so a run that crashed mid-write has no
+    run_summary and we fall back to the previous *complete* run instead of
+    reading half-applied cluster membership. `window_days` (P1.2): 0 = the run
+    was full-corpus, >0 = windowed to that many days. Absent index / no
+    run_summary / pre-P1.2 docs without the field → `(None, 0)`.
     """
-    if not es.indices.exists(index=session_clusters_idx):
-        return 0
+    if not es.indices.exists(index=clusters_idx):
+        return None, 0
     try:
         resp = es.search(
-            index=session_clusters_idx,
+            index=clusters_idx,
             size=1,
             query={"term": {"doc_type": "run_summary"}},
             sort=[{"@timestamp": "desc"}],
-            _source=["window_days"],
+            _source=["run_id", "window_days"],
         )
     except Exception as exc:
-        log.warning("[lifecycle] could not read latest run_summary window_days: %s", exc)
-        return 0
+        log.warning("[lifecycle] could not read latest run_summary: %s", exc)
+        return None, 0
     hits = resp["hits"]["hits"]
     if not hits:
-        return 0
-    return int(hits[0]["_source"].get("window_days") or 0)
+        return None, 0
+    src = hits[0]["_source"]
+    return src.get("run_id"), int(src.get("window_days") or 0)
+
+
+def _latest_session_cluster_window_days(
+    es: Elasticsearch, session_clusters_idx: str
+) -> int:
+    """`window_days` of the latest completed session-cluster run (P1.2).
+
+    Thin wrapper over `_latest_cluster_run` so the playbook silence gate and
+    `_iter_current_playbooks` resolve the *same* run. The silence accounting
+    keys on this: a playbook absent from a *windowed* run only means "no
+    sessions in the last N days", not "gone from the corpus", so windowed runs
+    must NOT advance `silent_runs_current` — otherwise the >Nd-dormant long
+    tail would be marked resurged (and eventually retired) at every weekly full
+    pass. 0 (full run) reproduces the historical bump-every-run behaviour,
+    which is safe on an append-only corpus where a full run always re-sees
+    every playbook.
+    """
+    return _latest_cluster_run(es, session_clusters_idx)[1]
 
 
 def _iter_current_playbooks(
     es: Elasticsearch, session_clusters_idx: str, sessions_idx: str
 ) -> Iterable[dict]:
-    """Yield per-playbook aggregates for the most recent cluster run.
+    """Yield per-playbook aggregates for the most recent COMPLETED cluster run.
 
     Output dict shape:
         {playbook_id, playbook_name, session_count, ip_count,
          mean_novelty, dominant_intent, asn_top, asn_distribution}
     """
-    if not es.indices.exists(index=session_clusters_idx):
-        return
-    # 1) Find the latest cluster run id.
-    resp = es.search(
-        index=session_clusters_idx,
-        size=1,
-        query={"term": {"doc_type": "cluster"}},
-        sort=[{"@timestamp": "desc"}],
-        _source=["run_id"],
-    )
-    hits = resp["hits"]["hits"]
-    if not hits:
-        return
-    latest_run = hits[0]["_source"].get("run_id")
+    # 1) Resolve the latest run via the run_summary sentinel (P3.3) so a
+    #    half-written run is never aggregated — fall back to the last complete one.
+    latest_run, _ = _latest_cluster_run(es, session_clusters_idx)
     if not latest_run:
         return
 
