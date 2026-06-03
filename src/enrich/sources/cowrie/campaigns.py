@@ -296,6 +296,54 @@ def _build_ip_to_playbooks(
     return out
 
 
+def _replace_campaign_docs(
+    es: Elasticsearch, index: str, kind: str, docs: list[dict], *, label: str,
+) -> dict:
+    """Replace this run's `kind` campaign docs without an empty window (P3.2).
+
+    Upserts the current set first (content-addressed `_id`), then tombstones
+    only the `campaign_id`s absent from this run — the
+    `_tombstone_orphan_findings` pattern (findings/miner.py). Unlike the old
+    delete-all-then-bulk, a crash between the two steps leaves the prior or
+    current docs in place, never an empty index the console reads as "no
+    campaigns." Campaign ids are content-derived, so re-runs over identical
+    data upsert byte-identical docs.
+
+    Empty `docs` is a no-op: callers already short-circuit on `not docs`, but
+    guard anyway so a degraded run can never tombstone every campaign.
+    """
+    current_ids = [d["_id"] for d in docs if d.get("_id")]
+    if not current_ids:
+        log.info("[%s] no campaign docs this run; skipping replace", label)
+        return {"upserted": 0, "orphans_deleted": 0}
+
+    # 1. Upsert the current run first → the index is never empty mid-replace.
+    _, errs = bulk(es, docs, refresh=True, raise_on_error=False)
+    if errs:
+        log.warning("[%s] %d campaign upsert error(s): %s", label, len(errs), errs[:2])
+
+    # 2. Tombstone only the campaign_ids that vanished this run. The doc_type +
+    # kind filter scopes the sweep to this kind; must_not over the current ids
+    # keeps the docs just upserted.
+    deleted = 0
+    try:
+        resp = es.delete_by_query(
+            index=index,
+            body={"query": {"bool": {
+                "must":     [{"term": {"doc_type": "campaign"}},
+                             {"term": {"kind": kind}}],
+                "must_not": [{"terms": {"campaign_id": current_ids}}],
+            }}},
+            refresh=False, conflicts="proceed",
+        )
+        deleted = int(resp.get("deleted") or 0)
+    except Exception as exc:
+        log.warning("[%s] orphan tombstone failed (continuing): %s", label, exc)
+    if deleted:
+        log.info("[%s] tombstoned %d orphan campaign(s)", label, deleted)
+    return {"upserted": len(current_ids), "orphans_deleted": deleted}
+
+
 def run_mine_behaviour(
     cfg: AppConfig, secrets: Secrets, *,
     dry_run: bool = False,
@@ -418,23 +466,13 @@ def run_mine_behaviour(
     # the first write. Idempotent — no-op if already created.
     init_index(es, _CAMPAIGNS_MAPPING, out_idx)
 
-    # Clear previous behaviour-kind docs (this mining run supersedes them
-    # entirely — campaign ids are content-derived, so re-runs over the
-    # same data write the same docs, but data churn can produce orphans).
-    try:
-        es.delete_by_query(
-            index=out_idx,
-            body={"query": {"bool": {"must": [
-                {"term": {"doc_type": "campaign"}},
-                {"term": {"kind": "behaviour"}},
-            ]}}},
-            refresh=False, conflicts="proceed",
-        )
-    except Exception as exc:
-        log.warning("[mine behaviour] delete-previous failed (continuing): %s", exc)
-
-    bulk(es, docs, refresh=True)
-    log.info("[mine behaviour] wrote %d campaign docs in %ss", len(docs), stats["runtime_seconds"])
+    # Upsert this run, then tombstone only orphaned ids — no empty window
+    # (P3.2). Data churn can still produce orphans (a campaign that stops
+    # meeting support); those are deleted, the live set is preserved.
+    repl = _replace_campaign_docs(es, out_idx, "behaviour", docs, label="mine behaviour")
+    stats["orphans_tombstoned"] = repl["orphans_deleted"]
+    log.info("[mine behaviour] upserted %d campaign doc(s), tombstoned %d orphan(s) in %ss",
+             repl["upserted"], repl["orphans_deleted"], stats["runtime_seconds"])
     return stats
 
 
@@ -933,21 +971,12 @@ def run_mine_infrastructure(
     # Ensure the campaigns index exists with the explicit mapping. Idempotent.
     init_index(es, _CAMPAIGNS_MAPPING, out_idx)
 
-    try:
-        es.delete_by_query(
-            index=out_idx,
-            body={"query": {"bool": {"must": [
-                {"term": {"doc_type": "campaign"}},
-                {"term": {"kind": "infrastructure"}},
-            ]}}},
-            refresh=False, conflicts="proceed",
-        )
-    except Exception as exc:
-        log.warning("[mine infra] delete-previous failed (continuing): %s", exc)
-
-    bulk(es, docs, refresh=True)
-    log.info("[mine infra] wrote %d campaign docs in %ss",
-             len(docs), stats["runtime_seconds"])
+    # Upsert this run, then tombstone only orphaned ids — no empty window
+    # (P3.2). Mirrors the behaviour-kind path.
+    repl = _replace_campaign_docs(es, out_idx, "infrastructure", docs, label="mine infra")
+    stats["orphans_tombstoned"] = repl["orphans_deleted"]
+    log.info("[mine infra] upserted %d campaign doc(s), tombstoned %d orphan(s) in %ss",
+             repl["upserted"], repl["orphans_deleted"], stats["runtime_seconds"])
     return stats
 
 
