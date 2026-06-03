@@ -377,6 +377,51 @@ def _acquire_pipeline_lock(cfg, *, no_lock: bool, print_args):
     return lock_fd
 
 
+def _maybe_reset_rollup_watermarks(cfg, secrets, *, force: bool = False) -> dict:
+    """P1.1 — clear the session + IP rollup watermarks (forcing a full re-pool)
+    only when there's something to absorb: a command-level rewrite happened
+    (dirty flag, set by re-enrich-stale/reembed) or the rollup builder changed
+    (`rollup_schema_hash`). `force` overrides the gate. When it resets it stamps
+    the current schema hash and clears the dirty flag; a downstream rollup that
+    fails self-corrects because the watermark stays cleared (→ full re-pool next
+    run). Mirrors `reset --session-watermark --ip-watermark`, conditionally."""
+    from .cache import StateDB
+    from .rollup_gate import (
+        ROLLUP_DIRTY_KEY, ROLLUP_SCHEMA_HASH_KEY, rollup_repool_decision,
+    )
+    from .sources.cowrie.sessions import rollup_schema_hash
+    db = StateDB(cfg.worker.state_db)
+    try:
+        cur = rollup_schema_hash(cfg)
+        stored = db.get_watermark(ROLLUP_SCHEMA_HASH_KEY)
+        dirty = bool(db.get_watermark(ROLLUP_DIRTY_KEY))
+        if force:
+            do_reset, reason = True, "force"
+        else:
+            do_reset, reason = rollup_repool_decision(dirty, cur, stored)
+        if not do_reset:
+            logging.getLogger(__name__).info(
+                "rollup re-pool gate: SKIP (reason=%s) — rollups stay incremental",
+                reason,
+            )
+            return {"reset": False, "reason": reason}
+        sess = db.clear_watermark("session_last_processed_at")
+        ipw = db.clear_watermark("ip_rollup_last_processed_at")
+        db.set_watermark(cur, ROLLUP_SCHEMA_HASH_KEY)
+        db.clear_watermark(ROLLUP_DIRTY_KEY)
+        logging.getLogger(__name__).info(
+            "rollup re-pool gate: RESET (reason=%s) — next rollup is a full re-pool",
+            reason,
+        )
+        return {
+            "reset": True, "reason": reason,
+            "session_watermark_rows_deleted": sess,
+            "ip_watermark_rows_deleted": ipw,
+        }
+    finally:
+        db.close()
+
+
 def _run_pipeline(cfg, secrets, args) -> int:
     """End-to-end runner: each verb is invoked in dependency order via the
     same `run_*` entry points the individual CLI verbs call. Steps marked
@@ -483,26 +528,11 @@ def _run_pipeline(cfg, secrets, args) -> int:
         return {"indices": results}
 
     def _reset_rollup_watermarks():
-        """Clear the session + IP rollup watermarks so the next rollup
-        re-pools from every session/IP. Mirrors `reset --session-watermark
-        --ip-watermark --yes`. No-op when the watermarks were never set
-        (fresh deploys, --force runs that wiped SQLite). Returns a dict
-        for the step summary."""
-        from .cache import StateDB
-        db = StateDB(cfg.worker.state_db)
-        try:
-            # Keys must match _SESSION_WATERMARK_KEY (sessions.py) and
-            # _IP_WATERMARK_KEY (ips.py). Literal strings (not imports) so this
-            # path doesn't pull the LLM-dep sessions module in for a constant —
-            # same rationale as the `reset` verb. The session key was previously
-            # "session_rollup_last_processed_at", which nothing ever sets, so the
-            # clear was a silent no-op and the manual `pipeline` re-pool never
-            # actually re-pooled sessions to absorb re-enrich/reembed rewrites.
-            sess = db.clear_watermark("session_last_processed_at")
-            ipw = db.clear_watermark("ip_rollup_last_processed_at")
-        finally:
-            db.close()
-        return {"session_watermark_rows_deleted": sess, "ip_watermark_rows_deleted": ipw}
+        """P1.1 — conditionally clear the session + IP rollup watermarks so the
+        next rollup re-pools, but only when there's something to absorb (command
+        rewrite or rollup-schema change); `--force` always resets. Returns the
+        gate decision + reason for the step summary."""
+        return _maybe_reset_rollup_watermarks(cfg, secrets, force=args.force)
 
     steps: list[tuple[str, callable, bool]] = [
         # ---- pre-enrich catch-up: re-LLM and re-embed any rows whose
@@ -734,6 +764,16 @@ def _build_parser() -> argparse.ArgumentParser:
                              "(forces a full re-rollup of IPs). "
                              "Combinable with other flags."
                          ))
+    p_reset.add_argument(
+        "--if-stale", action="store_true",
+        help=(
+            "P1.1 — gate the session+IP rollup-watermark reset: clear them "
+            "(forcing a full re-pool) ONLY when a command rewrite happened since "
+            "the last re-pool or the rollup builder changed; otherwise no-op. "
+            "Used by the backward chain so steady-state stops re-pooling the "
+            "whole corpus every cycle. Ignores the other --*-watermark flags."
+        ),
+    )
     p_reset.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
 
     # purge — destructive ES-index wipes scoped by subject. Currently the
@@ -1288,6 +1328,12 @@ def _dispatch_verb(args, cfg, secrets) -> int:
         return 0
 
     if args.verb == "reset":
+        if args.if_stale:
+            # P1.1 — conditional rollup-watermark reset (gate decides). Ignores
+            # the other selectors; this is the backward chain's re-pool gate.
+            result = _maybe_reset_rollup_watermarks(cfg, secrets, force=False)
+            print(json.dumps(result, indent=2))
+            return 0
         from .cache import StateDB
         # Explicit selectors. Specific-watermark flags don't imply --all.
         explicit_specific = args.session_watermark or args.ip_watermark

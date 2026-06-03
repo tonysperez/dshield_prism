@@ -50,6 +50,21 @@ _DEFAULT_SENSOR = "default"
 def _session_uid(sensor: Optional[str], session_id: str) -> str:
     """Namespaced session-rollup `_id`: `<sensor>:<session_id>`."""
     return f"{sensor or _DEFAULT_SENSOR}:{session_id}"
+
+
+def rollup_schema_hash(cfg: AppConfig) -> str:
+    """Hash of the session-rollup builder + the config knobs that shape its
+    output (P1.1). Drives the conditional re-pool gate: when this changes, a
+    code/config edit to the rollup builder has landed, so existing rollups must
+    be re-pooled to pick it up. Captures `_build_session_doc`'s own source —
+    a change to a *helper* it calls is not seen here, so that case needs a
+    manual `pipeline --force` (documented in `enrich/rollup_gate.py`)."""
+    import inspect
+    parts = [
+        inspect.getsource(_build_session_doc),
+        f"command_max_chars={cfg.worker.command_max_chars}",
+    ]
+    return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()[:16]
 _SESSIONS_MAPPING = "setup/es-mappings/cowrie/sessions.json"
 _SESSION_CLUSTERS_MAPPING = "setup/es-mappings/cowrie/session_clusters.json"
 

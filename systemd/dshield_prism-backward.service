@@ -30,11 +30,13 @@ ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/
 # embedding_model / embed_cooccurrence changes). Smart-skip when fresh.
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml reembed
 
-# --- Step 3: invalidate the session + IP rollup watermarks so the next
-# rollup pass re-pools all sessions / IPs from the (potentially) fresh
-# command embeddings. Cheap operation; only the SQLite watermark rows
-# are deleted, no ES touch. `--yes` skips the interactive confirmation.
-ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml reset --session-watermark --ip-watermark --yes
+# --- Step 3: conditionally invalidate the session + IP rollup watermarks so
+# the next rollup pass re-pools to absorb fresh command embeddings — but ONLY
+# when steps 1-2 actually rewrote a command doc (dirty flag) or the rollup
+# builder changed (schema hash). In steady state nothing changed, so this is a
+# no-op and `rollup sessions/ips` below stay incremental instead of re-pooling
+# the whole corpus every 6h (P1.1). `--if-stale` is the gate; SQLite-only.
+ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml reset --if-stale --yes
 
 # --- Step 4: re-roll sessions and IPs with the refreshed embeddings.
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml rollup sessions

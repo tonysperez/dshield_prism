@@ -1986,6 +1986,11 @@ def run_reembed(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) -> dict
         if errs:
             log.warning("re-embed bulk errors (%d): %s", len(errs), errs[:2])
 
+    # P1.1 — a re-embed that rewrote ≥1 doc dirties the rollup, so the next
+    # backward pass re-pools sessions to absorb the new vectors.
+    if not dry_run and stats.get("bulk_ok", 0) > 0:
+        from ...rollup_gate import mark_rollup_dirty
+        mark_rollup_dirty(db)
     db.close()
     return dict(stats, dry_run=dry_run, embed_config_hash=embed_config_hash)
 
@@ -2620,6 +2625,11 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
     except Exception as exc:
         log.warning("pass-2 refresh failed (continuing): %s", exc)
 
+    # P1.1 — a re-enrich that rewrote ≥1 command doc dirties the rollup so the
+    # next backward pass re-pools sessions to absorb the refreshed enrichment.
+    if not dry_run and stats.get("bulk_ok", 0) > 0:
+        from ...rollup_gate import mark_rollup_dirty
+        mark_rollup_dirty(db)
     db.close()
     return dict(
         stats, dry_run=dry_run,
