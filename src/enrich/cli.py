@@ -450,7 +450,14 @@ def _run_pipeline(cfg, secrets, args) -> int:
         from .cache import StateDB
         db = StateDB(cfg.worker.state_db)
         try:
-            sess = db.clear_watermark("session_rollup_last_processed_at")
+            # Keys must match _SESSION_WATERMARK_KEY (sessions.py) and
+            # _IP_WATERMARK_KEY (ips.py). Literal strings (not imports) so this
+            # path doesn't pull the LLM-dep sessions module in for a constant —
+            # same rationale as the `reset` verb. The session key was previously
+            # "session_rollup_last_processed_at", which nothing ever sets, so the
+            # clear was a silent no-op and the manual `pipeline` re-pool never
+            # actually re-pooled sessions to absorb re-enrich/reembed rewrites.
+            sess = db.clear_watermark("session_last_processed_at")
             ipw = db.clear_watermark("ip_rollup_last_processed_at")
         finally:
             db.close()
