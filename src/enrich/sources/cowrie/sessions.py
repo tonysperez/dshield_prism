@@ -2094,6 +2094,18 @@ def _format_renamable_block(
     return "\n".join(lines)
 
 
+def _should_reuse_playbook_name(prior_name: Optional[str], *, force: bool) -> bool:
+    """Whether to reuse a playbook's prior-run name (skip the LLM) — P5.1.
+
+    Reuse a non-empty prior name unless `force` is set (operator explicitly
+    asked for a fresh re-name). The `spb-` id is anchor-stable across runs, so
+    its name should be too; this stops `name playbooks` from re-LLM'ing every
+    playbook every backward cycle just because `cluster sessions` wrote fresh,
+    name-less centroid docs. Pure — unit-tested directly.
+    """
+    return bool(prior_name) and not force
+
+
 def _apply_playbook_name(
     es: Elasticsearch,
     session_clusters_idx: str,
@@ -2748,6 +2760,17 @@ def run_name_playbooks(
     # this set is a fresh mint → persist its anchor.
     known_anchor_ids: set[str] = {pid for _, pid in anchors}
 
+    # P5.1 — names already assigned to these playbook_ids in prior runs.
+    # `cluster sessions` writes fresh centroid docs with no playbook_name, so
+    # without this every playbook is re-LLM'd every backward cycle even though
+    # its `spb-` id is anchor-stable. We reuse the prior name by id and only
+    # call the LLM for a genuinely new id (or under --force). This same map
+    # feeds pass-2 collision detection below, so we load it once here instead
+    # of re-querying. P2.1's cluster-run prune keeps it cheap (newest runs only).
+    prior_named = _load_other_playbook_names(
+        es, session_clusters_idx, exclude_run_id=run_id,
+    )
+
     try:
         for group_id in sorted(docs_by_group.keys()):
             members = docs_by_group[group_id]
@@ -2860,6 +2883,22 @@ def run_name_playbooks(
                 stats["id_no_centroid"] += 1
             stats["id_assigned"] += 1
 
+            # P5.1 — reuse the name already pinned to this playbook_id instead
+            # of re-LLM'ing it every cycle. The id is anchor-stable (matched
+            # above), so its name should be too. Skip reuse only under --force
+            # (operator wants a full re-name) or when no prior name exists
+            # (genuinely new id → fall through to the LLM). `prior_name` is also
+            # read in the LLM path below to classify fresh vs renamed.
+            prior_name = (prior_named.get(playbook_id) or {}).get("name")
+            if _should_reuse_playbook_name(prior_name, force=force):
+                _apply_playbook_name(
+                    es, session_clusters_idx, sessions_idx,
+                    run_id, member_cids, playbook_id, prior_name, stats,
+                    log_prefix="playbook",
+                )
+                stats["reused_existing_name"] += 1
+                continue
+
             cluster_id_for_prompt = (
                 member_cids[0] if len(member_cids) == 1
                 else f"{playbook_id} (clusters: {', '.join(member_cids)})"
@@ -2900,6 +2939,14 @@ def run_name_playbooks(
                 group_id, member_cids, total_size, name, parsed.rationale or "no rationale",
             )
             stats["named"] += 1
+            # P5.1 churn signal: a name produced by the LLM is either for a
+            # brand-new id (no prior name) or a rename of an existing id (only
+            # reachable under --force, since steady-state reuses above). Lets
+            # the operator watch reuse-vs-churn before tuning P5.2's drift rule.
+            if prior_name and prior_name != name:
+                stats["llm_named_renamed"] += 1
+            else:
+                stats["llm_named_fresh"] += 1
             named_in_run.append({
                 "playbook_id": playbook_id,
                 "name": name,
@@ -2929,10 +2976,9 @@ def run_name_playbooks(
         # computed distinctive feature set.
         # -------------------------------------------------------------------
         if cfg.prompts.playbook_disambiguate and named_in_run:
-            existing = _load_other_playbook_names(
-                es, session_clusters_idx, exclude_run_id=run_id,
-            )
-            collisions = _detect_name_collisions(named_in_run, existing)
+            # Reuse the prior-run name map already loaded for P5.1 reuse — it is
+            # the same `exclude_run_id=run_id` query, so re-loading is wasted I/O.
+            collisions = _detect_name_collisions(named_in_run, prior_named)
             stats["collisions_detected"] = len(collisions)
             if collisions:
                 disamb_prompt_template = Path(cfg.prompts.playbook_disambiguate).read_text()
