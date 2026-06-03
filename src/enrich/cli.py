@@ -156,6 +156,11 @@ _LAYER_MAPPINGS = {
     "metrics": {
         "default": "setup/es-mappings/metrics/default.json",
     },
+    # Per-run pipeline telemetry (P4.2). `init-indexes --source ops` creates it;
+    # tracked verbs write one started→finished/failed doc per invocation.
+    "ops": {
+        "default": "setup/es-mappings/ops/default.json",
+    },
 }
 
 
@@ -644,6 +649,8 @@ def _resolve_index_for_layer(cfg, source: str, layer: str) -> str:
         return {"artifact_rules": cfg.analyst.indexes.artifact_rules}[layer]
     if source == "metrics":
         return {"default": cfg.metrics.indexes.default}[layer]
+    if source == "ops":
+        return {"default": cfg.ops.indexes.default}[layer]
     raise ValueError(f"Unknown source: {source}")
 
 
@@ -1215,7 +1222,36 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config(args.config)
     secrets = load_secrets(args.config)
     _setup_log(cfg.worker.log_level, log_dir=cfg.worker.log_dir)
+    return _dispatch_with_ops(args, cfg, secrets)
 
+
+# Verbs that aren't a pipeline "run" — pure read-only status checks that would
+# only add noise to prism.ops (healthcheck fires on every systemd ExecStartPre).
+_OPS_SKIP_VERBS = {"healthcheck", "budget"}
+
+
+def _dispatch_with_ops(args, cfg, secrets) -> int:
+    """Wrap the verb dispatch with prism.ops run telemetry (P4.2): a
+    started→finished/failed doc per invocation, including systemd-driven steps.
+    Best-effort — a telemetry failure never changes the verb's outcome."""
+    from . import ops
+    handle = (
+        None if args.verb in _OPS_SKIP_VERBS
+        else ops.run_start(cfg, secrets, args.verb)
+    )
+    try:
+        rc = _dispatch_verb(args, cfg, secrets)
+    except Exception as exc:
+        ops.run_finish(cfg, secrets, handle, status="failed", error=str(exc))
+        raise
+    ops.run_finish(
+        cfg, secrets, handle,
+        status="finished" if rc == 0 else "failed", rc=rc,
+    )
+    return rc
+
+
+def _dispatch_verb(args, cfg, secrets) -> int:
     if args.verb == "healthcheck":
         raw_scope = (args.scope or "all").strip().lower()
         scopes = None if raw_scope == "all" else [s.strip() for s in raw_scope.split(",") if s.strip()]

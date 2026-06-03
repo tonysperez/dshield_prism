@@ -1,0 +1,83 @@
+"""prism.ops — per-run pipeline telemetry (P4.2).
+
+Each tracked CLI verb writes a ``started`` doc on entry and patches it to
+``finished``/``failed`` on exit, so operators and the console (P4.3) can see
+what ran, when, how long, and whether it failed — including the systemd-driven
+forward/backward steps, each of which is its own verb process.
+
+Best-effort by design: a telemetry failure must never affect the verb it
+observes, so every entry point swallows exceptions and returns/does nothing on
+error. Skips silently when the ``prism.ops`` index doesn't exist yet (deploys
+that haven't run ``init-indexes --source ops``) — no auto-create.
+"""
+from __future__ import annotations
+
+import logging
+import socket
+import time
+import uuid
+from datetime import datetime, timezone
+from typing import Optional
+
+from .config import AppConfig, Secrets
+
+log = logging.getLogger(__name__)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def run_start(cfg: AppConfig, secrets: Secrets, verb: str) -> Optional[dict]:
+    """Write a ``started`` ops doc and return a handle for `run_finish`.
+
+    Returns ``None`` (a no-op handle) on any failure or when the index is
+    absent — never raises.
+    """
+    try:
+        from .es_client import make_client
+        es = make_client(cfg.elasticsearch, secrets)
+        idx = cfg.ops.indexes.default
+        if not es.indices.exists(index=idx):
+            return None
+        run_id = str(uuid.uuid4())
+        es.index(index=idx, id=run_id, document={
+            "kind":       "verb_run",
+            "run_id":     run_id,
+            "verb":       verb,
+            "host":       socket.gethostname(),
+            "status":     "started",
+            "started_at": _now_iso(),
+        })
+        return {"es": es, "index": idx, "run_id": run_id, "t0": time.monotonic()}
+    except Exception as exc:  # noqa: BLE001 — telemetry must never break the verb
+        log.debug("ops run_start(%s) failed: %s", verb, exc)
+        return None
+
+
+def run_finish(
+    cfg: AppConfig,
+    secrets: Secrets,
+    handle: Optional[dict],
+    *,
+    status: str,
+    rc: Optional[int] = None,
+    error: Optional[str] = None,
+) -> None:
+    """Patch the started doc to ``finished``/``failed`` with timing. No-op on a
+    ``None`` handle. Best-effort, never raises."""
+    if not handle:
+        return
+    try:
+        doc: dict = {
+            "status":      status,
+            "finished_at": _now_iso(),
+            "duration_s":  round(time.monotonic() - handle["t0"], 3),
+        }
+        if rc is not None:
+            doc["rc"] = int(rc)
+        if error:
+            doc["error"] = error[:2000]
+        handle["es"].update(index=handle["index"], id=handle["run_id"], doc=doc)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("ops run_finish failed: %s", exc)

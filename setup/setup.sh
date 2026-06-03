@@ -534,6 +534,10 @@ if (( RUN_INIT_INDEX )); then
     # the `track lifecycles` verb upserts into every backward pass.
     log "Initializing lifecycle indexes (playbook / campaign / source_ip)"
     ( cd "${INSTALL_DIR}" && run_cli init-indexes --update-mapping --source lifecycle )
+    # Run telemetry (P4.2) — tracked verbs write started→finished/failed docs
+    # here; the writer skips silently until this exists.
+    log "Initializing ops index (prism.ops — run telemetry)"
+    ( cd "${INSTALL_DIR}" && run_cli init-indexes --update-mapping --source ops )
 else
     warn "Skipping init-indexes (--skip-init-index)"
 fi

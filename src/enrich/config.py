@@ -855,6 +855,18 @@ class MetricsConfig(BaseModel):
     indexes: MetricsIndexes = Field(default_factory=MetricsIndexes)
 
 
+class OpsIndexes(BaseModel):
+    """Per-run pipeline-telemetry index (P4.2)."""
+    default: str = "prism.ops"
+
+
+class OpsConfig(BaseModel):
+    """Run-telemetry writer. Each tracked CLI verb writes a started→
+    finished/failed doc to `indexes.default`. Best-effort; the writer skips
+    silently when the index is absent."""
+    indexes: OpsIndexes = Field(default_factory=OpsIndexes)
+
+
 class AnalystRuleConfig(BaseModel):
     """Analyst-authored artifact extraction rules (ROADMAP #5).
 
@@ -895,6 +907,7 @@ class AppConfig(BaseModel):
     command_shape_dedup: ShapeDedupConfig = Field(default_factory=ShapeDedupConfig)
     analyst: AnalystRuleConfig = Field(default_factory=AnalystRuleConfig)
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
+    ops: OpsConfig = Field(default_factory=OpsConfig)
 
 
 class Secrets(BaseSettings):
