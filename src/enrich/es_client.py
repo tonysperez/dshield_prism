@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Any, Optional
 
 from elasticsearch import Elasticsearch, helpers
 
@@ -100,3 +101,41 @@ def bulk_write(es: Elasticsearch, index: str, actions: list[dict]) -> tuple[int,
         stats_only=False,
     )
     return success, errors
+
+
+def deep_get(d: Optional[dict], dotted_path: str) -> Any:
+    """Walk a dotted path through nested dicts; None if any hop is missing."""
+    cur: Any = d
+    for key in dotted_path.split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+
+def fetch_source_subset(
+    es: Elasticsearch,
+    index: str,
+    ids: list[str],
+    source_paths: list[str],
+    chunk_size: int = 1000,
+) -> dict[str, dict]:
+    """Return ``{doc_id: _source pruned to source_paths}`` for found docs only.
+
+    A chunked ``mget`` with a ``_source`` filter. Use it for read-modify-write
+    rollups that must preserve a cross-writer sub-block — e.g. cluster ids a
+    later pipeline step stamps onto the rollup doc — across a full-document
+    re-index. Tolerates a missing index (returns ``{}`` rather than raising).
+    """
+    if not ids:
+        return {}
+    if not es.indices.exists(index=index):
+        return {}
+    out: dict[str, dict] = {}
+    for start in range(0, len(ids), chunk_size):
+        chunk = ids[start:start + chunk_size]
+        resp = es.mget(index=index, ids=chunk, _source=source_paths)
+        for d in resp.get("docs", []):
+            if d.get("found") and d.get("_source"):
+                out[d["_id"]] = d["_source"]
+    return out

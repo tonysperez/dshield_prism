@@ -25,7 +25,7 @@ from elasticsearch import Elasticsearch
 from ...cache import StateDB
 from ...config import AppConfig, IPConfig, Secrets
 from ...data.hassh_known import lookup as _lookup_hassh_known
-from ...es_client import bulk_write, init_index, make_client
+from ...es_client import bulk_write, deep_get, fetch_source_subset, init_index, make_client
 from .sessions import _mean_pool, _summarize_intents
 
 log = logging.getLogger(__name__)
@@ -33,6 +33,11 @@ log = logging.getLogger(__name__)
 _IP_WATERMARK_KEY = "ip_rollup_last_processed_at"
 _IPS_MAPPING = "setup/es-mappings/cowrie/ips.json"
 _IP_CLUSTERS_MAPPING = "setup/es-mappings/cowrie/ip_clusters.json"
+
+# Cross-writer sub-block: stamped onto the rollup doc by the backward
+# `cluster ips` step (`_IP_CLUSTER_UPDATE_SCRIPT`), preserved across the
+# forward rollup's full-document re-index.
+_IP_CLUSTER_FIELD = "dshield.cowrie.enrichment.ip.cluster"
 
 _IP_CLUSTER_UPDATE_SCRIPT = (
     "if (ctx._source.dshield == null) { ctx._source.dshield = [:]; }"
@@ -348,6 +353,23 @@ def _build_ip_doc(
     }
 
 
+def _preserve_ip_cluster(doc: dict, old_source: Optional[dict]) -> bool:
+    """Graft the cross-writer `ip.cluster` sub-block from a prior rollup doc
+    (`old_source`, as returned by `fetch_source_subset`) onto a freshly built
+    `doc`, in place. The block is written by the backward `cluster ips` step,
+    not this rollup, so a full-document re-index would otherwise drop it.
+    Returns True when a block was preserved.
+    """
+    old_cluster = deep_get(old_source, _IP_CLUSTER_FIELD)
+    if not old_cluster:
+        return False
+    ip_block = deep_get(doc, "dshield.cowrie.enrichment.ip")
+    if not isinstance(ip_block, dict):
+        return False
+    ip_block["cluster"] = old_cluster
+    return True
+
+
 def run_rollup(
     cfg: AppConfig,
     secrets: Secrets,
@@ -385,6 +407,15 @@ def run_rollup(
 
     init_index(es, _IPS_MAPPING, ips_idx)
 
+    # The per-IP `cluster` sub-block is written by the backward `cluster ips`
+    # step, not by this rollup. Since we re-index the whole doc (full replace),
+    # fetch the existing block for every affected IP and graft it back on —
+    # otherwise an incremental forward roll-up of an active IP silently wipes
+    # its cluster association until the next backward run re-clusters it.
+    preserved = fetch_source_subset(
+        es, ips_idx, affected_ips, [_IP_CLUSTER_FIELD]
+    )
+
     stats: dict = defaultdict(int)
     actions: list[dict] = []
 
@@ -398,6 +429,9 @@ def run_rollup(
         ip_block = doc.get("dshield", {}).get("cowrie", {}).get("enrichment", {}).get("ip", {})
         if ip_block.get("embedding"):
             stats["ips_with_embedding"] += 1
+
+        if _preserve_ip_cluster(doc, preserved.get(ip)):
+            stats["ips_cluster_preserved"] += 1
 
         actions.append({"_op_type": "index", "_id": ip, "_source": doc})
         stats["ips_built"] += 1
