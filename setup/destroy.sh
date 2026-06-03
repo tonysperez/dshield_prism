@@ -14,8 +14,12 @@
 # Removes:
 #   - systemd timers + services (stopped, disabled, unit files deleted),
 #     including dshield_prism-console.service
-#   - ES processed indices (cowrie/intel/findings layers)
-#   - ES ingest pipelines (prism.cowrie.session, dshield.webhoneypot)
+#   - EVERY project index except the raw data stream — discovered dynamically
+#     (all prism.* + lifecycle-* indices, minus prism.raw.*), so the wipe can't
+#     drift as new layers ship
+#   - ES ingest pipelines — discovered dynamically (every prism.* pipeline,
+#     incl. per-sensor wrappers prism.cowrie.session.<sensor>, + the legacy
+#     dshield.webhoneypot)
 #   - SQLite cache + watermark + intel cache files (the state dir contents)
 #   - the install dir (/opt/dshield_prism by default) — this also drops
 #     the console venv at /opt/dshield_prism/console/.venv
@@ -131,8 +135,8 @@ echo "${RED}destroy.sh${RESET} — about to remove:"
 (( DO_SYSTEMD )) && echo "  - systemd timers + services + unit files"
 if (( DO_ES )); then
     if [[ -x "${INSTALL_DIR}/.venv/bin/python" ]]; then
-        echo "  - ES processed indices (cowrie/intel/findings)"
-        echo "  - ES ingest pipelines (prism.cowrie.session, dshield.webhoneypot)"
+        echo "  - every project index EXCEPT raw (all prism.*/lifecycle-*, discovered dynamically)"
+        echo "  - every project ingest pipeline (prism.*, incl. per-sensor wrappers; + dshield.webhoneypot)"
         if (( PURGE_RAW_LOGS )); then
             echo "  ${RED}- ES raw cowrie data stream (prism.raw.cowrie.session)${RESET}"
             echo "  ${RED}- ES index template (prism.raw)${RESET}"
@@ -214,83 +218,97 @@ es = make_client(cfg.elasticsearch, sec)
 
 purge_raw = os.environ.get("PURGE_RAW_LOGS") == "1"
 
-# Indices: every processed layer across every source. The raw cowrie
-# index name is derived from cfg.elasticsearch.indexes.cowrie.sessions_raw
-# and is NOT in this list — it's handled separately below so the order
-# (data stream BEFORE template) is correct when --purge-raw-logs fires.
-indices = [
-    cfg.elasticsearch.indexes.cowrie.commands,
-    cfg.elasticsearch.indexes.cowrie.command_clusters,
-    cfg.elasticsearch.indexes.cowrie.sessions_rollup,
-    cfg.elasticsearch.indexes.cowrie.session_clusters,
-    cfg.elasticsearch.indexes.cowrie.ips_rollup,
-    cfg.elasticsearch.indexes.cowrie.ip_clusters,
-    cfg.elasticsearch.indexes.cowrie.campaigns,
-    cfg.intel.indexes.ip,
-    cfg.intel.indexes.url,
-    cfg.intel.indexes.domain,
-    cfg.intel.indexes.hash,
-    cfg.findings.indexes.default,
-]
-for idx in indices:
+
+def _is_raw(name):
+    # Raw source-of-truth lives under prism.raw.* (cowrie + firewall); the
+    # data streams' backing indices are .ds-prism.raw.*. Never deleted unless
+    # --purge-raw-logs. Substring match covers both forms.
+    return "prism.raw" in name
+
+
+# Indices: discovered dynamically so the wipe can't drift as new layers ship.
+# Everything the project owns is prism.* or lifecycle-*; the only thing kept by
+# default is the raw (prism.raw.*). expand_wildcards excludes hidden so the raw
+# data-stream backing (.ds-prism.raw.*) never even enters the candidate set;
+# the _is_raw guard is belt-and-suspenders.
+try:
+    rows = es.cat.indices(index="prism.*,lifecycle-*", format="json", h="index",
+                          expand_wildcards="open,closed")
+    found = sorted(r["index"] for r in rows if r.get("index"))
+except Exception as exc:
+    found = []
+    print(f"  index discovery ERROR: {exc}", file=sys.stderr)
+
+n_deleted = 0
+for idx in found:
+    if _is_raw(idx):
+        print(f"  index skip (raw):  {idx}")
+        continue
     try:
-        if es.indices.exists(index=idx):
-            es.indices.delete(index=idx)
-            print(f"  index deleted: {idx}")
-        else:
-            print(f"  index absent:  {idx}")
+        es.indices.delete(index=idx)
+        print(f"  index deleted: {idx}")
+        n_deleted += 1
     except Exception as exc:
         print(f"  index ERROR:   {idx}: {exc}", file=sys.stderr)
+print(f"  ({n_deleted} processed index(es) deleted, raw left intact)")
 
-# Raw data stream — deleted only with --purge-raw-logs. Must come
-# BEFORE the template delete; ES refuses to drop a template while a
-# data stream still references it.
-raw_ds = cfg.elasticsearch.indexes.cowrie.sessions_raw
+# Raw data streams — deleted only with --purge-raw-logs. Must come BEFORE the
+# template delete; ES refuses to drop a template a data stream still references.
+try:
+    ds = es.indices.get_data_stream(name="prism.raw.*").get("data_streams", [])
+    raw_streams = sorted(d["name"] for d in ds)
+except Exception:
+    raw_streams = []
+raw_label = ", ".join(raw_streams) if raw_streams else "prism.raw.* (none present)"
 if purge_raw:
-    try:
-        es.indices.delete_data_stream(name=raw_ds)
-        print(f"  data stream deleted: {raw_ds}")
-    except Exception as exc:
-        msg = str(exc)
-        if "404" in msg or "missing" in msg.lower() or "not found" in msg.lower():
-            print(f"  data stream absent:  {raw_ds}")
-        else:
+    for raw_ds in raw_streams:
+        try:
+            es.indices.delete_data_stream(name=raw_ds)
+            print(f"  data stream deleted: {raw_ds}")
+        except Exception as exc:
             print(f"  data stream ERROR:   {raw_ds}: {exc}", file=sys.stderr)
 else:
-    print(f"  data stream skip:    {raw_ds} (preserved; pass --purge-raw-logs to delete)")
+    print(f"  data stream skip:    {raw_label} (preserved; --purge-raw-logs to delete)")
 
-# Ingest pipelines from setup/es-pipelines/. Add to this list as new
-# pipelines land.
-for pip in ["prism.cowrie.session", "dshield.webhoneypot"]:
+# Ingest pipelines: discover the project's (prism.* incl. per-sensor wrappers,
+# plus the legacy dshield.webhoneypot) rather than a hardcoded list. Fleet /
+# system pipelines (1000s of them) are left untouched.
+try:
+    proj_pipes = sorted(
+        p for p in es.ingest.get_pipeline()
+        if p.startswith("prism.") or p == "dshield.webhoneypot"
+    )
+except Exception as exc:
+    proj_pipes = []
+    print(f"  pipeline discovery ERROR: {exc}", file=sys.stderr)
+for pip in proj_pipes:
     try:
         es.ingest.delete_pipeline(id=pip)
         print(f"  pipeline deleted: {pip}")
     except Exception as exc:
-        msg = str(exc)
-        if "404" in msg or "missing" in msg.lower() or "not found" in msg.lower():
-            print(f"  pipeline absent:  {pip}")
-        else:
-            print(f"  pipeline ERROR:   {pip}: {exc}", file=sys.stderr)
+        print(f"  pipeline ERROR:   {pip}: {exc}", file=sys.stderr)
+if not proj_pipes:
+    print("  pipelines: none matching prism.* / dshield.webhoneypot")
 
-# Index template — only deletable once the data stream that uses it is
-# gone. So we only touch it when --purge-raw-logs is set.
+# Index template — only deletable once the data stream that uses it is gone, so
+# only with --purge-raw-logs.
 if purge_raw:
     try:
         es.indices.delete_index_template(name="prism.raw")
-        print(f"  template deleted: prism.raw")
+        print("  template deleted: prism.raw")
     except Exception as exc:
-        msg = str(exc)
-        if "404" in msg or "missing" in msg.lower() or "not found" in msg.lower():
-            print(f"  template absent:  prism.raw")
+        msg = str(exc).lower()
+        if "404" in msg or "missing" in msg or "not found" in msg:
+            print("  template absent:  prism.raw")
         else:
             print(f"  template ERROR:   prism.raw: {exc}", file=sys.stderr)
 else:
-    print(f"  template skip:    prism.raw (in use by preserved data stream)")
+    print("  template skip:    prism.raw (in use by preserved data stream)")
 
 if purge_raw:
-    print(f"\n  EVERYTHING in ES is gone — no project artifacts remain.")
+    print("\n  EVERYTHING in ES is gone — no project artifacts remain.")
 else:
-    print(f"\n  PRESERVED raw: {raw_ds} (+ prism.raw template)")
+    print(f"\n  PRESERVED raw: {raw_label} (+ prism.raw template)")
 PYEOF
     fi
 fi
