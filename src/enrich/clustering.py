@@ -793,6 +793,7 @@ def run_layer_clustering(
     cluster_fn: Optional[Callable[..., tuple["np.ndarray", Optional["np.ndarray"]]]] = None,
     fusion_max_docs: Optional[int] = None,
     accept_fallback: bool = False,
+    window_days: Optional[int] = None,
 ) -> dict:
     """Generic HDBSCAN pipeline for one layer (commands / sessions / IPs / future).
 
@@ -858,7 +859,10 @@ def run_layer_clustering(
             "[%s] Too few docs (%d) for clustering (min_cluster_size=%d); skipping",
             layer_label, n_docs, min_cluster_size,
         )
-        return {"docs_fetched": n_docs, "status": "skipped_too_few", "dry_run": dry_run}
+        return {
+            "docs_fetched": n_docs, "status": "skipped_too_few",
+            "window_days": int(window_days or 0), "dry_run": dry_run,
+        }
 
     matrix = np.array(embeddings_list, dtype=np.float32)
     del embeddings_list
@@ -1217,6 +1221,12 @@ def run_layer_clustering(
             "n_clusters": n_clusters,
             "n_outliers": n_outliers,
             "n_rescued": n_rescued,
+            # P1.2 — 0 = all-time (full corpus); >0 = the run only saw sessions
+            # from the last N days. The lifecycle tracker reads this off the
+            # latest run_summary to decide whether a playbook's absence means
+            # "gone from the corpus" (full run) or just "no recent sessions"
+            # (windowed run) — only the former advances silent-run accounting.
+            "window_days": int(window_days or 0),
             "runtime_seconds": round(time.monotonic() - t_start, 2),
             # Effective clustering config this run used — lets a deploy be
             # verified from ES alone (e.g. "did the latest command run cluster
@@ -1305,6 +1315,7 @@ def run_layer_clustering(
         "n_clusters": n_clusters,
         "n_outliers": n_outliers,
         "n_rescued": n_rescued,
+        "window_days": int(window_days or 0),
         "dry_run": dry_run,
         "reference_status": reference_status,
         "reference_generation": reference_generation,

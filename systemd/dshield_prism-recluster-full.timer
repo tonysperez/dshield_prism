@@ -1,0 +1,17 @@
+[Unit]
+Description=Weekly full DShield Prism session re-cluster (refresh reference + re-pool long tail)
+Requires=dshield_prism-recluster-full.service
+
+[Timer]
+# Once a week, Monday 03:30 UTC — off the 6h backward cadence (00/06/12/18) so
+# the full pass doesn't queue directly behind a windowed run. flock serialises
+# them if they do overlap.
+OnCalendar=Mon *-*-* 03:30:00
+# Stagger across nodes so they don't all re-mint the reference at once.
+RandomizedDelaySec=600
+# Catch up one missed run if the box was down across the firing.
+Persistent=true
+Unit=dshield_prism-recluster-full.service
+
+[Install]
+WantedBy=timers.target

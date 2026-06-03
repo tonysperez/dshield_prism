@@ -494,6 +494,40 @@ def retire_silent_lifecycles(
 # Orchestrator
 # ---------------------------------------------------------------------------
 
+def _latest_session_cluster_window_days(
+    es: Elasticsearch, session_clusters_idx: str
+) -> int:
+    """`window_days` from the most recent session-cluster `run_summary` (P1.2).
+
+    0 = the latest `cluster sessions` run was full-corpus (all-time); >0 = it
+    was windowed to that many days. The playbook silence accounting keys on
+    this: a playbook absent from a *windowed* run only means "no sessions in
+    the last N days", not "gone from the corpus", so windowed runs must NOT
+    advance `silent_runs_current` — otherwise the entire >Nd-dormant long tail
+    would be marked resurged (and eventually retired) at every weekly full
+    pass. Absent index / no run_summary / pre-P1.2 docs without the field → 0
+    (treat as full: the historical bump-every-run behaviour, which is safe on
+    an append-only corpus where a full run always re-sees every playbook).
+    """
+    if not es.indices.exists(index=session_clusters_idx):
+        return 0
+    try:
+        resp = es.search(
+            index=session_clusters_idx,
+            size=1,
+            query={"term": {"doc_type": "run_summary"}},
+            sort=[{"@timestamp": "desc"}],
+            _source=["window_days"],
+        )
+    except Exception as exc:
+        log.warning("[lifecycle] could not read latest run_summary window_days: %s", exc)
+        return 0
+    hits = resp["hits"]["hits"]
+    if not hits:
+        return 0
+    return int(hits[0]["_source"].get("window_days") or 0)
+
+
 def _iter_current_playbooks(
     es: Elasticsearch, session_clusters_idx: str, sessions_idx: str
 ) -> Iterable[dict]:
@@ -904,7 +938,21 @@ def run_track_lifecycles(cfg, secrets, *, dry_run: bool = False) -> dict:
             ]))
         except Exception:
             pass
-        stats["playbook"]["silent_bumped"]  = increment_silent_runs(es, f_idx.playbook_lifecycle,  current_run_id=run_id)
+        # P1.2 — a playbook absent from a *windowed* session-cluster run only
+        # means "no sessions in the last N days", not "gone from the corpus".
+        # Bumping silence on windowed runs would push the whole >Nd-dormant
+        # long tail past `resurgence_silent_runs` (and eventually
+        # `retire_silent_runs_playbook`) and then mark them all resurged at
+        # every weekly full pass. So playbook silence advances ONLY when the
+        # latest run was full-corpus (window_days == 0); the weekly full
+        # re-cluster is what establishes true absence. Campaign / source-IP
+        # layers are not windowed, so they bump as before.
+        pb_window_days = _latest_session_cluster_window_days(es, cowrie_idx.session_clusters)
+        if pb_window_days > 0:
+            stats["playbook"]["silent_bumped"] = 0
+            stats["playbook"]["silent_skipped_windowed"] = pb_window_days
+        else:
+            stats["playbook"]["silent_bumped"] = increment_silent_runs(es, f_idx.playbook_lifecycle, current_run_id=run_id)
         stats["campaign"]["silent_bumped"] = increment_silent_runs(es, f_idx.campaign_lifecycle, current_run_id=run_id)
         stats["source_ip"]["silent_bumped"] = increment_silent_runs(es, f_idx.source_ip_lifecycle, current_run_id=run_id)
 

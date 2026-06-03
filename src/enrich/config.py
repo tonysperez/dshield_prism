@@ -304,6 +304,22 @@ class SessionConfig(BaseModel):
     # values (200+) start fitting per-corpus noise. Ignored when
     # clustering_mode == "hdbscan".
     cluster_lexical_features_dim: int = 100
+    # Scale-hardening P1.2 — windowed clustering (D1 hybrid). When > 0,
+    # `cluster sessions` only pulls command-bearing sessions whose `@timestamp`
+    # is within the last N days, instead of scanning the entire rollup every
+    # backward cycle (the dominant clustering cost at scale). 0 reverts to the
+    # historical all-time behaviour. Identity stays stable under windowing
+    # because playbook `spb-` ids match by centroid cosine to the pinned anchor
+    # and per-doc novelty scores against the frozen `reference_centroid` set,
+    # not this run's centroids — a window that re-derives the same centroid
+    # re-matches the same playbook. Sessions older than the window keep their
+    # last-assigned `cluster.id`. Default 30 (on): the 6h backward cycle
+    # windows; a slower weekly full re-cluster
+    # (`cluster sessions --window-days 0 --refresh-reference`, shipped as the
+    # `dshield_prism-recluster-full` timer) refreshes the reference and
+    # re-pools the long tail. The CLI `--window-days` flag overrides this
+    # per-run (pass 0 to force a full run).
+    cluster_window_days: int = 30
 
 
 class IPConfig(BaseModel):

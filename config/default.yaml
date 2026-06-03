@@ -303,6 +303,14 @@ session:
   # E0.2 ablation baseline that has carried through every subsequent
   # sweep. Ignored when `clustering_mode == "hdbscan"`.
   cluster_lexical_features_dim: 100
+  # Scale-hardening P1.2 — windowed session clustering (D1 hybrid). The 6h
+  # backward cycle re-clusters only sessions from the last N days instead of
+  # the whole all-time rollup. 0 = all-time (legacy). Identity stays stable:
+  # playbook ids re-match by centroid anchor, novelty scores against the frozen
+  # reference_centroid set. The slower weekly full re-cluster
+  # (`dshield_prism-recluster-full` timer: `cluster sessions --window-days 0
+  # --refresh-reference`) refreshes the reference and re-pools the long tail.
+  cluster_window_days: 30
 
 # IP-level rollup + clustering.
 ip:

@@ -42,8 +42,14 @@
 #            + escalate + name playbooks + name ip-clusters
 #            + mine campaigns + track lifecycles + intel refresh
 #            + mine findings
-#            (every 6h; full-corpus backward pass)
-#        Both timers serialise on /var/lib/dshield_prism/.lock via flock.
+#            (every 6h; `cluster sessions` windows to the last 30 days
+#             per session.cluster_window_days — P1.2)
+#        dshield_prism-recluster-full.timer
+#          → weekly full `cluster sessions --window-days 0
+#            --refresh-reference` + prune-clusters (re-pools the long tail
+#            and refreshes the reference_centroid set the windowed 6h runs
+#            score against)
+#        All timers serialise on /var/lib/dshield_prism/.lock via flock.
 #        `mine findings` is inlined into the backward chain so it always
 #        runs after `name playbooks` — the legacy
 #        dshield_prism-mine-findings.{service,timer} are removed by this
@@ -202,6 +208,8 @@ REQUIRED_FILES=(
     "${SRC_DIR}/systemd/dshield_prism-forward.timer"
     "${SRC_DIR}/systemd/dshield_prism-backward.service"
     "${SRC_DIR}/systemd/dshield_prism-backward.timer"
+    "${SRC_DIR}/systemd/dshield_prism-recluster-full.service"
+    "${SRC_DIR}/systemd/dshield_prism-recluster-full.timer"
 )
 for required in "${REQUIRED_FILES[@]}"; do
     [[ -f "${required}" ]] || die "Missing source file: ${required}"
@@ -586,6 +594,8 @@ if (( INSTALL_SYSTEMD )); then
         dshield_prism-forward.timer
         dshield_prism-backward.service
         dshield_prism-backward.timer
+        dshield_prism-recluster-full.service
+        dshield_prism-recluster-full.timer
     )
     if (( INSTALL_CONSOLE )); then
         UNITS+=(dshield_prism-console.service)
@@ -618,9 +628,11 @@ if (( INSTALL_SYSTEMD )); then
 
     systemctl enable --now dshield_prism-forward.timer
     systemctl enable --now dshield_prism-backward.timer
+    systemctl enable --now dshield_prism-recluster-full.timer
     if (( UNITS_CHANGED )); then
         systemctl restart dshield_prism-forward.timer
         systemctl restart dshield_prism-backward.timer
+        systemctl restart dshield_prism-recluster-full.timer
     fi
 
     if (( INSTALL_CONSOLE )); then

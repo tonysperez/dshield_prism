@@ -47,6 +47,11 @@ ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/
 # cluster commands is required (every downstream step depends on its
 # novelty output); sessions/ips are `-` so a transient failure logs but
 # doesn't abort the chain.
+# `cluster sessions` honours session.cluster_window_days (default 30), so this
+# 6h pass windows to the last 30 days of sessions (P1.2) instead of the whole
+# rollup. The weekly `dshield_prism-recluster-full` timer does the full
+# `--window-days 0 --refresh-reference` pass that refreshes the reference and
+# re-pools the long tail.
 ExecStart=/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml cluster commands
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml cluster sessions
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml cluster ips

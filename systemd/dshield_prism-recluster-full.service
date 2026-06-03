@@ -1,0 +1,40 @@
+[Unit]
+Description=DShield Prism weekly full session re-cluster — refresh reference + re-pool the long tail (P1.2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=dshield_prism
+Group=dshield_prism
+WorkingDirectory=/opt/dshield_prism
+EnvironmentFile=/opt/dshield_prism/.env
+
+# The 6h backward pass windows `cluster sessions` to the last
+# session.cluster_window_days (default 30) days. That keeps the per-cycle cost
+# bounded but never re-pools sessions older than the window and lets the frozen
+# reference_centroid set age. This weekly unit does the other half of the D1
+# hybrid: a single all-time `cluster sessions` with --refresh-reference so
+#   * every command-bearing session (not just the last 30d) gets a current
+#     cluster.id, and
+#   * the reference_centroid set is re-minted from the full corpus, keeping
+#     per-doc novelty calibrated (otherwise it warns past
+#     session.reference_max_age_days and drifts).
+# Identity is preserved: playbook ids re-match by centroid anchor, so this does
+# not churn spb- ids or playbook names.
+
+# Mutex with forward/backward — flock blocks (no -n) so this waits for an
+# in-flight pass rather than colliding on the cache / cluster index.
+ExecStartPre=/usr/bin/flock /var/lib/dshield_prism/.lock /bin/true
+
+# `--window-days 0` overrides the config window to force a full corpus pass;
+# `--refresh-reference` re-mints the reference_centroid generation from it.
+# Non-`-`: if this fails the unit is marked failed (so the operator notices the
+# reference isn't being refreshed), but it is a standalone unit so nothing else
+# is aborted.
+ExecStart=/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml cluster sessions --window-days 0 --refresh-reference
+
+# Cap the cluster index after the full run appends a fresh (larger) centroid
+# set + run_summary — keeps the newest K runs, preserves every
+# reference_centroid generation (P2.1).
+ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml prune-clusters

@@ -1423,10 +1423,34 @@ def run_rollup(
 # Cluster sessions
 # ---------------------------------------------------------------------------
 
+def _session_cluster_query(window_days: Optional[int]) -> dict:
+    """ES query for the session-cluster iterators.
+
+    Always requires the session embedding to exist. Scale-hardening P1.2:
+    when ``window_days`` is truthy (> 0), additionally scope to sessions whose
+    ``@timestamp`` is within the last N days so the backward cycle clusters a
+    rolling window instead of the whole all-time rollup. ``None``/0 reproduces
+    the historical all-time query.
+    """
+    base = "dshield.cowrie.enrichment.session"
+    exists = {"exists": {"field": f"{base}.embedding"}}
+    if window_days and window_days > 0:
+        return {
+            "bool": {
+                "filter": [
+                    exists,
+                    {"range": {"@timestamp": {"gte": f"now-{int(window_days)}d/d"}}},
+                ]
+            }
+        }
+    return exists
+
+
 def iter_session_docs_with_text(
     es: Elasticsearch,
     index: str,
     page_size: int = 1000,
+    window_days: Optional[int] = None,
 ) -> Iterator[tuple[str, list[float], str, dict, str]]:
     """Yield (doc_id, embedding, session_id, scalars, command_stream_text).
 
@@ -1442,6 +1466,9 @@ def iter_session_docs_with_text(
     gracefully; backfill via
     ``scripts/backfill_command_stream_text.py`` to populate older
     rollups.
+
+    ``window_days`` (P1.2): when > 0, only sessions with a recent
+    ``@timestamp`` are yielded (see ``_session_cluster_query``).
     """
     base = "dshield.cowrie.enrichment.session"
     body: dict = {
@@ -1456,7 +1483,7 @@ def iter_session_docs_with_text(
             f"{base}.command_stream_text",
             "cowrie.session_id",
         ],
-        "query": {"exists": {"field": f"{base}.embedding"}},
+        "query": _session_cluster_query(window_days),
         "sort": [{"@timestamp": "asc"}, {"_doc": "asc"}],
     }
     search_after = None
@@ -1496,8 +1523,13 @@ def iter_session_docs(
     es: Elasticsearch,
     index: str,
     page_size: int = 1000,
+    window_days: Optional[int] = None,
 ) -> Iterator[tuple[str, list[float], str, dict]]:
-    """Yield (doc_id, embedding, session_id, scalars)."""
+    """Yield (doc_id, embedding, session_id, scalars).
+
+    ``window_days`` (P1.2): when > 0, only sessions with a recent
+    ``@timestamp`` are yielded (see ``_session_cluster_query``).
+    """
     body: dict = {
         "size": page_size,
         "_source": [
@@ -1509,7 +1541,7 @@ def iter_session_docs(
             "dshield.cowrie.enrichment.session.mean_novelty_score",
             "cowrie.session_id",
         ],
-        "query": {"exists": {"field": "dshield.cowrie.enrichment.session.embedding"}},
+        "query": _session_cluster_query(window_days),
         "sort": [{"@timestamp": "asc"}, {"_doc": "asc"}],
     }
     search_after = None
@@ -1813,6 +1845,7 @@ def run_cluster(
     use_reference: bool = True,
     bootstrap_from: Optional[str] = None,
     accept_fallback: bool = False,
+    window_days: Optional[int] = None,
 ) -> dict:
     """HDBSCAN over session embeddings. Delegates to clustering core.
 
@@ -1822,6 +1855,13 @@ def run_cluster(
     external reference generation tagged ``reference_source="external"``.
     The 5.5 dual-novelty writer reads those centroids alongside the
     in-corpus ref to populate ``novelty_score_external``.
+
+    ``window_days`` (scale-hardening P1.2): when > 0, cluster only the
+    command-bearing sessions whose ``@timestamp`` is within the last N days
+    instead of the all-time rollup. ``None`` falls back to
+    ``session.cluster_window_days`` (default 0 = all-time). Pass 0 to force a
+    full re-cluster regardless of config. Ignored on the external-bootstrap
+    path (synthetic reference sessions have no meaningful recency).
     """
     from ...clustering import run_layer_clustering
     es = make_client(cfg.elasticsearch, secrets)
@@ -1875,12 +1915,29 @@ def run_cluster(
     #   embedding-only pass are surfaced via outlier_flags_override so
     #   downstream (novelty / rescue / outlier_burst) semantics stay
     #   identical.
+    # P1.2 — resolve the clustering window. CLI override (window_days) wins;
+    # else the config default. Forced off for the external bootstrap (synthetic
+    # sessions have no recency to window on).
+    effective_window = (
+        window_days if window_days is not None else scfg.cluster_window_days
+    )
+    if is_external_bootstrap:
+        effective_window = 0
+    if effective_window and effective_window > 0:
+        log.info(
+            "[%s] windowed clustering: last %d days (session.cluster_window_days; "
+            "pass --window-days 0 for a full re-cluster)",
+            layer_label, effective_window,
+        )
+
     cluster_fn = None
-    docs_iter_for_core = iter_session_docs(es, sessions_idx, scfg.page_size)
+    docs_iter_for_core = iter_session_docs(
+        es, sessions_idx, scfg.page_size, window_days=effective_window,
+    )
     if scfg.clustering_mode == "late_fusion":
         from ...clustering import compute_lexical_features, fusion_cluster_labels
         pre_materialized = list(iter_session_docs_with_text(
-            es, sessions_idx, scfg.page_size,
+            es, sessions_idx, scfg.page_size, window_days=effective_window,
         ))
         session_texts = [t for _, _, _, _, t in pre_materialized]
         docs_iter_for_core = (
@@ -1948,6 +2005,10 @@ def run_cluster(
         # (or fall back to HDBSCAN with --accept-fallback). No-op in hdbscan mode.
         fusion_max_docs=scfg.fusion_max_docs,
         accept_fallback=accept_fallback,
+        # P1.2 — the core stamps this on the run_summary doc (so the lifecycle
+        # tracker can tell a windowed run from a full one) and in the returned
+        # stats / ops doc. 0 = all-time.
+        window_days=effective_window,
     )
 
     # ROADMAP #4: per-cluster IP/command specificity, persisted on the centroid

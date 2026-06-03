@@ -1013,6 +1013,16 @@ def _build_parser() -> argparse.ArgumentParser:
                 "HDBSCAN instead of hard-refusing the O(N^2) fusion path (P1.3)."
             ),
         )
+        cl.add_argument(
+            "--window-days", type=int, default=None,
+            help=(
+                "Session layer only (scale-hardening P1.2): cluster only sessions "
+                "whose @timestamp is within the last N days, instead of the "
+                "all-time rollup. Overrides session.cluster_window_days. Pass 0 "
+                "to force a full re-cluster (use for the weekly full pass). "
+                "Identity stays stable — playbook ids re-match by centroid anchor."
+            ),
+        )
         # ROADMAP P1: stable across-run novelty scoring.
         ref_group = cl.add_mutually_exclusive_group()
         ref_group.add_argument(
@@ -1627,6 +1637,8 @@ def _dispatch_verb(args, cfg, secrets) -> int:
                 if layer == "sessions":
                     # P1.3 — only the session layer has the O(N^2) late-fusion path.
                     kwargs["accept_fallback"] = args.accept_fallback
+                    # P1.2 — windowed session clustering (None = use config default).
+                    kwargs["window_days"] = args.window_days
                 stats = mod.run_cluster(cfg, secrets, **kwargs)
             except (ImportError, RuntimeError) as exc:
                 print(f"[ERROR] cluster {layer}: {exc}", flush=True)
