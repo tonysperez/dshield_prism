@@ -149,6 +149,69 @@ async function loadRuns() {
   body.appendChild(table);
 }
 
+async function loadOpsRuns() {
+  const body = document.getElementById("ops-runs-body");
+  if (!body) return;
+  let data;
+  try {
+    const r = await fetch("/api/health/ops-runs");
+    data = await r.json();
+  } catch (e) {
+    body.innerHTML = "";
+    body.appendChild(el("div", {class: "h-error"}, [`fetch failed: ${e.message}`]));
+    return;
+  }
+  if (data.error) {
+    body.innerHTML = "";
+    body.appendChild(el("div", {class: "h-error"}, [data.error]));
+    return;
+  }
+  body.innerHTML = "";
+
+  const running = data.running || [];
+  if (running.length) {
+    const names = running.map((r) => r.verb).join(", ");
+    body.appendChild(el("div", {class: "h-action-status success",
+      style: "margin-bottom:8px;"},
+      [`in progress: ${names}`]));
+  }
+
+  const rows = data.rows || [];
+  if (!rows.length) {
+    body.appendChild(el("em", {class: "h-empty"},
+      ["no run telemetry yet — enable with `init-indexes --source ops`"]));
+    return;
+  }
+
+  const table = el("table", {class: "h-table"});
+  table.appendChild(el("thead", null, [el("tr", null, [
+    el("th", null, ["Verb"]),
+    el("th", null, ["Status"]),
+    el("th", null, ["Last run"]),
+    el("th", {class: "num"}, ["Duration"]),
+    el("th", null, ["Host"]),
+  ])]));
+  const tbody = el("tbody");
+  const runningVerbs = new Set(running.map((r) => r.verb));
+  for (const r of rows) {
+    const tr = el("tr");
+    tr.appendChild(el("td", {class: "name"}, [r.verb]));
+    // started (in-flight) > failed (amber) > finished.
+    const inFlight = r.status === "started" || runningVerbs.has(r.verb);
+    const statusCell = el("td", null, [inFlight ? "running" : (r.status || "—")]);
+    if (inFlight) statusCell.style.color = "#34d399";
+    else if (r.status === "failed" || (r.rc != null && r.rc !== 0)) statusCell.style.color = "#fbbf24";
+    tr.appendChild(statusCell);
+    tr.appendChild(tsCell(r.started_at, "__ops__"));
+    tr.appendChild(el("td", {class: "num"},
+      [r.duration_s == null ? "—" : `${Number(r.duration_s).toLocaleString()}s`]));
+    tr.appendChild(el("td", {class: "idx"}, [r.host || "—"]));
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  body.appendChild(table);
+}
+
 async function purgeCache() {
   const btn = document.getElementById("cfg-purge-cache");
   const status = document.getElementById("cfg-purge-status");
@@ -245,6 +308,7 @@ async function loadTTPs() {
 document.addEventListener("DOMContentLoaded", () => {
   loadFreshness();
   loadRuns();
+  loadOpsRuns();
   loadTTPs();
   const purgeBtn = document.getElementById("cfg-purge-cache");
   if (purgeBtn) purgeBtn.addEventListener("click", purgeCache);

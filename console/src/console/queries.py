@@ -15,6 +15,7 @@ import hashlib
 import logging
 import re
 import time
+from datetime import datetime, timedelta
 from typing import Any
 
 from elasticsearch import Elasticsearch, NotFoundError
@@ -1557,6 +1558,171 @@ def health_runs(es: Elasticsearch, cfg: AppConfig) -> list[dict]:
         })
         rows.append(row)
     return rows
+
+
+# A `status=started` ops doc is patched in place to finished/failed on normal
+# exit, so one that's still "started" is either a live verb or a crashed one
+# that never got patched. Treat started docs older than this as ghosts, not live
+# runs — generous enough to cover a long enrich/backfill, short enough to clear
+# a crashed-verb ghost within the hour.
+_PIPELINE_RUNNING_WINDOW_MIN = 60
+# Burst detection (the running-banner's stable elapsed). Each pipeline step is
+# its own process, so the "run started at" is the earliest step in the current
+# *contiguous* burst. Continuity is measured finished->started (steps run
+# back-to-back under flock, sub-second apart) — NOT started->started, because a
+# single long step (a backfill `enrich` can be 15 min+) would otherwise look
+# like a gap. Two activity bursts more than this many seconds apart are
+# distinct runs.
+_PIPELINE_BURST_GAP_S = 120
+_PIPELINE_BURST_LOOKBACK_H = 6  # bound the scan; a cycle is minutes, not hours
+
+
+def _current_burst_start(es: Elasticsearch, idx: str) -> str | None:
+    """`started_at` of the earliest step in the current contiguous activity
+    burst — a server-stable "this run started at" the banner can render elapsed
+    from (so it doesn't reset on reload / tab-switch). Walks recent docs newest
+    -> oldest and stops at the first finished->started gap > the burst gap.
+    """
+    try:
+        r = es.search(
+            index=idx, size=300,
+            query={"bool": {"must": [
+                {"term": {"kind": "verb_run"}},
+                {"range": {"started_at": {"gte": f"now-{_PIPELINE_BURST_LOOKBACK_H}h"}}},
+            ]}},
+            sort=[{"started_at": {"order": "desc"}}],
+            _source=["started_at", "finished_at"],
+        )
+        docs = [h["_source"] for h in r["hits"]["hits"]]
+    except Exception:
+        return None
+    if not docs:
+        return None
+
+    def _parse(s):
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            return None
+
+    gap = timedelta(seconds=_PIPELINE_BURST_GAP_S)
+    burst_start = docs[0].get("started_at")
+    earliest = _parse(burst_start)
+    for d in docs[1:]:
+        d_started = _parse(d.get("started_at"))
+        # An in-flight older step has no finished_at — treat its start as its
+        # end for the gap test (it hasn't created a gap yet).
+        d_finished = _parse(d.get("finished_at")) or d_started
+        if earliest is None or d_finished is None:
+            break
+        if earliest - d_finished <= gap:
+            burst_start = d.get("started_at")
+            earliest = d_started
+        else:
+            break
+    return burst_start
+
+
+def _running_ops(es: Elasticsearch, idx: str) -> list[dict]:
+    """`status=started` verb_run docs within the freshness window — the live
+    pipeline steps (P4.3 heartbeat). Newest first. Empty on any failure."""
+    try:
+        r = es.search(
+            index=idx, size=25,
+            query={"bool": {"must": [
+                {"term": {"kind": "verb_run"}},
+                {"term": {"status": "started"}},
+                {"range": {"started_at": {"gte": f"now-{_PIPELINE_RUNNING_WINDOW_MIN}m"}}},
+            ]}},
+            sort=[{"started_at": {"order": "desc"}}],
+            _source=["verb", "host", "started_at"],
+        )
+        return [h["_source"] for h in r["hits"]["hits"]]
+    except Exception:
+        return []
+
+
+def pipeline_running(es: Elasticsearch, cfg: AppConfig) -> dict:
+    """Live pipeline verbs for the global running-banner (P4.3 heartbeat /
+    deferred topbar half of ROADMAP #17.18). Polled site-wide by topbar.js.
+
+    Returns `{"running": [{verb, host, started_at}], "active": bool,
+    "since": <earliest started_at>}`. Empty/inactive when `prism.ops` is
+    absent or no verb has an in-flight `status=started` doc within the
+    freshness window.
+    """
+    out: dict = {"running": [], "active": False, "since": None}
+    idx = cfg.ops.indexes.default
+    try:
+        if not es.indices.exists(index=idx):
+            return out
+    except Exception:
+        return out
+    running = _running_ops(es, idx)
+    out["running"] = running
+    out["active"] = bool(running)
+    if running:
+        # Server-stable run start = the earliest step of the current contiguous
+        # burst (not the current step, which is always ~0s). The banner renders
+        # elapsed from this, so it survives reloads / tab-switches. Fall back to
+        # the oldest in-flight step if the burst scan finds nothing.
+        out["since"] = _current_burst_start(es, idx) or min(
+            r.get("started_at") for r in running if r.get("started_at")
+        )
+    return out
+
+
+def health_ops_runs(es: Elasticsearch, cfg: AppConfig) -> dict:
+    """Per-verb run telemetry from `prism.ops` (P4.3) — the all-verb companion
+    to `health_runs` (which only covers the 3 cluster steps). Surfaces the
+    P4.2 sentinel docs the verbs write so the console can show *every* pipeline
+    step, not just clustering, plus an in-progress heartbeat.
+
+    Returns `{"rows": [...latest run per verb...], "running": [...in-flight...]}`.
+    Each row: `{verb, status, host, started_at, finished_at, duration_s, rc}`.
+    A `running` entry is a `status=started` doc not yet patched to
+    finished/failed. The `prism.ops` index is optional (created by
+    `init-indexes --source ops`); when absent we return empty lists so the
+    panel renders a "no telemetry yet" placeholder instead of erroring.
+    """
+    out: dict = {"rows": [], "running": []}
+    idx = cfg.ops.indexes.default
+    try:
+        if not es.indices.exists(index=idx):
+            return out
+    except Exception:
+        return out
+
+    src_fields = ["verb", "status", "host", "started_at",
+                  "finished_at", "duration_s", "rc"]
+    # Latest run per verb: one terms bucket per verb, newest doc in each.
+    try:
+        r = es.search(
+            index=idx, size=0,
+            query={"term": {"kind": "verb_run"}},
+            aggs={"by_verb": {
+                "terms": {"field": "verb", "size": 100},
+                "aggs": {"latest": {"top_hits": {
+                    "size": 1,
+                    "sort": [{"started_at": {"order": "desc"}}],
+                    "_source": src_fields,
+                }}},
+            }},
+        )
+        buckets = r["aggregations"]["by_verb"]["buckets"]
+        rows = [b["latest"]["hits"]["hits"][0]["_source"] for b in buckets]
+        rows.sort(key=lambda x: x.get("started_at") or "", reverse=True)
+        out["rows"] = rows
+    except Exception:
+        pass
+
+    # In-progress: started but not yet finished/failed, within the freshness
+    # window (the heartbeat) — shared with the global running-banner.
+    out["running"] = _running_ops(es, idx)
+
+    return out
 
 
 # ---------------------------------------------------------------------------

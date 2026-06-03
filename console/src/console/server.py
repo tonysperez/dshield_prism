@@ -956,6 +956,37 @@ def build_app(config_path: str | None = None) -> FastAPI:
         except Exception as e:  # pragma: no cover -- depends on ES state
             return JSONResponse({"rows": [], "error": f"{e.__class__.__name__}: {e}"})
 
+    @app.get("/api/health/ops-runs")
+    def health_ops_runs_api() -> JSONResponse:
+        """Per-verb run telemetry from prism.ops (P4.3): latest run per verb +
+        in-progress steps. Drives the all-verb pipeline-activity panel on
+        /health. Empty lists when the index is absent (telemetry not enabled)."""
+        try:
+            return JSONResponse(queries.health_ops_runs(es, cfg))
+        except Exception as e:  # pragma: no cover -- depends on ES state
+            return JSONResponse({"rows": [], "running": [], "error": f"{e.__class__.__name__}: {e}"})
+
+    @app.get("/api/pipeline/status")
+    def pipeline_status_api() -> JSONResponse:
+        """Live pipeline verbs (prism.ops status=started, age-filtered) for the
+        site-wide running banner — polled by topbar.js on every page (P4.3
+        heartbeat). `{running, active, since}`; inactive when telemetry is off.
+        `no-store` so a reverse proxy / browser never serves a stale poll (that
+        froze the banner between full page loads)."""
+        # This is a high-frequency liveness poll; caching it defeats the point.
+        # Full set so an HTTP/1.0 proxy (Pragma/Expires) and any intermediary
+        # that ignores the URL cache-buster still revalidate every time.
+        no_cache = {
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        }
+        try:
+            return JSONResponse(queries.pipeline_running(es, cfg), headers=no_cache)
+        except Exception as e:  # pragma: no cover -- depends on ES state
+            return JSONResponse({"running": [], "active": False, "since": None,
+                                 "error": f"{e.__class__.__name__}: {e}"}, headers=no_cache)
+
     @app.get("/api/health/ttp-rates")
     def health_ttp_rates_api() -> JSONResponse:
         """Top-N MITRE-technique application rates from the latest

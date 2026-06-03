@@ -127,6 +127,19 @@ class MetricsConfig(BaseModel):
     indexes: MetricsIndexes = MetricsIndexes()
 
 
+class OpsIndexes(BaseModel):
+    """Mirror of the parent OpsIndexes (P4.2)."""
+    default: str = "prism.ops"
+
+
+class OpsConfig(BaseModel):
+    """Slim mirror — the console only reads from prism.ops for the
+    pipeline-activity panel on /health (P4.3). Defaults make the field
+    optional on the deploy side; older configs without an `ops:` block
+    still load (the panel then renders a 'no telemetry yet' hint)."""
+    indexes: OpsIndexes = OpsIndexes()
+
+
 class SessionConfig(BaseModel):
     """Slim mirror — the console only needs the UI-facing knobs. Any
     pipeline-side `session.*` fields not declared here are silently ignored
@@ -145,6 +158,7 @@ class AppConfig(BaseModel):
     findings: FindingsConfig = FindingsConfig()
     metrics: MetricsConfig = MetricsConfig()
     session: SessionConfig = SessionConfig()
+    ops: OpsConfig = OpsConfig()
 
 
 class Secrets(BaseSettings):

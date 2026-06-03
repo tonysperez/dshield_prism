@@ -32,6 +32,10 @@
     </div>
   </header>
 
+  <!-- Site-wide pipeline-running banner (P4.3 heartbeat). Hidden until
+       topbar.js polls /api/pipeline/status and finds a live verb. -->
+  <div id="pipeline-banner" class="pipeline-banner hidden" role="status" aria-live="polite"></div>
+
   {% block content %}{% endblock %}
 
   {% block scripts %}{% endblock %}

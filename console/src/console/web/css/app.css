@@ -49,6 +49,37 @@ body {
 .topbar-row-primary   { padding: 8px 12px; }
 .topbar-row-secondary { padding: 4px 12px 6px; min-height: 22px; }
 .topbar-row-spacer { flex: 1; }
+
+/* Site-wide pipeline-running banner (P4.3 heartbeat) — thin accent strip
+   below the topbar, shown by topbar.js while a verb is in flight. */
+.pipeline-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: #0e1e35;
+  border-bottom: 1px solid #4cc1ff33;
+}
+.pipeline-banner::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 0 #4cc1ff66;
+  animation: pipeline-pulse 1.6s ease-out infinite;
+}
+@keyframes pipeline-pulse {
+  0%   { box-shadow: 0 0 0 0 #4cc1ff66; }
+  70%  { box-shadow: 0 0 0 6px #4cc1ff00; }
+  100% { box-shadow: 0 0 0 0 #4cc1ff00; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pipeline-banner::before { animation: none; }
+}
 .brand { font-weight: 600; letter-spacing: 0.5px; color: var(--accent); }
 .nav-link {
   font-size: 11px; color: var(--accent); font-weight: 600;
