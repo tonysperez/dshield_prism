@@ -350,6 +350,27 @@ class IPConfig(BaseModel):
     # corroborating signal (two IPs with the same client stack lean together,
     # it won't override behaviour). 0 disables. ROADMAP attribution scaffolding.
     cluster_hassh_weight: float = 0.05
+    # Phase K (ADOPTED 2026-06-03) — behaviour-driven IP geometry. When False,
+    # drop the queryable provenance / tool-fingerprint dims (country one-hot +
+    # ASN one-hot + HASSH) from the IP clustering geometry. They are filterable
+    # post-hoc and over-fragment the same behaviour across hosting platforms /
+    # client tools (J + first-K verdicts). Cred-hash + intel stay. Defaults to
+    # False = K geometry (provenance dropped) per the K5 verdict.
+    cluster_attribution_provenance_enabled: bool = False
+    # Phase K Tier 1 — per-IP behaviour sub-block (intent distribution, playbook
+    # distribution, diversity, temporal, volume) from existing rollup fields,
+    # thickening the thin per-command-mean IP embedding so behaviour can carry
+    # the geometry once provenance is dropped. Default True (adopted).
+    cluster_tier1_enabled: bool = True
+    # Phase K Tier 2 — IP-as-bag-of-session-clusters: TF-IDF over each IP's
+    # session-cluster ids → TruncatedSVD(24), fit at cluster time. This is what
+    # re-separated the behaviour-homogeneous reconnaissance population that Tier 1
+    # alone left as a 70%-of-corpus mega-cluster (K3→K5: 69.6%→27.2% largest).
+    # Default True (adopted). Disabling reverts to the Tier-1-only geometry.
+    cluster_tier2_enabled: bool = True
+    # Tier 2 SVD target dimensionality (bounded below by the live session-cluster
+    # count at fit time). 24 ≈ the production session-cluster cardinality.
+    cluster_tier2_svd_dim: int = 24
     # Feature-hash dimension for the HASSH distribution (same scheme as the
     # credential hash). Small — observed HASSH cardinality is low.
     attribution_hassh_hash_dim: int = 8

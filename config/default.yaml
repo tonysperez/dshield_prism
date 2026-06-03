@@ -340,6 +340,17 @@ ip:
   # 0 disables. Feature-hash dim mirrors the credential hash.
   cluster_hassh_weight: 0.05
   attribution_hassh_hash_dim: 8
+  # Phase K (ADOPTED) — behaviour-driven IP geometry. provenance=false drops
+  # country + ASN + HASSH (queryable post-hoc, over-fragment the same behaviour
+  # across hosting platforms); tier1 adds per-IP behaviour scalars; tier2 adds
+  # the IP-as-bag-of-session-clusters block that re-separates the homogeneous
+  # scanner population. See docs/handoff-ip-attribution-prune-plan.md (K5).
+  # Set all three back to the historical geometry with provenance=true,
+  # tier1=false, tier2=false.
+  cluster_attribution_provenance_enabled: false
+  cluster_tier1_enabled: true
+  cluster_tier2_enabled: true
+  cluster_tier2_svd_dim: 24
   page_size: 1000
   batch_size: 200
 

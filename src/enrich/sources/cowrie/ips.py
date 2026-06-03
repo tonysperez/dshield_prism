@@ -26,7 +26,7 @@ from ...cache import StateDB
 from ...config import AppConfig, IPConfig, Secrets
 from ...data.hassh_known import lookup as _lookup_hassh_known
 from ...es_client import bulk_write, deep_get, fetch_source_subset, init_index, make_client
-from .sessions import _mean_pool, _summarize_intents
+from .sessions import _is_protocol_noise_credential, _mean_pool, _summarize_intents
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +72,35 @@ _IP_CLUSTER_SAMPLE_SIZE = 5
 # interactive-shell sessions a real attacker might run.
 _SCALAR_DENOM_TOTAL_SESSIONS = 100000.0
 _SCALAR_DENOM_SESSION_DURATION_S = 3600.0
+
+# Phase K Tier 1 — corpus-scale log1p denominators for the behaviour sub-block.
+# Same role as the two above: bound each scalar to ~[0,1] before the weight
+# scales it, so no single dim dominates the augmented geometry. Values are
+# order-of-magnitude headroom over current per-IP maxima, not tuned constants.
+_SCALAR_DENOM_ACTIVE_DAYS = 365.0
+_SCALAR_DENOM_TOTAL_COMMANDS = 10000.0
+_SCALAR_DENOM_CMDS_PER_SESSION = 100.0
+_SCALAR_DENOM_FILE_DOWNLOADS = 100.0
+_SCALAR_DENOM_UNIQUE_INTENTS = 16.0      # the INTENTS enum cardinality
+_SCALAR_DENOM_UNIQUE_PLAYBOOKS = 50.0
+
+# Phase K Tier 1 — fixed intent-vector ordering (one cell per ATT&CK-ish
+# intent enum value). Sorted for a stable column layout across runs.
+from ...llm.schemas import INTENTS as _INTENTS  # noqa: E402
+_TIER1_INTENT_ORDER = sorted(_INTENTS)
+
+
+def _active_days(first_seen: Optional[str], last_seen: Optional[str]) -> float:
+    """`(last_seen − first_seen)` in days from two ISO timestamps; 0.0 when
+    either is missing/unparseable or the span is negative. Phase K Tier 1."""
+    if not first_seen or not last_seen:
+        return 0.0
+    try:
+        f = datetime.fromisoformat(str(first_seen).replace("Z", "+00:00"))
+        l = datetime.fromisoformat(str(last_seen).replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return 0.0
+    return max(0.0, (l - f).total_seconds() / 86400.0)
 
 # Per-IP credential set cap. Keeps the rollup doc bounded while preserving
 # the long tail of credential-spray attackers; collisions in the hash
@@ -250,14 +279,23 @@ def _build_ip_doc(
         # scanners frequently use one of the two and the empty-string
         # position is itself a fingerprint. The IP-layer attribution
         # scalar block (issue #8) reads this set.
+        # Phase K follow-up: drop HTTP/RTSP protocol-confusion artifacts that
+        # cowrie captured as credentials (they carry per-request nonces that
+        # fragment otherwise-identical IPs at the cred-hash sub-block). Filtering
+        # here means a `rollup ips` re-roll cleans the IP credential field even
+        # from session docs written before the session-layer fix re-rolled.
         session_creds = en.get("credentials") or []
         if session_creds:
-            credentials_set.update(session_creds)
+            credentials_set.update(
+                c for c in session_creds if not _is_protocol_noise_credential(c)
+            )
         else:
             username = ((s.get("user") or {}).get("name") or "")
             password = ((s.get("cowrie") or {}).get("password") or "")
             if username or password:
-                credentials_set.add(f"{username}:{password}")
+                cred = f"{username}:{password}"
+                if not _is_protocol_noise_credential(cred):
+                    credentials_set.add(cred)
 
         # SSH client fingerprint (HASSH). Tally per-session so the IP rollup
         # carries the modal fingerprint + full distribution for clustering.
@@ -507,6 +545,14 @@ def iter_ip_docs(
             "dshield.cowrie.enrichment.ip.mean_novelty_score",
             "dshield.cowrie.enrichment.ip.mean_session_duration_s",
             "dshield.cowrie.enrichment.ip.credentials",
+            # Phase K Tier 1 behaviour-block inputs (all pre-existing rollup
+            # fields). No-ops unless ip.cluster_tier1_enabled is set.
+            "dshield.cowrie.enrichment.ip.intent_distribution",
+            "dshield.cowrie.enrichment.ip.playbook_distribution",
+            "dshield.cowrie.enrichment.ip.total_commands",
+            "dshield.cowrie.enrichment.ip.file_download_count",
+            "dshield.cowrie.enrichment.ip.first_seen",
+            "dshield.cowrie.enrichment.ip.last_seen",
         ],
         "query": {"exists": {"field": "dshield.cowrie.enrichment.ip.embedding"}},
         "sort": [{"@timestamp": "asc"}, {"_doc": "asc"}],
@@ -558,6 +604,14 @@ def iter_ip_docs(
                 # behaviour when intel is disabled / not yet populated.
                 "external_rarity_score": 0.0,
                 "consensus_malicious": False,
+                # Phase K Tier 1 behaviour inputs (existing rollup fields).
+                "intent_distribution": list(ip_en.get("intent_distribution") or []),
+                "playbook_distribution": list(ip_en.get("playbook_distribution") or []),
+                "total_commands": ip_en.get("total_commands") or 0,
+                "file_download_count": ip_en.get("file_download_count") or 0,
+                "active_days": _active_days(ip_en.get("first_seen"), ip_en.get("last_seen")),
+                # Phase K Tier 2 — key for the per-IP session-cluster bag lookup.
+                "source_ip": source_ip,
             }
             if intel_lookup is not None:
                 summary = intel_lookup.get_one("ip", source_ip)
@@ -626,24 +680,24 @@ def _build_attribution_block(
     top_asns: list[int],
     weight: float,
     cred_hash_dim: int,
+    include_provenance: bool = True,
 ) -> "np.ndarray":
-    """Attribution scalar sub-block: country one-hot + ASN bucket + cred hash.
+    """Attribution scalar sub-block: (country one-hot + ASN bucket +) cred hash.
 
-    Each of the three feature groups is pre-normalised to L2 ≤ 1, then
-    scaled by `weight`. Stacked horizontally so the resulting matrix has
-    shape `(n, k_country + k_asn + cred_hash_dim)` where:
+    Each feature group is pre-normalised to L2 ≤ 1, then scaled by `weight`.
 
-      - `k_country` = number of distinct country ISO codes observed
-        (empty-string IPs contribute to a single "unknown" column).
-      - `k_asn`     = `len(top_asns) + 1` (top-N + one "other" pool).
-      - `cred_hash_dim` is the fixed feature-hash width.
+    `include_provenance` (Phase K). Country and ASN are *provenance* —
+    `source.geo.country_iso_code` / `source.as.number` are directly queryable
+    post-hoc, and pushing them into the geometry splits the same behaviour
+    across hosting platforms / geographies (the Zgrab cluster_8/9/10 case). When
+    `False` they're dropped and only the credential-hash block (genuine attacker
+    behaviour) remains. `True` (default) preserves the ROADMAP-#8 block until the
+    K verdict adopts the prune. See docs/handoff-ip-attribution-prune-plan.md.
 
-    L2 contribution per row is at most ~`weight * sqrt(3)` (one active
-    column in each of country + ASN, and a unit-norm cred distribution).
-    With `weight=0.10` that's ~0.17, slightly above the behavior block's
-    max ~0.10 — matches the roadmap's "slightly hotter" target.
+    Shape: `(n, k_country + k_asn + cred_hash_dim)` with provenance, or
+    `(n, cred_hash_dim)` without.
 
-    ROADMAP issue #8.
+    ROADMAP issue #8 (provenance toggle: Phase K).
     """
     import numpy as np
 
@@ -651,22 +705,27 @@ def _build_attribution_block(
     if n == 0:
         return np.zeros((0, 0), dtype=np.float32)
 
-    # --- country one-hot ---------------------------------------------------
-    countries = [s.get("country_iso_code") or "" for s in scalars_list]
-    country_vocab = sorted(set(countries))
-    country_index = {c: i for i, c in enumerate(country_vocab)}
-    country_block = np.zeros((n, len(country_vocab)), dtype=np.float32)
-    for i, c in enumerate(countries):
-        country_block[i, country_index[c]] = 1.0
+    blocks: list["np.ndarray"] = []
 
-    # --- ASN bucket: top-N one-hot + pooled "other" ------------------------
-    asn_index: dict[int, int] = {asn: i for i, asn in enumerate(top_asns)}
-    asn_block = np.zeros((n, len(top_asns) + 1), dtype=np.float32)
-    other_col = len(top_asns)
-    for i, s in enumerate(scalars_list):
-        asn = s.get("as_number")
-        col = asn_index.get(asn, other_col) if asn is not None else other_col
-        asn_block[i, col] = 1.0
+    if include_provenance:
+        # --- country one-hot -----------------------------------------------
+        countries = [s.get("country_iso_code") or "" for s in scalars_list]
+        country_vocab = sorted(set(countries))
+        country_index = {c: i for i, c in enumerate(country_vocab)}
+        country_block = np.zeros((n, len(country_vocab)), dtype=np.float32)
+        for i, c in enumerate(countries):
+            country_block[i, country_index[c]] = 1.0
+        blocks.append(country_block)
+
+        # --- ASN bucket: top-N one-hot + pooled "other" --------------------
+        asn_index: dict[int, int] = {asn: i for i, asn in enumerate(top_asns)}
+        asn_block = np.zeros((n, len(top_asns) + 1), dtype=np.float32)
+        other_col = len(top_asns)
+        for i, s in enumerate(scalars_list):
+            asn = s.get("as_number")
+            col = asn_index.get(asn, other_col) if asn is not None else other_col
+            asn_block[i, col] = 1.0
+        blocks.append(asn_block)
 
     # --- credential feature hash ------------------------------------------
     cred_block = np.zeros((n, cred_hash_dim), dtype=np.float32)
@@ -681,8 +740,9 @@ def _build_attribution_block(
             total = counts.sum()
             if total > 0:
                 cred_block[i] = counts / total  # normalised distribution
+    blocks.append(cred_block)
 
-    block = np.hstack([country_block, asn_block, cred_block]).astype(np.float32)
+    block = np.hstack(blocks).astype(np.float32)
     return block * weight
 
 
@@ -786,6 +846,176 @@ def _build_behavior_block(
     return block
 
 
+def _build_tier1_block(scalars_list: list[dict], weight: float) -> "np.ndarray":
+    """Phase K Tier 1 — per-IP *behaviour* sub-block, sourced entirely from
+    existing IP-rollup fields (no new ingestion, no LLM).
+
+    Thickens the thin per-command-mean IP embedding so behaviour can carry the
+    clustering load once provenance (country/ASN/HASSH) is dropped. Columns
+    (30 total), each pre-bounded to ~[0,1] then scaled by `weight`:
+
+      - intent distribution (16): share of the IP's sessions per
+        `dominant_intent` enum value, L1-normalised. The highest-leverage
+        addition — separates scanner / persistence-actor / cryptominer even
+        when raw commands look alike. Sourced from the rollup's
+        `intent_distribution` (top-3 capped; the tail is ~0 mass in practice).
+      - playbook distribution (8): feature-hash of the IP's `playbook_id`s
+        weighted by session count, L1-normalised (mirrors the cred-hash).
+      - diversity (2): n_unique_intents, n_unique_playbooks (log1p-bounded).
+      - temporal (1): active_days = (last_seen − first_seen) (log1p-bounded).
+        `session_burstiness` from the plan is omitted — inter-session
+        intervals aren't on the rollup (would need a rollup change + re-roll).
+      - volume (3): total_commands, commands_per_session_mean,
+        file_download_count (log1p / clip bounded). `file_upload_count` from
+        the plan is omitted — not aggregated onto the IP rollup today.
+
+    ROADMAP — Phase K (see docs/handoff-ip-attribution-prune-plan.md).
+    """
+    import numpy as np
+
+    n = len(scalars_list)
+    width = len(_TIER1_INTENT_ORDER) + 8 + 2 + 1 + 3  # 30
+    if n == 0:
+        return np.zeros((0, width), dtype=np.float32)
+    intent_idx = {name: i for i, name in enumerate(_TIER1_INTENT_ORDER)}
+    n_intents = len(_TIER1_INTENT_ORDER)
+    pb_off = n_intents          # playbook hash starts here
+    div_off = pb_off + 8        # diversity
+    tmp_off = div_off + 2       # temporal
+    vol_off = tmp_off + 1       # volume
+
+    block = np.zeros((n, width), dtype=np.float32)
+    denom_cmds = float(np.log1p(_SCALAR_DENOM_TOTAL_COMMANDS))
+    denom_dl = float(np.log1p(_SCALAR_DENOM_FILE_DOWNLOADS))
+    denom_days = float(np.log1p(_SCALAR_DENOM_ACTIVE_DAYS))
+    denom_ui = float(np.log1p(_SCALAR_DENOM_UNIQUE_INTENTS))
+    denom_up = float(np.log1p(_SCALAR_DENOM_UNIQUE_PLAYBOOKS))
+
+    for i, s in enumerate(scalars_list):
+        # --- intent distribution (L1-normalised over present intents) ------
+        intents = s.get("intent_distribution") or []
+        itotal = sum(float(e.get("count") or 0) for e in intents if isinstance(e, dict))
+        if itotal > 0:
+            for e in intents:
+                if not isinstance(e, dict):
+                    continue
+                col = intent_idx.get(e.get("intent"))
+                if col is not None:
+                    block[i, col] = float(e.get("count") or 0) / itotal
+
+        # --- playbook feature-hash (L1-normalised) -------------------------
+        pbs = s.get("playbook_distribution") or []
+        counts = np.zeros(8, dtype=np.float32)
+        for e in pbs:
+            if not isinstance(e, dict):
+                continue
+            pid = e.get("playbook_id")
+            c = float(e.get("count") or 0)
+            if pid and c > 0:
+                counts[_hash_credential_bin(pid, 8)] += c
+        ptotal = counts.sum()
+        if ptotal > 0:
+            block[i, pb_off:pb_off + 8] = counts / ptotal
+
+        # --- diversity -----------------------------------------------------
+        n_ui = len(intents)
+        n_up = len(pbs)
+        block[i, div_off] = min(np.log1p(n_ui) / denom_ui, 1.0)
+        block[i, div_off + 1] = min(np.log1p(n_up) / denom_up, 1.0)
+
+        # --- temporal: active_days ----------------------------------------
+        block[i, tmp_off] = min(np.log1p(float(s.get("active_days") or 0.0)) / denom_days, 1.0)
+
+        # --- volume --------------------------------------------------------
+        total_cmds = float(s.get("total_commands") or 0.0)
+        total_sess = float(s.get("total_sessions") or 1.0)
+        dls = float(s.get("file_download_count") or 0.0)
+        block[i, vol_off] = min(np.log1p(total_cmds) / denom_cmds, 1.0)
+        block[i, vol_off + 1] = min((total_cmds / max(total_sess, 1.0)) / _SCALAR_DENOM_CMDS_PER_SESSION, 1.0)
+        block[i, vol_off + 2] = min(np.log1p(dls) / denom_dl, 1.0)
+
+    return block * weight
+
+
+def _pull_session_cluster_bags(
+    es: Elasticsearch, sessions_index: str, page_size: int = 500,
+) -> dict[str, dict[str, int]]:
+    """Phase K Tier 2 — per-IP bag of session-cluster ids via a composite agg
+    (`source.ip` → terms `session.cluster.id`). Returns
+    `{ip: {cluster_id: count}}`. Server-side, so one cheap pass regardless of
+    session-rollup size. Empty bags are omitted.
+    """
+    field_ip = "source.ip"
+    field_cl = "dshield.cowrie.enrichment.session.cluster.id"
+    bags: dict[str, dict[str, int]] = {}
+    after: Optional[dict] = None
+    while True:
+        comp: dict = {"size": page_size, "sources": [{"ip": {"terms": {"field": field_ip}}}]}
+        if after:
+            comp["after"] = after
+        try:
+            resp = es.search(index=sessions_index, size=0, aggs={
+                "ips": {"composite": comp,
+                        "aggs": {"cl": {"terms": {"field": field_cl, "size": 40}}}},
+            })
+        except Exception as exc:
+            log.warning("[cowrie.ips] Tier 2 bag agg failed (%s); skipping Tier 2", exc)
+            return {}
+        agg = resp["aggregations"]["ips"]
+        for b in agg["buckets"]:
+            ip = b["key"]["ip"]
+            d = {c["key"]: c["doc_count"] for c in b["cl"]["buckets"] if c["key"]}
+            if d:
+                bags[ip] = d
+        after = agg.get("after_key")
+        if not after or not agg["buckets"]:
+            break
+    return bags
+
+
+def _build_tier2_block(
+    scalars_list: list[dict], weight: float, *,
+    bags: dict[str, dict[str, int]], dim: int,
+) -> "np.ndarray":
+    """Phase K Tier 2 — IP-as-bag-of-session-clusters sub-block.
+
+    TF-IDF over each IP's session-cluster-id bag (looked up by the
+    `source_ip` carried on the scalar dict), then TruncatedSVD to `dim`
+    components, per-row L2-normalised and scaled by `weight`. **Fit at cluster
+    time**, like the session-layer lexical features — the TF-IDF vocabulary +
+    SVD basis are corpus-state-dependent, so persisting them would stale across
+    runs. Re-separates behaviour-homogeneous IP populations (same intent + same
+    modal playbook + near-identical command embedding) that differ only in
+    *which mix* of session clusters they run. ROADMAP — Phase K Tier 2.
+
+    Returns an `(n, 0)` block (no-op) when there are no bags or the corpus is
+    too small/degenerate for a ≥2-component SVD.
+    """
+    import numpy as np
+
+    n = len(scalars_list)
+    if n == 0 or not bags:
+        return np.zeros((n, 0), dtype=np.float32)
+    from sklearn.decomposition import TruncatedSVD
+    from sklearn.feature_extraction.text import TfidfVectorizer
+
+    docs = []
+    for s in scalars_list:
+        bag = bags.get(s.get("source_ip")) or {}
+        docs.append(" ".join((str(cid) + " ") * int(cnt) for cid, cnt in bag.items()).strip())
+    try:
+        tfidf = TfidfVectorizer(token_pattern=r"[^ ]+").fit_transform(docs)
+    except ValueError:
+        return np.zeros((n, 0), dtype=np.float32)
+    k = min(dim, tfidf.shape[1] - 1, max(tfidf.shape[0] - 1, 1))
+    if k < 2:
+        return np.zeros((n, 0), dtype=np.float32)
+    reduced = TruncatedSVD(n_components=k, random_state=20260603).fit_transform(tfidf).astype(np.float32)
+    norms = np.linalg.norm(reduced, axis=1, keepdims=True)
+    norms[norms == 0.0] = 1.0
+    return (reduced / norms).astype(np.float32) * weight
+
+
 def build_ip_scalar_block(scalars_list: list[dict], weight: float) -> "np.ndarray":
     """Backward-compat shim: behavior-only block at the given weight.
 
@@ -805,6 +1035,11 @@ def make_full_scalar_builder(
     cred_hash_dim: int,
     hassh_weight: float = 0.0,
     hassh_hash_dim: int = 0,
+    include_provenance: bool = True,
+    include_tier1: bool = False,
+    include_tier2: bool = False,
+    session_cluster_bags: Optional[dict] = None,
+    tier2_dim: int = 24,
 ):
     """Return a builder closure that produces the combined IP scalar
     matrix (behavior + attribution) given the per-run attribution params.
@@ -813,6 +1048,18 @@ def make_full_scalar_builder(
     `(scalars_list, weight)` callable for `scalar_block_builder`. The
     weight argument it passes is the *behavior* weight; the attribution
     weight is captured in the closure. ROADMAP issue #8.
+
+    Phase K toggles:
+      - `include_provenance=False` drops country + ASN (in the attribution
+        block) AND HASSH (the SSH-client fingerprint) — all three are
+        queryable provenance/tool dims, not behaviour.
+      - `include_tier1=True` adds the Tier 1 behaviour sub-block at the
+        behaviour weight, so behaviour can carry the geometry once provenance
+        is gone.
+      - `include_tier2=True` adds the Tier 2 bag-of-session-clusters block
+        (needs `session_cluster_bags={ip: {cluster_id: count}}` pre-fetched by
+        the caller) at the attribution weight. See
+        docs/handoff-ip-attribution-prune-plan.md.
     """
     import numpy as np
 
@@ -823,20 +1070,34 @@ def make_full_scalar_builder(
             top_asns=top_asns,
             weight=attribution_weight,
             cred_hash_dim=cred_hash_dim,
+            include_provenance=include_provenance,
         )
         # M3.B: external-intel block — same weight as attribution since
         # external reputation is attribution-type signal (who is this
         # IP) rather than behavior-type signal (what did this IP do).
         intel = _build_intel_block(scalars_list, attribution_weight)
-        # HASSH (SSH client fingerprint) — attribution-type signal at its own
-        # (low) weight; no-op when hassh_weight/dim are 0 or no IP carries one.
-        hassh = _build_hassh_block(scalars_list, hassh_weight, hassh_hash_dim)
         blocks = [behavior]
+        if include_tier1:
+            # Tier 1 behaviour scalars ride at the behaviour weight.
+            blocks.append(_build_tier1_block(scalars_list, behavior_weight))
+        if include_tier2:
+            # Tier 2 (bag-of-session-clusters) rides at the attribution weight —
+            # behaviour-derived but IP-specific, like the dropped attribution dims.
+            t2 = _build_tier2_block(
+                scalars_list, attribution_weight,
+                bags=session_cluster_bags or {}, dim=tier2_dim,
+            )
+            if t2.shape[1] > 0:
+                blocks.append(t2)
         if attribution.shape[1] > 0:
             blocks.append(attribution)
         blocks.append(intel)
-        if hassh.shape[1] > 0:
-            blocks.append(hassh)
+        # HASSH is a tool fingerprint (provenance-like): only composed in when
+        # provenance is kept. Phase K drops it alongside country + ASN.
+        if include_provenance:
+            hassh = _build_hassh_block(scalars_list, hassh_weight, hassh_hash_dim)
+            if hassh.shape[1] > 0:
+                blocks.append(hassh)
         return np.hstack(blocks).astype(np.float32)
 
     return _builder
@@ -1074,13 +1335,38 @@ def run_cluster(
         ipcfg.cluster_hassh_weight,
     )
 
+    # Phase K Tier 2 — pre-fetch each IP's session-cluster bag once (composite
+    # agg over the session rollup) so the builder can fit TF-IDF+SVD at cluster
+    # time. Only when Tier 2 is enabled; cheap server-side agg.
+    session_cluster_bags = None
+    if ipcfg.cluster_tier2_enabled:
+        sessions_idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
+        session_cluster_bags = _pull_session_cluster_bags(es, sessions_idx)
+        log.info(
+            "[cowrie.ips] Phase K Tier 2: session-cluster bags for %d IPs",
+            len(session_cluster_bags),
+        )
+
     scalar_builder = make_full_scalar_builder(
         top_asns=top_asns,
         attribution_weight=ipcfg.cluster_attribution_weight,
         cred_hash_dim=ipcfg.attribution_cred_hash_dim,
         hassh_weight=ipcfg.cluster_hassh_weight,
         hassh_hash_dim=ipcfg.attribution_hassh_hash_dim,
+        # Phase K geometry toggles (adopted defaults: provenance off, tiers on).
+        include_provenance=ipcfg.cluster_attribution_provenance_enabled,
+        include_tier1=ipcfg.cluster_tier1_enabled,
+        include_tier2=ipcfg.cluster_tier2_enabled,
+        session_cluster_bags=session_cluster_bags,
+        tier2_dim=ipcfg.cluster_tier2_svd_dim,
     )
+    if not ipcfg.cluster_attribution_provenance_enabled or ipcfg.cluster_tier1_enabled \
+            or ipcfg.cluster_tier2_enabled:
+        log.info(
+            "[cowrie.ips] Phase K geometry: provenance=%s tier1=%s tier2=%s",
+            ipcfg.cluster_attribution_provenance_enabled, ipcfg.cluster_tier1_enabled,
+            ipcfg.cluster_tier2_enabled,
+        )
 
     # M3.B: external-intel sub-block. Always-on when intel data is
     # present in the index; when intel is disabled / index missing,

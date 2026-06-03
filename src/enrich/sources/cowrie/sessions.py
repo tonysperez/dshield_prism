@@ -765,17 +765,59 @@ def _record_proxy_attempt(out: list[dict], ev: dict) -> None:
         out.append(rec)
 
 
+# Protocol-confusion credential filter (Phase K follow-up). HTTP/RTSP/etc.
+# scanners that hit cowrie's telnet/SSH port get their request lines + headers
+# parsed as `user.name` / `cowrie.password` — e.g.
+# `GET / HTTP/1.1:Host: x`, `OPTIONS rtsp://example.com RTSP/1.0:Cseq: 814`,
+# `User-Agent: Mozilla/...:Accept-Encoding: gzip`. These are not login attempts;
+# worse, the request lines carry per-request nonces (the RTSP `Cseq`) that make
+# every IP's credential set unique, fragmenting otherwise-identical IPs at the
+# IP-clustering cred-hash sub-block. We drop them at credential-record time so
+# neither the session nor IP rollup treats them as credentials. The markers are
+# high-confidence (a real SSH/telnet credential never contains an HTTP/RTSP
+# version token, a URL scheme, a request-method prefix, or a known HTTP header).
+_CRED_PROTO_VERSION_RE = re.compile(r"\b(?:HTTP|RTSP|ICY)/\d")
+_CRED_URL_SCHEME_RE = re.compile(r"\b[a-z][a-z0-9+.\-]*://", re.IGNORECASE)
+_CRED_METHOD_PREFIX_RE = re.compile(
+    r"^(?:GET|POST|HEAD|PUT|DELETE|OPTIONS|TRACE|CONNECT|PATCH)\s", re.IGNORECASE
+)
+_CRED_HTTP_HEADER_RE = re.compile(
+    r"(?i)\b(?:user-agent|accept-encoding|accept-language|content-length|"
+    r"content-type|cache-control|cseq|referer|sec-[a-z-]+|x-[a-z-]+|"
+    r"upgrade-insecure-requests)\s*:"
+)
+
+
+def _is_protocol_noise_credential(cred: str) -> bool:
+    """True when a `user:password` string is an HTTP/RTSP/etc. protocol artifact
+    cowrie mis-captured as a credential, not a real login attempt. Conservative
+    — only fires on markers that never appear in genuine credentials."""
+    if not cred:
+        return False
+    return bool(
+        _CRED_PROTO_VERSION_RE.search(cred)
+        or _CRED_URL_SCHEME_RE.search(cred)
+        or _CRED_METHOD_PREFIX_RE.match(cred)
+        or _CRED_HTTP_HEADER_RE.search(cred)
+    )
+
+
 def _record_credential(credentials_set: set[str], ev: dict) -> None:
     """Add the `(user.name, cowrie.password)` tuple from a login event to the
     session's credential set. Either part may be empty — empty user OR
     empty password both still contribute a tuple, since credential-spray
     scanners frequently use one of the two and the empty-string position
     is itself a fingerprint (matches the IP-layer convention at #8).
+
+    Protocol-confusion artifacts (HTTP/RTSP request lines + headers parsed as
+    credentials) are dropped — see `_is_protocol_noise_credential`.
     """
     user = ((ev.get("user") or {}).get("name") or "")
     password = ((ev.get("cowrie") or {}).get("password") or "")
     if user or password:
-        credentials_set.add(f"{user}:{password}")
+        cred = f"{user}:{password}"
+        if not _is_protocol_noise_credential(cred):
+            credentials_set.add(cred)
 
 
 def _compute_hassh(algorithms: str) -> str:
