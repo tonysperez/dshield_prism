@@ -53,6 +53,14 @@ ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/
 # `--window-days 0 --refresh-reference` pass that refreshes the reference and
 # re-pools the long tail.
 ExecStart=/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml cluster commands
+
+# --- Step 5a: self-heal the external reference baseline (console "Tradecraft
+# Matches") with LOCAL steps only — runs BEFORE `cluster sessions` so freshly
+# minted external centroids are scored against live sessions this same cycle.
+# State-gated + idempotent (cheap no-op when healthy); never clones GitHub
+# (the import stays a setup/manual step). `-` so it never blocks the chain.
+ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml reference-heal
+
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml cluster sessions
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml cluster ips
 

@@ -528,7 +528,7 @@ fi
 # ---- F. init project-owned processed indices -------------------------------
 
 if (( RUN_INIT_INDEX )); then
-    # Idempotent across all three sources: creates missing indexes, additive
+    # Idempotent across every source: creates missing indexes, additive
     # mapping update on existing ones. Order matters when an index doesn't
     # exist yet — cowrie indexes are read by the intel + findings miners,
     # so we init the source-of-truth indexes first.
@@ -546,6 +546,11 @@ if (( RUN_INIT_INDEX )); then
     # here; the writer skips silently until this exists.
     log "Initializing ops index (prism.ops — run telemetry)"
     ( cd "${INSTALL_DIR}" && run_cli init-indexes --update-mapping --source ops )
+    # MITRE TTP application-rate snapshot (phase 2.3) — `enrich` writes a
+    # per-corpus snapshot here, but skips silently until this exists, so a
+    # fresh install never populates the Health page's TTP-rate panel without it.
+    log "Initializing metrics index (prism.metrics — MITRE TTP application rates)"
+    ( cd "${INSTALL_DIR}" && run_cli init-indexes --update-mapping --source metrics )
 else
     warn "Skipping init-indexes (--skip-init-index)"
 fi
@@ -566,6 +571,42 @@ if (( RUN_HEALTHCHECK )); then
     fi
 else
     warn "Skipping healthcheck (--skip-healthcheck)"
+fi
+
+# ---- G2. external reference corpus (Tradecraft Matches) — best-effort -------
+# One-time external baseline: import the Atomic Red Team corpus, embed it, and
+# mint the `external` reference centroids that `cluster sessions` scores live
+# sessions against — this is what populates the console "Tradecraft Matches"
+# panel + the external-novelty surface. Runs AFTER the healthcheck so the
+# embedding model is verified reachable before `enrich --reference`.
+#
+# NON-FATAL by design: it needs GitHub egress (clones Atomic Red Team) and the
+# embedding model up, neither guaranteed on every box (air-gapped installs,
+# LLM not yet configured). A failure here only means the Tradecraft panel stays
+# empty until you run the three commands by hand later. Refresh is operator-
+# driven (~quarterly), not scheduled — see docs/reference-corpus.md.
+
+log "Bootstrapping external reference corpus (Tradecraft Matches) — best-effort"
+set +e
+(
+    cd "${INSTALL_DIR}" \
+    && sudo -u "${SERVICE_USER}" env PRISM_ENV="${INSTALL_DIR}/.env" \
+         "${VENV}/bin/python" "${INSTALL_DIR}/scripts/import_reference_corpus.py" \
+         --config "${INSTALL_DIR}/config/default.yaml" \
+    && run_cli enrich --reference \
+    && run_cli cluster sessions --bootstrap-from external
+)
+REF_RC=$?
+set -e
+if (( REF_RC != 0 )); then
+    warn "Reference-corpus bootstrap failed (rc=${REF_RC}) — install continues. The"
+    warn "  'Tradecraft Matches' panel stays empty until you run, with the embedding"
+    warn "  model up + GitHub reachable:"
+    warn "    ${VENV}/bin/python scripts/import_reference_corpus.py"
+    warn "    <cli> enrich --reference && <cli> cluster sessions --bootstrap-from external"
+    warn "  See docs/reference-corpus.md."
+else
+    log "  reference corpus imported + external centroids minted (Tradecraft Matches live after next 'cluster sessions')"
 fi
 
 # ---- H. systemd ------------------------------------------------------------

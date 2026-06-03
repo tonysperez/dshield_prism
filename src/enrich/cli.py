@@ -290,6 +290,84 @@ def _write_mitre_metrics_doc(cfg, secrets, *, top_n: int) -> None:
         log.warning("failed to write MITRE TTP metrics doc: %s", exc)
 
 
+def _run_reference_heal(cfg, secrets) -> dict:
+    """Self-heal the external reference baseline (console "Tradecraft Matches")
+    using LOCAL steps only — never clones GitHub.
+
+    The GitHub import (`scripts/import_reference_corpus.py`) stays a setup/manual
+    concern; this recovers the cases where the corpus was imported but the
+    install-time bootstrap didn't finish (LLM down at setup) or the external
+    centroids were later lost. State-gated + idempotent: cheap when healthy
+    (just count queries), so it's safe to run every backward cycle.
+
+      1. reference corpus present but un-embedded → `enrich --reference`
+         (local LLM only, never cloud — a reference baseline doesn't warrant
+         cloud budget).
+      2. corpus embedded but no `external` reference centroids → `cluster
+         sessions --bootstrap-from external`.
+
+    Best-effort throughout: every step is guarded so a failure logs and the
+    verb still returns. No corpus at all → no-op with a hint (needs the import).
+    """
+    import logging
+    from .es_client import make_client
+    log = logging.getLogger(__name__)
+    es = make_client(cfg.elasticsearch, secrets)
+    ref_idx = cfg.elasticsearch.indexes.cowrie.reference_sessions
+    scl_idx = cfg.elasticsearch.indexes.cowrie.session_clusters
+    emb_field = "dshield.cowrie.enrichment.session.embedding"
+    ext_q = {"bool": {"must": [
+        {"term": {"doc_type": "reference_centroid"}},
+        {"term": {"reference_source.keyword": "external"}},
+    ]}}
+    out: dict = {"status": "healthy", "actions": []}
+
+    try:
+        if not es.indices.exists(index=ref_idx) or int(es.count(index=ref_idx)["count"]) == 0:
+            log.info("[reference-heal] no reference corpus — import it once with "
+                     "scripts/import_reference_corpus.py (needs GitHub); skipping")
+            return {"status": "no_corpus", "actions": []}
+        n_ref = int(es.count(index=ref_idx)["count"])
+        n_emb = int(es.count(index=ref_idx, query={"exists": {"field": emb_field}})["count"])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[reference-heal] state check failed (%s); skipping", exc)
+        return {"status": "error", "error": str(exc), "actions": []}
+
+    # 1. Embed the reference corpus if needed (local LLM only).
+    if n_emb < n_ref:
+        log.info("[reference-heal] %d/%d reference sessions un-embedded → enrich --reference",
+                 n_ref - n_emb, n_ref)
+        try:
+            mod = _commands_layer("cowrie")
+            if mod is not None:
+                mod.run_enrich(cfg, secrets, dry_run=False, no_cloud=True, reference_mode=True)
+                out["actions"].append("enriched_reference")
+                es.indices.refresh(index=ref_idx)
+                n_emb = int(es.count(index=ref_idx, query={"exists": {"field": emb_field}})["count"])
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[reference-heal] enrich --reference failed (%s)", exc)
+
+    # 2. Mint external centroids when the corpus is embedded but they're absent.
+    try:
+        n_ext = int(es.count(index=scl_idx, query=ext_q)["count"]) if es.indices.exists(index=scl_idx) else 0
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[reference-heal] centroid check failed (%s); skipping bootstrap", exc)
+        n_ext = 1  # transient error — don't risk a spurious re-bootstrap
+    if n_ext == 0 and n_emb > 0:
+        log.info("[reference-heal] no external reference centroids → cluster sessions --bootstrap-from external")
+        try:
+            smod = _load_source_layer("cowrie", "sessions")
+            if smod is not None:
+                smod.run_cluster(cfg, secrets, dry_run=False, refresh_reference=False,
+                                 use_reference=True, bootstrap_from="external")
+                out["actions"].append("bootstrapped_external_centroids")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[reference-heal] external bootstrap failed (%s)", exc)
+
+    out["status"] = "healed" if out["actions"] else "healthy"
+    return out
+
+
 def _wipe_processed(cfg, secrets, source: str) -> dict:
     """Destroy every processed ES index for this source and recreate them
     from their mapping files; clear the SQLite cache + watermark. The raw
@@ -559,6 +637,11 @@ def _run_pipeline(cfg, secrets, args) -> int:
         ("cluster commands",           lambda: cmds_mod.run_cluster(cfg, secrets, dry_run=dry),                           False),
         ("escalate",                   lambda: cmds_mod.run_escalate(cfg, secrets, dry_run=dry),                          True),
 
+        # ---- self-heal the external reference baseline (Tradecraft Matches)
+        # before scoring live sessions against it. Local-only + state-gated;
+        # cheap no-op when healthy. Never clones GitHub (import stays setup-time).
+        ("reference-heal",             lambda: _run_reference_heal(cfg, secrets) if not dry else {"dry_run": True}, True),
+
         # ---- session clustering + LLM naming (playbooks = named session clusters)
         ("cluster sessions",           lambda: sessions_mod.run_cluster(cfg, secrets, dry_run=dry),                       False),
         ("name playbooks",             lambda: sessions_mod.run_name_playbooks(cfg, secrets, dry_run=dry, force=False),   True),
@@ -814,6 +897,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "--update-mapping",
         action="store_true",
         help="If an index exists, push additive mapping changes instead of noop",
+    )
+
+    # reference-heal — self-heal the external reference baseline (Tradecraft
+    # Matches) using local steps only. State-gated + idempotent; runs in the
+    # backward chain. Never clones GitHub (the import stays setup/manual).
+    sub.add_parser(
+        "reference-heal",
+        help=(
+            "Finish/repair the external reference baseline (Tradecraft Matches) "
+            "with LOCAL steps only: enrich --reference if the imported corpus is "
+            "un-embedded, then mint external centroids if missing. No-op when "
+            "healthy or when no corpus has been imported."
+        ),
     )
 
     # bootstrap-es — apply project-owned ES templates + ingest pipelines from
@@ -1434,6 +1530,10 @@ def _dispatch_verb(args, cfg, secrets) -> int:
         stats = run_bootstrap(cfg, secrets, dry_run=args.dry_run)
         print(json.dumps(stats, indent=2, default=str))
         return 0 if not stats.get("errors") else 1
+
+    if args.verb == "reference-heal":
+        print(json.dumps(_run_reference_heal(cfg, secrets), indent=2, default=str))
+        return 0
 
     if args.verb == "init-indexes":
         from .es_client import init_index, make_client, update_mapping
