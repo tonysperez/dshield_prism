@@ -1,7 +1,7 @@
 {
-  "_comment": "IP-level rollup. One doc per source.ip. Doc _id = source.ip (idempotent upserts). Built by 'rollup-ips'; cluster fields written by 'cluster-ips'. IPs do not carry a playbook or campaign field — those are derived from the IP's sessions at query time.",
+  "_comment": "IP-level rollup. One doc per source.ip. Doc _id = source.ip (idempotent upserts). Built by 'rollup-ips'; cluster fields written by 'cluster-ips'. IPs do not carry a playbook or campaign field — those are derived from the IP's sessions at query time. 5 shards (P2.2) for headroom under the I3-firewall IP-cardinality expansion.",
   "settings": {
-    "number_of_shards": 1,
+    "number_of_shards": 5,
     "number_of_replicas": 0,
     "refresh_interval": "30s"
   },

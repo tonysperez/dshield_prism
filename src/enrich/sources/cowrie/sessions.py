@@ -22,7 +22,7 @@ from elasticsearch import Elasticsearch
 
 from ...cache import StateDB
 from ...config import AppConfig, Secrets, SessionConfig
-from ...es_client import bulk_write, make_client
+from ...es_client import bulk_write, deep_get, fetch_source_subset, make_client
 from ...llm.schemas import (
     PLAYBOOK_DISAMBIGUATE_JSON_SCHEMA,
     PLAYBOOK_NAME_JSON_SCHEMA,
@@ -34,6 +34,22 @@ from .commands import hash_command, normalize
 log = logging.getLogger(__name__)
 
 _SESSION_WATERMARK_KEY = "session_last_processed_at"
+
+# Multi-sensor session-id namespacing (P6.2 / scale-decision D3). The session
+# rollup `_id` is `<sensor>:<cowrie_session_id>` so two sensors emitting the
+# same instance-local session id don't collide on upsert and silently corrupt
+# derived state. `sensor` is observer.name (cowrie.sensor), falling back to
+# _DEFAULT_SENSOR when unset (single-sensor deploys that don't name their
+# sensor). Rollup *reads* go by the `cowrie.session_id` field, never by `_id`,
+# so the raw id still flows through the app. NOTE: cross-sensor read
+# disambiguation (filtering field queries by observer.name) is a follow-up for
+# when sensor #2 lands — single-sensor reads are exact today.
+_DEFAULT_SENSOR = "default"
+
+
+def _session_uid(sensor: Optional[str], session_id: str) -> str:
+    """Namespaced session-rollup `_id`: `<sensor>:<session_id>`."""
+    return f"{sensor or _DEFAULT_SENSOR}:{session_id}"
 _SESSIONS_MAPPING = "setup/es-mappings/cowrie/sessions.json"
 _SESSION_CLUSTERS_MAPPING = "setup/es-mappings/cowrie/session_clusters.json"
 
@@ -98,6 +114,43 @@ _SESSION_PLAYBOOK_NAME_SCRIPT = (
     # `_iter_updated_session_ips` ORs against to pick up newly-named sessions.
     "ctx._source.dshield.cowrie.enrichment.session.playbook_named_at = params.now;"
 )
+
+# Cross-writer fields on the session rollup doc — written by the backward
+# `cluster sessions` / `name playbooks` steps (the painless scripts above),
+# not by this rollup. Closed sessions are write-once in the forward chain so
+# they aren't re-rolled there today, but a full-document re-index would still
+# wipe these; preserved defensively so cluster / playbook attribution can't be
+# lost. `cluster` is a sub-block; the rest are scalars under `…session`.
+_SESSION_PRESERVE_FIELDS = (
+    "dshield.cowrie.enrichment.session.cluster",
+    "dshield.cowrie.enrichment.session.playbook_id",
+    "dshield.cowrie.enrichment.session.playbook_name",
+    "dshield.cowrie.enrichment.session.playbook_named_at",
+)
+
+
+def _preserve_session_attribution(doc: dict, old_source: Optional[dict]) -> bool:
+    """Graft the cross-writer cluster / playbook fields from a prior session
+    rollup doc (`old_source`, as returned by `fetch_source_subset`) onto a
+    freshly built `doc`, in place. These are written by the backward
+    `cluster sessions` / `name playbooks` steps, so a full-document re-index
+    would otherwise drop them. Each field is preserved independently — a
+    session may carry `cluster` but no `playbook_*` (the re-cluster step
+    deliberately clears the playbook label). Returns True when anything was
+    preserved.
+    """
+    if not old_source:
+        return False
+    sess = deep_get(doc, "dshield.cowrie.enrichment.session")
+    if not isinstance(sess, dict):
+        return False
+    grafted = False
+    for path in _SESSION_PRESERVE_FIELDS:
+        val = deep_get(old_source, path)
+        if val:
+            sess[path.rsplit(".", 1)[1]] = val
+            grafted = True
+    return grafted
 
 
 _PLAYBOOK_ID_HASH_LEN = 16
@@ -949,11 +1002,14 @@ def _build_session_doc(
     network_info: dict = {}
     user_info: dict = {}
     ua_info: dict = {}
+    observer_info: dict = {}
     cowrie_extra: dict = {}
 
     for ev in events:
         if not source_info.get("ip") and (ev.get("source") or {}).get("ip"):
             source_info = ev["source"]
+        if not observer_info.get("name") and (ev.get("observer") or {}).get("name"):
+            observer_info = ev["observer"]
         if not dest_info.get("ip") and (ev.get("destination") or {}).get("ip"):
             dest_info = ev["destination"]
         if not network_info.get("protocol") and (ev.get("network") or {}).get("protocol"):
@@ -1166,6 +1222,10 @@ def _build_session_doc(
         doc["event"]["duration"] = duration_ns
     if source_info:
         doc["source"] = source_info
+    if observer_info:
+        # Sensor identity — drives the namespaced rollup `_id` and per-sensor
+        # filtering (P6.2 / D3). One observer per session.
+        doc["observer"] = observer_info
     if dest_info:
         doc["destination"] = dest_info
     if network_info:
@@ -1284,9 +1344,30 @@ def run_rollup(
                         _attach_source_ip_intel(doc, summary)
                         stats["sessions_with_intel"] += 1
 
-        actions: list[dict] = [
-            {"_op_type": "index", "_id": sid, "_source": doc}
+        # Namespaced `_id` (P6.2 / D3): `<sensor>:<session_id>`. Sensor from the
+        # doc's observer.name (set by _build_session_doc), default when unset.
+        # The raw id stays in the cowrie.session_id field for all reads.
+        uid_by_doc: list[tuple[str, dict]] = [
+            (_session_uid((doc.get("observer") or {}).get("name"), sid), doc)
             for sid, doc in built
+        ]
+
+        # Preserve the cross-writer cluster / playbook fields the backward
+        # `cluster sessions` / `name playbooks` steps stamp on the rollup doc,
+        # so this full-document re-index can't wipe them. Key on the namespaced
+        # uid — the same `_id` the index op uses.
+        preserved = fetch_source_subset(
+            es, sessions_idx,
+            [uid for uid, _ in uid_by_doc],
+            list(_SESSION_PRESERVE_FIELDS),
+        )
+        for uid, doc in uid_by_doc:
+            if _preserve_session_attribution(doc, preserved.get(uid)):
+                stats["sessions_attribution_preserved"] += 1
+
+        actions: list[dict] = [
+            {"_op_type": "index", "_id": uid, "_source": doc}
+            for uid, doc in uid_by_doc
         ]
 
         if actions:
@@ -2513,10 +2594,12 @@ def _fetch_ioc_coverage(
 ) -> list[tuple[str, int]]:
     """Cluster-wide IOC coverage from the session-rollup `artifact_set`:
     [(artifact, sessions_carrying_it)] sorted by coverage desc, capped at
-    `max_iocs`. The rollup is one doc per session keyed by session id, so a
-    terms-agg bucket's `doc_count` over `artifact_set.keyword` is exactly the
-    number of sampled sessions carrying that artifact. Artifacts are already
-    kind-prefixed (`ip:` / `domain:` / `url:` / `hash:` / `file:`)."""
+    `max_iocs`. A terms-agg bucket's `doc_count` over `artifact_set.keyword` is
+    the number of sampled sessions carrying that artifact. Artifacts are already
+    kind-prefixed (`ip:` / `domain:` / `url:` / `hash:` / `file:`).
+
+    Queries by the `cowrie.session_id` field, not the rollup `_id` — the `_id`
+    is sensor-namespaced (P6.2 / D3) while `session_ids` here are raw."""
     if not session_ids:
         return []
     field = "dshield.cowrie.enrichment.session.artifact_set.keyword"
@@ -2524,7 +2607,7 @@ def _fetch_ioc_coverage(
         resp = es.search(
             index=sessions_index,
             size=0,
-            query={"ids": {"values": session_ids}},
+            query={"terms": {"cowrie.session_id": session_ids}},
             aggs={"by_ioc": {"terms": {"field": field, "size": max(max_iocs * 5, 50)}}},
         )
     except Exception as exc:

@@ -1,13 +1,22 @@
 {
-  "_comment": "Session-level rollup. One doc per cowrie session_id. Doc _id = session_id (idempotent upserts). Built by 'rollup-sessions'; cluster fields populated by 'cluster-sessions'.",
+  "_comment": "Session-level rollup. One doc per session. Doc _id = '<sensor>:<cowrie_session_id>' (observer.name namespacing, P6.2) so cross-sensor session-id collisions can't corrupt derived state on upsert; reads go by the cowrie.session_id field, never by _id. Built by 'rollup-sessions'; cluster fields populated by 'cluster-sessions'. 5 shards (P2.2) for ~21M-doc target headroom under the ~50GB/shard ceiling.",
   "settings": {
-    "number_of_shards": 1,
+    "number_of_shards": 5,
     "number_of_replicas": 0,
     "refresh_interval": "30s"
   },
   "mappings": {
     "properties": {
       "@timestamp": { "type": "date" },
+
+      "observer": {
+        "properties": {
+          "name": {
+            "type": "text",
+            "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } }
+          }
+        }
+      },
 
       "event": {
         "properties": {

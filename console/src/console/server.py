@@ -1031,19 +1031,20 @@ def build_app(config_path: str | None = None) -> FastAPI:
 
         if sess_ids:
             try:
-                resp = es.mget(index=sess_idx, ids=sess_ids,
-                               _source=[
+                # Query by the cowrie.session_id field, not the rollup _id —
+                # the _id is sensor-namespaced (P6.2/D3) while sess_ids are raw.
+                resp = es.search(index=sess_idx, size=min(len(sess_ids), 10000),
+                                 query={"terms": {"cowrie.session_id": sess_ids}},
+                                 _source=[
                                    "cowrie.session_id",
                                    "dshield.cowrie.enrichment.session.credentials",
                                    "dshield.cowrie.enrichment.session.file_events",
                                    "dshield.cowrie.enrichment.session.artifact_set",
                                    "dshield.cowrie.enrichment.session.analyst_artifacts",
                                ])
-                for d in resp.get("docs", []):
-                    if not d.get("found"):
-                        continue
-                    sid = d["_id"]
+                for d in resp.get("hits", {}).get("hits", []):
                     src = d.get("_source") or {}
+                    sid = (src.get("cowrie") or {}).get("session_id") or d.get("_id")
                     senr = (((src.get("dshield") or {}).get("cowrie") or {})
                             .get("enrichment", {}).get("session", {}))
                     fe = senr.get("file_events") or []
