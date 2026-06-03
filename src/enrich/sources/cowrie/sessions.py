@@ -1797,6 +1797,7 @@ def run_cluster(
     refresh_reference: bool = False,
     use_reference: bool = True,
     bootstrap_from: Optional[str] = None,
+    accept_fallback: bool = False,
 ) -> dict:
     """HDBSCAN over session embeddings. Delegates to clustering core.
 
@@ -1928,6 +1929,10 @@ def run_cluster(
         # already encodes the outlier set; reassigning would mutate it).
         rescue_threshold=scfg.playbook_merge_threshold,
         cluster_fn=cluster_fn,
+        # P1.3 — hard-refuse the O(N^2) late-fusion path above the ceiling
+        # (or fall back to HDBSCAN with --accept-fallback). No-op in hdbscan mode.
+        fusion_max_docs=scfg.fusion_max_docs,
+        accept_fallback=accept_fallback,
     )
 
     # ROADMAP #4: per-cluster IP/command specificity, persisted on the centroid

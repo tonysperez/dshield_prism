@@ -290,6 +290,14 @@ class SessionConfig(BaseModel):
     # outlier_burst downstream behaviour does not change. Reversible by
     # config flip.
     clustering_mode: str = "hdbscan"
+    # P1.3 — hard ceiling on the late-fusion doc count. The fusion path builds
+    # an O(N^2) pure-Python pair-distance matrix (`_disagreement_distance`) plus
+    # an n×n float32 matrix, so it cannot run unbounded at scale (it hangs long
+    # before it OOMs). Above this, `cluster sessions` refuses with a clear error
+    # unless `--accept-fallback` is passed (which clusters with plain HDBSCAN
+    # instead). Ignored when clustering_mode == "hdbscan". 15k ≈ a ~0.9 GB
+    # matrix and minutes of pair-looping — the practical edge before unusable.
+    fusion_max_docs: int = 15000
     # Lexical-view dimensionality for the late-fusion path. 100-d is the
     # E0.2 ablation baseline that has carried through every subsequent
     # sweep. Lower values (50) collapse semantic distinctions; higher

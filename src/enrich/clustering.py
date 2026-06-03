@@ -366,6 +366,40 @@ def fusion_cluster_labels(
     return fusion_labels, embedding_outlier_flags, n_emb, n_lex
 
 
+def _fusion_over_ceiling(
+    n_docs: int,
+    fusion_max_docs: Optional[int],
+    *,
+    accept_fallback: bool,
+    layer_label: str,
+) -> bool:
+    """Decide what to do when the late-fusion path is selected at `n_docs`.
+
+    Returns ``False`` (proceed with fusion) when there is no ceiling or the
+    count is within it. Returns ``True`` (fall back to HDBSCAN) when over the
+    ceiling AND `accept_fallback` is set. **Raises** ``RuntimeError`` when over
+    the ceiling and fallback was not explicitly accepted — a hard refusal, not
+    a silent degradation, because the operator chose `late_fusion` deliberately.
+    P1.3. Pure (apart from a warning log); unit-tested directly.
+    """
+    if not fusion_max_docs or n_docs <= fusion_max_docs:
+        return False
+    if accept_fallback:
+        log.warning(
+            "[%s] late_fusion over ceiling (%d > %d) — falling back to HDBSCAN "
+            "(--accept-fallback)", layer_label, n_docs, fusion_max_docs,
+        )
+        return True
+    raise RuntimeError(
+        f"[{layer_label}] late_fusion refused: {n_docs} docs exceeds "
+        f"session.fusion_max_docs={fusion_max_docs}. The fusion path builds an "
+        f"O(N^2) pure-Python pair-distance matrix and an n×n float32 matrix, so "
+        f"it would hang at this size. Reduce the doc count (windowed clustering, "
+        f"P1.2), raise session.fusion_max_docs, or pass --accept-fallback to "
+        f"cluster with plain HDBSCAN instead."
+    )
+
+
 def load_centroids(
     es: Elasticsearch, clusters_index: str,
     *, reference_source: Optional[str] = None,
@@ -757,6 +791,8 @@ def run_layer_clustering(
     reference_source: Optional[str] = None,
     bootstrap_reference_now: bool = False,
     cluster_fn: Optional[Callable[..., tuple["np.ndarray", Optional["np.ndarray"]]]] = None,
+    fusion_max_docs: Optional[int] = None,
+    accept_fallback: bool = False,
 ) -> dict:
     """Generic HDBSCAN pipeline for one layer (commands / sessions / IPs / future).
 
@@ -855,6 +891,13 @@ def run_layer_clustering(
     #     without changing the production cluster.id semantics that
     #     non-noise sessions enjoy.
     outlier_flags_override: Optional["np.ndarray"] = None
+    # P1.3 — refuse (or fall back) before the O(N^2) late-fusion path runs at a
+    # size that would hang. No-op for HDBSCAN (cluster_fn is None) or no ceiling.
+    if cluster_fn is not None and _fusion_over_ceiling(
+        n_docs, fusion_max_docs, accept_fallback=accept_fallback,
+        layer_label=layer_label,
+    ):
+        cluster_fn = None
     if cluster_fn is None:
         log.info(
             "[%s] Running HDBSCAN (min_cluster_size=%d, min_samples=%d) on %d docs ...",

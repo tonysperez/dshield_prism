@@ -965,6 +965,14 @@ def _build_parser() -> argparse.ArgumentParser:
         cl = cluster_sub.add_parser(layer_name, help=cluster_layer_help[layer_name])
         cl.add_argument("--source", default="cowrie", help="Source name (default: cowrie)")
         cl.add_argument("--dry-run", action="store_true", help="Fetch + cluster but skip all ES writes")
+        cl.add_argument(
+            "--accept-fallback", action="store_true",
+            help=(
+                "Session layer + clustering_mode=late_fusion only: when the doc "
+                "count exceeds session.fusion_max_docs, cluster with plain "
+                "HDBSCAN instead of hard-refusing the O(N^2) fusion path (P1.3)."
+            ),
+        )
         # ROADMAP P1: stable across-run novelty scoring.
         ref_group = cl.add_mutually_exclusive_group()
         ref_group.add_argument(
@@ -1570,6 +1578,9 @@ def _dispatch_verb(args, cfg, secrets) -> int:
                 )
                 if bootstrap_from and layer == "sessions":
                     kwargs["bootstrap_from"] = bootstrap_from
+                if layer == "sessions":
+                    # P1.3 — only the session layer has the O(N^2) late-fusion path.
+                    kwargs["accept_fallback"] = args.accept_fallback
                 stats = mod.run_cluster(cfg, secrets, **kwargs)
             except (ImportError, RuntimeError) as exc:
                 print(f"[ERROR] cluster {layer}: {exc}", flush=True)
