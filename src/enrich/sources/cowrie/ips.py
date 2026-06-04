@@ -1136,12 +1136,14 @@ def annotate_ip_clusters_with_dominant_playbook(
         "clusters_annotated": 0,
     }
 
-    # Step 1: find the latest cluster run on the IP clusters index.
+    # Step 1: find the latest COMPLETED cluster run on the IP clusters index.
+    # P3.1 — resolve via the run_summary completion sentinel (written LAST,
+    # P3.3) so a half-built `cluster ips` run is never annotated.
     try:
         resp = es.search(
             index=ip_clusters_index,
             size=1,
-            query={"term": {"doc_type": "cluster"}},
+            query={"term": {"doc_type": "run_summary"}},
             sort=[{"@timestamp": "desc"}, {"_doc": "asc"}],
             _source=["run_id"],
         )

@@ -328,13 +328,15 @@ def build_anchor_payload(
         snap_session_count = int(latest.get("session_count") or 0)
         snap_ip_count = int(latest.get("ip_count") or 0)
 
-    # Latest cluster run_id from session_clusters.
+    # Latest COMPLETED cluster run_id from session_clusters. P3.1 — resolve via
+    # the run_summary sentinel (written LAST, P3.3) so the anchor is keyed to a
+    # complete run, not a half-built one.
     confirmed_run_id: Optional[str] = None
     try:
         resp = es.search(
             index=cowrie_idx.session_clusters,
             size=1,
-            query={"term": {"doc_type": "cluster"}},
+            query={"term": {"doc_type": "run_summary"}},
             sort=[{"@timestamp": "desc"}],
             _source=["run_id"],
         )

@@ -2871,16 +2871,21 @@ def run_name_playbooks(
                 f"Session clusters index '{session_clusters_idx}' not found. "
                 "Run 'cluster sessions' first."
             )
+        # P3.1 — resolve the run to name via the run_summary completion sentinel
+        # (written LAST, P3.3), so a half-built `cluster sessions` run is never
+        # named; fall back to the last complete run. In the normal backward
+        # chain the just-finished `cluster sessions` wrote its run_summary, so
+        # this resolves that same run.
         resp = es.search(
             index=session_clusters_idx,
             size=1,
-            query={"term": {"doc_type": "cluster"}},
+            query={"term": {"doc_type": "run_summary"}},
             sort=[{"@timestamp": "desc"}],
             _source=["run_id"],
         )
         hits = resp["hits"]["hits"]
         if not hits:
-            raise RuntimeError("No cluster docs found. Run 'cluster sessions' first.")
+            raise RuntimeError("No completed cluster run found. Run 'cluster sessions' first.")
         run_id = hits[0]["_source"]["run_id"]
         resp2 = es.search(
             index=session_clusters_idx,

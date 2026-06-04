@@ -432,11 +432,14 @@ def load_centroids(
         if reference_source is not None:
             return []
 
+        # P3.1 — resolve "latest run" via the run_summary completion sentinel
+        # (written LAST, P3.3), so a half-built run (centroids written, crashed
+        # before run_summary) is never read; fall back to the last complete run.
         resp = es.search(
             index=clusters_index,
             **{
                 "size": 1,
-                "query": {"term": {"doc_type": "cluster"}},
+                "query": {"term": {"doc_type": "run_summary"}},
                 "sort": [{"@timestamp": "desc"}],
                 "_source": ["run_id"],
             },

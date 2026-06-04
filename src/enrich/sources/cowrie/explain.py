@@ -62,9 +62,12 @@ def _cosine(a, b) -> float:
 
 
 def _latest_run_id(es: Elasticsearch, clusters_idx: str) -> Optional[str]:
+    # P3.1 — resolve via the run_summary completion sentinel (written LAST,
+    # P3.3), not the newest `cluster` doc, so explain never anchors on a
+    # half-built run; mirrors miner/lifecycle/console RunCache.
     resp = es.search(
         index=clusters_idx, size=1,
-        query={"term": {"doc_type": "cluster"}},
+        query={"term": {"doc_type": "run_summary"}},
         sort=[{"@timestamp": "desc"}],
         _source=["run_id"],
     )
