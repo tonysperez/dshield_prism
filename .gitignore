@@ -21,7 +21,6 @@ dist/
 .claude
 CLAUDE.md
 
-scripts/smoke
 docs
 .ruff_cache
 

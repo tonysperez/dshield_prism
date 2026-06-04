@@ -1,4 +1,4 @@
-name: Lint
+name: Lint + smoke
 
 on:
   push:
@@ -15,3 +15,29 @@ jobs:
           python-version: "3.11"
       - run: pip install ruff
       - run: ruff check src scripts
+
+  smoke:
+    # Offline smoke gate (ROADMAP #8). The ~88 scripts/smoke/smoke_test_*.py are
+    # ES/LLM/network-independent (verified), so they run here with no ES service.
+    # scripts/run_smoke.py runs the suite and SKIP-lists the known-broken ones.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install enrich + console (no ES service)
+        run: |
+          pip install -e .[cluster]
+          pip install -e ./console
+      - name: Run offline smoke tests
+        run: |
+          # Point ES at a dead endpoint + redirect SQLite state so a regressed
+          # test fails fast instead of reaching a real ES / unwritable state dir.
+          cat > /tmp/ci-no-es.yaml <<'EOF'
+          elasticsearch:
+            hosts: ["http://127.0.0.1:9"]
+          worker:
+            state_db: "/tmp/ci_smoke_state.sqlite"
+          EOF
+          PRISM_LOCAL_CONFIG=/tmp/ci-no-es.yaml python scripts/run_smoke.py

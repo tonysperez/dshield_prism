@@ -70,7 +70,11 @@ class ESConfig(BaseModel):
 
 class LLMConfig(BaseModel):
     provider: str = "openai_compat"
-    base_url: str
+    # Optional + defaulted to match enrich's LLMConfig: base_url is a per-deploy
+    # value that lives in the gitignored local.yaml, so the committed
+    # default.yaml omits it. The console only needs the ES block to run, so it
+    # must not hard-fail loading a base_url-less config.
+    base_url: Optional[str] = None
     generation_model: str
     api_key: Optional[str] = None
     request_timeout: int = 600
@@ -138,6 +142,11 @@ class OpsConfig(BaseModel):
     optional on the deploy side; older configs without an `ops:` block
     still load (the panel then renders a 'no telemetry yet' hint)."""
     indexes: OpsIndexes = OpsIndexes()
+    # Mirror of enrich.config.OpsConfig — the "pipeline running" banner reads
+    # this in queries._running_ops. Default 60; default.yaml may raise it (e.g.
+    # 2880 = 48h) for a long backfill. Must exist here or pipeline_running()
+    # AttributeErrors on the console's slim config.
+    pipeline_running_window_min: int = 60
 
 
 class SessionConfig(BaseModel):
