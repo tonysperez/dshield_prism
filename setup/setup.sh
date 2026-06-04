@@ -215,6 +215,7 @@ REQUIRED_FILES=(
     "${SRC_DIR}/systemd/dshield_prism-backward.timer"
     "${SRC_DIR}/systemd/dshield_prism-recluster-full.service"
     "${SRC_DIR}/systemd/dshield_prism-recluster-full.timer"
+    "${SRC_DIR}/systemd/dshield_prism-backfill.service"
 )
 for required in "${REQUIRED_FILES[@]}"; do
     [[ -f "${required}" ]] || die "Missing source file: ${required}"
@@ -642,6 +643,9 @@ if (( INSTALL_SYSTEMD )); then
         dshield_prism-backward.timer
         dshield_prism-recluster-full.service
         dshield_prism-recluster-full.timer
+        # Installed but NOT enabled — a manual one-shot for historical backfill,
+        # started on demand (`systemctl start dshield_prism-backfill`). No timer.
+        dshield_prism-backfill.service
     )
     if (( INSTALL_CONSOLE )); then
         UNITS+=(dshield_prism-console.service)

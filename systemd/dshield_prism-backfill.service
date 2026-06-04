@@ -1,0 +1,60 @@
+[Unit]
+Description=DShield Prism historical backfill — one-shot `pipeline --backfill` (manual start; may run for days)
+After=network-online.target
+Wants=network-online.target
+# Run the historical backfill in isolation from the steady-state passes. Starting
+# this unit STOPS the three timers (Conflicts deactivates them) so they don't
+# fire — and pile up blocked on the flock — for the days a bulk backfill takes.
+# The timers are NOT auto-restarted when this finishes: re-enable them yourself
+# as the deliberate "flip to forward steady state" step, AFTER you've validated
+# the backfill (refresh references, run a normal `pipeline`). See the
+# "Backfilling a new sensor" runbook in docs/reference.md.
+Conflicts=dshield_prism-forward.timer dshield_prism-backward.timer dshield_prism-recluster-full.timer
+
+[Service]
+Type=oneshot
+User=dshield_prism
+Group=dshield_prism
+WorkingDirectory=/opt/dshield_prism
+EnvironmentFile=/opt/dshield_prism/.env
+
+# The backfill. `pipeline --backfill` already takes the shared exclusive flock on
+# /var/lib/dshield_prism/.lock itself (cli._acquire_pipeline_lock) — the SAME
+# lock the forward/backward/recluster units use — so a still-in-flight steady
+# run is waited out. **Do not wrap this in /usr/bin/flock**: the outer flock and
+# the pipeline's own fcntl.flock on the same file would deadlock.
+#
+# Non-destructive: no --force (a startable service that auto-wipes is a footgun).
+# A wipe-and-rebuild rehearsal needs --force, which is a ONE-OFF, not this
+# recurring service. Run it as a transient unit — but FIRST stop the timers
+# yourself (this unit's Conflicts= does that automatically; systemd-run does not,
+# so skipping it lets the steady-state passes clobber the rebuild):
+#   sudo systemctl stop dshield_prism-forward.timer \
+#     dshield_prism-backward.timer dshield_prism-recluster-full.timer
+#   sudo systemd-run --uid=dshield_prism --gid=dshield_prism \
+#     --working-directory=/opt/dshield_prism -p TimeoutStartSec=infinity \
+#     --unit=dshield_prism-backfill-rebuild \
+#     /opt/dshield_prism/.venv/bin/python -m enrich.cli \
+#       --config /opt/dshield_prism/config/default.yaml pipeline --force --backfill --yes
+# --force ALSO wipes reference_session (the Tradecraft corpus) — re-import it
+# afterward (scripts/import_reference_corpus.py). Re-enable the timers only after
+# validating the rebuild.
+ExecStart=/opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml pipeline --backfill
+
+# A bulk backfill can run for days — no start timeout.
+TimeoutStartSec=infinity
+Nice=10
+
+StandardOutput=journal
+StandardError=journal
+
+# Hardening (matches the other units).
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dshield_prism /var/log/dshield_prism
+ProtectHome=true
+PrivateTmp=true
+
+# No [Install] section — started on demand with
+#   systemctl start dshield_prism-backfill.service
+# and watched with `journalctl -fu dshield_prism-backfill`. Never enabled on boot.

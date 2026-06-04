@@ -495,3 +495,14 @@ intel:
   # FireHOL / FeodoTracker / URLhaus) shouldn't be artificially
   # limited.
   max_per_run: 5000
+
+ops:
+  # Console "pipeline running" banner freshness window, in MINUTES. A
+  # status=started ops doc shows as a live run until it's older than this; a
+  # crashed verb (no finish patch) clears after the window. **Bumped to 48h
+  # (2880) for the bulk-backfill phase** — a single `pipeline --backfill` writes
+  # one started doc that stays open for hours, and the default 60 would make the
+  # banner falsely clear mid-run. Revert to 60 for steady state (per-verb
+  # systemd runs each finish in minutes, so a crashed one shouldn't ghost for
+  # two days).
+  pipeline_running_window_min: 2880

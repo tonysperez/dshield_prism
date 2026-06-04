@@ -925,6 +925,15 @@ class OpsConfig(BaseModel):
     finished/failed doc to `indexes.default`. Best-effort; the writer skips
     silently when the index is absent."""
     indexes: OpsIndexes = Field(default_factory=OpsIndexes)
+    # Console "pipeline running" banner freshness window (minutes). A
+    # `status=started` ops doc counts as a live run until its `started_at` is
+    # older than this — long enough to cover the longest single run, short
+    # enough that a crashed verb (which never wrote its finish patch) stops
+    # showing as "running". Default 60 suits the per-verb systemd cadence
+    # (each finishes in minutes). Raise it for a bulk-backfill phase, where a
+    # single `pipeline --backfill` writes one started doc that lives for hours
+    # (e.g. 2880 = 48h); revert to 60 for steady state.
+    pipeline_running_window_min: int = 60
 
 
 class AnalystRuleConfig(BaseModel):

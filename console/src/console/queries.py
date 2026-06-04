@@ -1563,8 +1563,10 @@ def health_runs(es: Elasticsearch, cfg: AppConfig) -> list[dict]:
 # A `status=started` ops doc is patched in place to finished/failed on normal
 # exit, so one that's still "started" is either a live verb or a crashed one
 # that never got patched. Treat started docs older than this as ghosts, not live
-# runs — generous enough to cover a long enrich/backfill, short enough to clear
-# a crashed-verb ghost within the hour.
+# runs. Default is generous enough to cover a long enrich/backfill, short enough
+# to clear a crashed-verb ghost within the hour — and is overridable via
+# `ops.pipeline_running_window_min` (raise it for a multi-hour bulk-backfill
+# pipeline run, where one `started` doc lives for hours).
 _PIPELINE_RUNNING_WINDOW_MIN = 60
 # Burst detection (the running-banner's stable elapsed). Each pipeline step is
 # its own process, so the "run started at" is the earliest step in the current
@@ -1625,7 +1627,8 @@ def _current_burst_start(es: Elasticsearch, idx: str) -> str | None:
     return burst_start
 
 
-def _running_ops(es: Elasticsearch, idx: str) -> list[dict]:
+def _running_ops(es: Elasticsearch, idx: str,
+                 window_min: int = _PIPELINE_RUNNING_WINDOW_MIN) -> list[dict]:
     """`status=started` verb_run docs within the freshness window — the live
     pipeline steps (P4.3 heartbeat). Newest first. Empty on any failure."""
     try:
@@ -1634,7 +1637,7 @@ def _running_ops(es: Elasticsearch, idx: str) -> list[dict]:
             query={"bool": {"must": [
                 {"term": {"kind": "verb_run"}},
                 {"term": {"status": "started"}},
-                {"range": {"started_at": {"gte": f"now-{_PIPELINE_RUNNING_WINDOW_MIN}m"}}},
+                {"range": {"started_at": {"gte": f"now-{window_min}m"}}},
             ]}},
             sort=[{"started_at": {"order": "desc"}}],
             _source=["verb", "host", "started_at"],
@@ -1660,7 +1663,7 @@ def pipeline_running(es: Elasticsearch, cfg: AppConfig) -> dict:
             return out
     except Exception:
         return out
-    running = _running_ops(es, idx)
+    running = _running_ops(es, idx, cfg.ops.pipeline_running_window_min)
     out["running"] = running
     out["active"] = bool(running)
     if running:
@@ -1720,7 +1723,7 @@ def health_ops_runs(es: Elasticsearch, cfg: AppConfig) -> dict:
 
     # In-progress: started but not yet finished/failed, within the freshness
     # window (the heartbeat) — shared with the global running-banner.
-    out["running"] = _running_ops(es, idx)
+    out["running"] = _running_ops(es, idx, cfg.ops.pipeline_running_window_min)
 
     return out
 

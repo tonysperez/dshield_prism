@@ -571,12 +571,16 @@ def _run_pipeline(cfg, secrets, args) -> int:
                 resp = input(
                     "[pipeline] --force will DELETE every processed ES index "
                     f"across all sources ({', '.join(wipe_sources)}):\n"
-                    "  cowrie:   commands, command_clusters, sessions_rollup, "
-                    "session_clusters, ips_rollup, ip_clusters, campaigns\n"
+                    f"  cowrie:   {', '.join(_LAYER_MAPPINGS.get('cowrie', {}))}\n"
                     "  intel:    prism.intel.ip, prism.intel.url\n"
                     "  findings: prism.finding\n"
                     "and clear the SQLite cache + watermark. The raw "
                     "sessions_raw index is NOT touched.\n"
+                    "NOTE: this includes reference_session (the imported "
+                    "Atomic Red Team / Tradecraft corpus) and playbook_anchors "
+                    "— the reference corpus must be RE-IMPORTED afterward "
+                    "(scripts/import_reference_corpus.py; reference-heal does NOT "
+                    "re-clone it).\n"
                     "Proceed? [y/N] "
                 ).strip().lower()
             except EOFError:
@@ -746,6 +750,13 @@ def _run_pipeline(cfg, secrets, args) -> int:
             "[pipeline] BACKFILL mode: cluster sessions forced to full corpus "
             "(--window-days 0); 'track lifecycles' + 'mine findings' skipped"
         )
+        if not dry and sys.stdout.isatty():
+            print_args(
+                "[pipeline] tip: a bulk backfill can run for hours/days — start it "
+                "detached so an SSH disconnect can't kill it:\n"
+                "    sudo systemctl start dshield_prism-backfill   "
+                "# watch: journalctl -fu dshield_prism-backfill"
+            )
 
     if dry:
         print_args("[pipeline] DRY-RUN — step plan:")
