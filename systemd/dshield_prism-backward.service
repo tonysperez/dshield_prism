@@ -62,6 +62,11 @@ ExecStart=/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/b
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml reference-heal
 
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml cluster sessions
+# `cluster ips` self-gates on ip.full_recluster_weekly (backlog B0.5): with the
+# default (false) it runs the full IP HDBSCAN here every cycle (legacy); set it
+# true for the multi-sensor backlog and this runs the cheap incremental
+# nearest-centroid assign instead (run_assign — new IPs only, no HDBSCAN) while
+# the full O(n^2) IP fit moves to the weekly recluster-full timer (no IP window).
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml cluster ips
 
 # --- Step 5b: cap the cluster indices. Each cluster run appends a fresh

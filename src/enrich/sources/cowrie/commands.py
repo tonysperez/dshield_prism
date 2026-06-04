@@ -866,7 +866,8 @@ def lookup_canonical_for_shape(
     try:
         resp = es.search(index=commands_index, **body)
     except Exception as exc:
-        log.warning("shape canonical lookup failed (%s): %s", shape_hash, exc)
+        _note_degraded("shape_canonical_lookup",
+                       "shape canonical lookup failed (%s): %s", shape_hash, exc)
         return None
     hits = resp.get("hits", {}).get("hits", [])
     if not hits:
@@ -947,7 +948,8 @@ def enrich_one(
                 system=SYSTEM_PROMPT,
             )
         except Exception as e:
-            log.warning("llm generate failed (attempt %d): %s", attempt, e)
+            _note_degraded("llm_generate_retry",
+                           "llm generate failed (attempt %d): %s", attempt, e)
             continue
         last_raw = raw
         parsed = _try_parse(raw)
@@ -959,7 +961,8 @@ def enrich_one(
             + raw[:500]
             + "\nReturn ONLY valid JSON."
         )
-    log.warning("local enrichment failed after retries; last_raw=%r", last_raw[:200])
+    _note_degraded("local_enrich_failed",
+                   "local enrichment failed after retries; last_raw=%r", last_raw[:200])
     return None, "local_failed", llm.gen_model
 
 

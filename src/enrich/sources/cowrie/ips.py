@@ -1412,6 +1412,131 @@ def run_cluster(
     )
 
 
+def _iter_unassigned_embedded_ips(
+    es: Elasticsearch, index: str, page_size: int = 1000,
+) -> Iterator[tuple[str, list[float]]]:
+    """Yield ``(doc_id, embedding)`` for embedded IP rollup docs that carry no
+    ``cluster.id`` yet — the new IPs the last full HDBSCAN run never scored.
+    (`outlier`-tagged IPs DO have a `cluster.id`, so they are excluded — only
+    genuinely-new IPs match.)"""
+    emb_field = "dshield.cowrie.enrichment.ip.embedding"
+    body: dict = {
+        "size": page_size,
+        "_source": [emb_field],
+        "query": {
+            "bool": {
+                "must": [{"exists": {"field": emb_field}}],
+                "must_not": [
+                    {"exists": {"field": "dshield.cowrie.enrichment.ip.cluster.id"}}
+                ],
+            }
+        },
+        "sort": [{"@timestamp": "asc"}, {"_doc": "asc"}],
+    }
+    search_after = None
+    while True:
+        if search_after:
+            body["search_after"] = search_after
+        resp = es.search(index=index, **body)
+        hits = resp["hits"]["hits"]
+        if not hits:
+            return
+        for h in hits:
+            emb = deep_get(h["_source"], emb_field)
+            if emb:
+                yield h["_id"], emb
+        search_after = hits[-1]["sort"]
+
+
+def run_assign(cfg: AppConfig, secrets: Secrets, *, dry_run: bool = False) -> dict:
+    """Backlog B0.5 Option B — incremental nearest-centroid IP assignment.
+
+    The cheap 6-hourly action for the IP layer when ``ip.full_recluster_weekly``
+    is set (instead of the no-op skip): place every embedded IP that lacks a
+    ``cluster.id`` — i.e. landed since the last weekly full fit — onto its
+    nearest pure-embedding cluster centroid from the latest completed
+    ``cluster ips`` run. **O(n_new x k), no HDBSCAN.** Existing IPs keep their
+    weekly-assigned id (preserved across the forward rollup's
+    ``_preserve_ip_cluster``); the weekly ``cluster ips --window-days 0`` re-fits
+    and corrects any coarse assignment. ``is_outlier`` is left False (assign
+    joins the nearest cluster); the ``novelty_score`` still reflects distance, so
+    novelty-driven findings still surface genuinely-new IPs.
+
+    Returns ``{}``-style stats. When no completed full run exists to assign
+    against (fresh deploy before the first weekly pass), assigns nothing and
+    records ``skipped="no_centroids"``.
+    """
+    import numpy as np
+    from ...clustering import load_run_centroids
+
+    es = make_client(cfg.elasticsearch, secrets)
+    ips_idx = cfg.elasticsearch.indexes.cowrie.ips_rollup
+    clusters_idx = cfg.elasticsearch.indexes.cowrie.ip_clusters
+
+    centroids = load_run_centroids(es, clusters_idx)
+    stats: dict = {"assigned": 0, "candidates": 0, "n_centroids": len(centroids)}
+    if not centroids:
+        log.warning(
+            "[cluster ips assign] no completed full IP run to assign against — "
+            "run the weekly `cluster ips --window-days 0` (recluster-full) first"
+        )
+        stats["skipped"] = "no_centroids"
+        return stats
+
+    cids = list(centroids)
+    cmat = np.asarray([centroids[c] for c in cids], dtype=np.float32)
+    cnorm = np.linalg.norm(cmat, axis=1, keepdims=True)
+    cnorm[cnorm == 0.0] = 1.0
+    cmat_unit = cmat / cnorm
+    now_str = datetime.now(timezone.utc).isoformat()
+
+    actions: list[dict] = []
+    for doc_id, emb in _iter_unassigned_embedded_ips(es, ips_idx, cfg.ip.page_size):
+        stats["candidates"] += 1
+        v = np.asarray(emb, dtype=np.float32)
+        if v.shape[0] != cmat_unit.shape[1]:
+            # Stale centroid set (dim mismatch) — leave for the weekly full fit.
+            continue
+        nv = float(np.linalg.norm(v))
+        if nv == 0.0:
+            continue
+        sims = cmat_unit @ (v / nv)
+        best = int(np.argmax(sims))
+        novelty = round(float(1.0 - max(0.0, float(sims[best]))), 6)
+        actions.append({
+            "_op_type": "update",
+            "_id": doc_id,
+            "script": {
+                "source": _IP_CLUSTER_UPDATE_SCRIPT,
+                "params": {
+                    "cluster_id": cids[best],
+                    "novelty_score": novelty,
+                    "is_outlier": False,
+                    "scored_at": now_str,
+                },
+            },
+        })
+
+    stats["assigned"] = len(actions)
+    if dry_run:
+        log.info(
+            "[cluster ips assign] dry-run: would assign %d new IP(s) to nearest "
+            "of %d centroids", len(actions), len(cids),
+        )
+        stats["dry_run"] = True
+        return stats
+    if actions:
+        ok, errs = bulk_write(es, ips_idx, actions)
+        stats["write_ok"] = ok
+        stats["write_errors"] = len(errs)
+        es.indices.refresh(index=ips_idx)
+    log.info(
+        "[cluster ips assign] assigned %d new IP(s) to nearest of %d centroids "
+        "(no HDBSCAN; B0.5 Option B)", len(actions), len(cids),
+    )
+    return stats
+
+
 def run_name_ip_clusters(
     cfg: AppConfig,
     secrets: Secrets,

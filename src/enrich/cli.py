@@ -94,6 +94,17 @@ def _commands_layer(source: str):
 _DEFAULT_CLUSTER_KEEP_RUNS = 5
 
 
+def _ip_full_recluster_skipped(cfg, window_days) -> bool:
+    """Backlog B0.5 IP-layer cadence gate. True when the 6-hourly backward
+    `cluster ips` should skip its full O(n^2) HDBSCAN because the operator has
+    moved the full pass onto the weekly `dshield_prism-recluster-full` timer.
+
+    Skipped when ``ip.full_recluster_weekly`` is set AND the run is not the
+    forced full pass (``--window-days 0``, which the weekly unit passes). With
+    the default (flag False) nothing is skipped — legacy full-every-run."""
+    return bool(getattr(cfg.ip, "full_recluster_weekly", False)) and window_days != 0
+
+
 def _cluster_indices_for_source(cfg, source: str):
     """[(layer_label, index), ...] of the cluster-centroid indices for a
     source, or None if the source has none. Used by `prune-clusters`."""
@@ -1733,6 +1744,22 @@ def _dispatch_verb(args, cfg, secrets) -> int:
             if mod is None:
                 log.error("Source %r has no %r layer", args.source, layer)
                 return 1
+            # B0.5 — IP-layer re-cluster cadence gate. When the operator has
+            # moved the full IP fit onto the weekly recluster-full timer, the
+            # 6-hourly backward `cluster ips` runs the cheap incremental assign
+            # (Option B) instead of the full O(n^2) HDBSCAN: new IPs land on the
+            # nearest existing centroid, existing IPs keep their weekly id (via
+            # the forward rollup's _preserve_ip_cluster), and the weekly pass —
+            # forced with `--window-days 0` — does the real fit + reference
+            # refresh.
+            if layer == "ips" and _ip_full_recluster_skipped(cfg, args.window_days):
+                log.info(
+                    "[cluster ips] ip.full_recluster_weekly=true and not the "
+                    "forced full pass: running incremental nearest-centroid "
+                    "assign instead of the full HDBSCAN (backlog B0.5 Option B)."
+                )
+                all_stats[layer] = mod.run_assign(cfg, secrets, dry_run=args.dry_run)
+                continue
             try:
                 kwargs = dict(
                     dry_run=args.dry_run,

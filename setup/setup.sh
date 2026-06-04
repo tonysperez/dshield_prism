@@ -43,10 +43,15 @@
 #            + mine campaigns + track lifecycles + intel refresh
 #            + mine findings
 #            (every 6h; `cluster sessions` windows to the last 30 days
-#             per session.cluster_window_days — P1.2)
+#             per session.cluster_window_days — P1.2. `cluster ips` self-gates
+#             on ip.full_recluster_weekly — runs the incremental nearest-centroid
+#             assign here when set, B0.5)
 #        dshield_prism-recluster-full.timer
 #          → weekly full `cluster sessions --window-days 0
-#            --refresh-reference` + prune-clusters (re-pools the long tail
+#            --refresh-reference` + `cluster ips --window-days 0
+#            --refresh-reference` (B0.5 — the only full IP fit when
+#            ip.full_recluster_weekly=true; also the IP reference's only
+#            periodic refresh) + prune-clusters (re-pools the long tail
 #            and refreshes the reference_centroid set the windowed 6h runs
 #            score against)
 #        All timers serialise on /var/lib/dshield_prism/.lock via flock.

@@ -476,6 +476,67 @@ def load_centroids(
         return []
 
 
+def load_run_centroids(
+    es: Elasticsearch, clusters_index: str,
+) -> dict:
+    """Load ``{cluster_id: pure-embedding centroid}`` from the latest COMPLETE
+    cluster run.
+
+    Resolves "latest run" via the ``run_summary`` completion sentinel (written
+    LAST — P3.1/P3.3 — so a half-built run whose centroids were indexed before a
+    crash is never read). The ``outlier`` pseudo-cluster has no centroid doc and
+    is therefore absent. Returns ``{}`` on missing index, no complete run, or any
+    query failure.
+
+    Used by the IP-layer incremental assign (backlog B0.5 Option B) to place new
+    IPs on the nearest existing cluster centroid without re-running HDBSCAN.
+    """
+    try:
+        if not es.indices.exists(index=clusters_index):
+            return {}
+        resp = es.search(
+            index=clusters_index,
+            **{
+                "size": 1,
+                "query": {"term": {"doc_type": "run_summary"}},
+                "sort": [{"@timestamp": "desc"}],
+                "_source": ["run_id"],
+            },
+        )
+        hits = resp["hits"]["hits"]
+        if not hits:
+            return {}
+        run_id = hits[0]["_source"].get("run_id")
+        if not run_id:
+            return {}
+        resp2 = es.search(
+            index=clusters_index,
+            **{
+                "size": 1000,
+                "query": {
+                    "bool": {
+                        "must": [
+                            {"term": {"doc_type": "cluster"}},
+                            {"term": {"run_id": run_id}},
+                        ]
+                    }
+                },
+                "_source": ["cluster_id", "centroid"],
+            },
+        )
+        out: dict = {}
+        for h in resp2["hits"]["hits"]:
+            src = h["_source"]
+            cid = src.get("cluster_id")
+            centroid = src.get("centroid")
+            if cid and centroid:
+                out[cid] = centroid
+        return out
+    except Exception as exc:
+        log.warning("Could not load run centroids from %s: %s", clusters_index, exc)
+        return {}
+
+
 def load_reference_centroids(
     es: Elasticsearch, clusters_index: str,
     *, reference_source: Optional[str] = None,

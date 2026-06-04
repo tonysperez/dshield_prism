@@ -1279,10 +1279,16 @@ def _build_session_doc(
         doc["event"]["duration"] = duration_ns
     if source_info:
         doc["source"] = source_info
-    if observer_info:
-        # Sensor identity — drives the namespaced rollup `_id` and per-sensor
-        # filtering (P6.2 / D3). One observer per session.
-        doc["observer"] = observer_info
+    # Sensor identity — drives the namespaced rollup `_id` and per-sensor
+    # filtering (P6.2 / D3). One observer per session. P6.1: always stamp
+    # observer.name so the doc's sensor matches its namespaced `_id`
+    # (`<sensor>:<session_id>`). Events that carry no observer.name (single-
+    # sensor deploys that don't name their sensor) get `_DEFAULT_SENSOR`,
+    # consistent with the `_id` — so the field is reliably present for the
+    # cross-sensor read disambiguation (P6.1 read-side, multi-sensor).
+    if not observer_info.get("name"):
+        observer_info["name"] = _DEFAULT_SENSOR
+    doc["observer"] = observer_info
     if dest_info:
         doc["destination"] = dest_info
     if network_info:

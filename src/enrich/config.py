@@ -381,6 +381,21 @@ class IPConfig(BaseModel):
     # so per-doc novelty scored against the reference reflects embedding
     # geometry only — scalar-driven cluster membership is not factored in.
     reference_max_age_days: int = 45
+    # Backlog scale-hardening B0.5 — IP-layer re-cluster cadence. The IP layer
+    # has no windowing escape valve (unlike sessions' cluster_window_days): an
+    # IP's embedding is built from its cumulative all-time rollup, so a recency
+    # window would drop dormant-then-active scanners — exactly the signal you
+    # want. And a full HDBSCAN over the embedded-IP set is O(n^2)
+    # (eval/results/B0-preflight-loadtest.md: ~23 min at 50K embedded IPs,
+    # ~1.5 h at 100K). When True, the 6-hourly backward `cluster ips` skips the
+    # full re-cluster; the full pass runs once/week in
+    # dshield_prism-recluster-full instead (forced there via `--window-days 0`).
+    # Existing IPs keep their cluster.id between weekly runs (forward `rollup
+    # ips` _preserve_ip_cluster); new IPs land unclustered until the weekly
+    # pass — the accepted MVP cost (the incremental nearest-reference-centroid
+    # assign is the follow-up, B0.5 Option B). Default False = full re-cluster
+    # every backward run (legacy). Flip True for the multi-sensor backlog.
+    full_recluster_weekly: bool = False
 
 
 class IntelProviderConfig(BaseModel):

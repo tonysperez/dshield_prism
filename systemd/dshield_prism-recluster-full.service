@@ -1,5 +1,5 @@
 [Unit]
-Description=DShield Prism weekly full session re-cluster — refresh reference + re-pool the long tail (P1.2)
+Description=DShield Prism weekly full session + IP re-cluster — refresh reference + re-pool the long tail (P1.2 / backlog B0.5)
 After=network-online.target
 Wants=network-online.target
 
@@ -33,6 +33,19 @@ ExecStartPre=/usr/bin/flock /var/lib/dshield_prism/.lock /bin/true
 # reference isn't being refreshed), but it is a standalone unit so nothing else
 # is aborted.
 ExecStart=/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml cluster sessions --window-days 0 --refresh-reference
+
+# Backlog scale-hardening B0.5 — the IP layer has no windowing escape valve, so
+# its full O(n^2) HDBSCAN is the dominant scale wall (~23 min at 50K embedded
+# IPs; eval/results/B0-preflight-loadtest.md). When ip.full_recluster_weekly is
+# set, the 6-hourly backward `cluster ips` skips and this weekly pass is the
+# only full IP fit. `--window-days 0` forces the full run regardless of the
+# flag; `--refresh-reference` re-mints the IP reference_centroid set — which the
+# 6h chain never did, so without this the IP reference only ever bootstraps and
+# ages past ip.reference_max_age_days. Beneficial even with the flag off (gives
+# the IP reference its only periodic refresh). `-` (soft) so a slow/failed full
+# IP pass never blocks prune-clusters below — the failure still surfaces in
+# prism.ops.
+ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml cluster ips --window-days 0 --refresh-reference
 
 # Cap the cluster index after the full run appends a fresh (larger) centroid
 # set + run_summary — keeps the newest K runs, preserves every
