@@ -169,7 +169,7 @@ Everything else lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 ## Install
 
 ```bash
-sudo bash setup/setup.sh
+sudo bash setup/2-setup.sh
 ```
 
 Idempotent. Requires `.env` + `config/local.yaml` filled in, and a reachable LLM server. See [docs/reference.md](docs/reference.md) for setup details, configuration, and operational workflows.

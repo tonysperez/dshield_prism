@@ -117,7 +117,7 @@ identity.
   to emit a sensor name — so left alone D3 degenerates to `default:` for
   everything (no real collision protection). Resolution (operator-chosen): stamp
   `observer.name` at ingest, per sensor. The base pipeline now preserves an
-  externally-set `observer.name`, and `setup/create-sensor-pipelines.sh`
+  externally-set `observer.name`, and `setup/1-create-sensor-pipelines.sh`
   generates the per-sensor wrapper pipeline file(s) (prompts for names, never
   edits existing). Verified with `_ingest/pipeline/_simulate`: wrapper value
   survives; legacy `cowrie.sensor` still maps; neither → `default:`. Operator

@@ -378,7 +378,7 @@ cat <<EOF
   - the repository source on this box (this script lives in it)
 
 To reinstall from scratch:
-  sudo bash setup/setup.sh
+  sudo bash setup/2-setup.sh
 EOF
 if (( ! PURGE_RAW_LOGS && DO_ES )); then
 cat <<EOF

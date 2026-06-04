@@ -578,9 +578,9 @@ def _run_pipeline(cfg, secrets, args) -> int:
                     "sessions_raw index is NOT touched.\n"
                     "NOTE: this includes reference_session (the imported "
                     "Atomic Red Team / Tradecraft corpus) and playbook_anchors "
-                    "— the reference corpus must be RE-IMPORTED afterward "
-                    "(scripts/import_reference_corpus.py; reference-heal does NOT "
-                    "re-clone it).\n"
+                    "— the reference corpus must be re-bootstrapped afterward "
+                    "(setup/3-bootstrap-reference-corpus.sh; reference-heal does "
+                    "NOT re-clone it).\n"
                     "Proceed? [y/N] "
                 ).strip().lower()
             except EOFError:
