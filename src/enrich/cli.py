@@ -94,6 +94,27 @@ def _commands_layer(source: str):
 _DEFAULT_CLUSTER_KEEP_RUNS = 5
 
 
+# Backlog B2 — pipeline steps dropped in --backfill mode. Both stamp backfill
+# wall-clock onto historical activity (lifecycle snapshots) or flood the inbox
+# (findings), so they run only in a normal pipeline pass AFTER the backfill.
+_BACKFILL_SKIP_STEPS = ("track lifecycles", "mine findings")
+
+
+def _apply_backfill_mode(steps, cluster_sessions_full):
+    """Adjust the pipeline step list for `--backfill`: drop the temporally-
+    corrupting steps (`_BACKFILL_SKIP_STEPS`) and replace `cluster sessions`
+    with the full-corpus variant (`--window-days 0`). `cluster_sessions_full`
+    is the replacement callable. Pure list transform — unit-tested."""
+    out = []
+    for name, fn, optional in steps:
+        if name in _BACKFILL_SKIP_STEPS:
+            continue
+        if name == "cluster sessions":
+            fn = cluster_sessions_full
+        out.append((name, fn, optional))
+    return out
+
+
 def _ip_full_recluster_skipped(cfg, window_days) -> bool:
     """Backlog B0.5 IP-layer cadence gate. True when the 6-hourly backward
     `cluster ips` should skip its full O(n^2) HDBSCAN because the operator has
@@ -700,6 +721,31 @@ def _run_pipeline(cfg, secrets, args) -> int:
         # pipeline's output.
         ("mine findings",              _run_mine_findings,                                                                True),
     ]
+
+    # Backlog B2 / problem #1 — historical-backfill safe mode. Replaying 2-year
+    # data through a few backfill runs would (a) leave old sessions unclustered
+    # under the 30d window and (b) corrupt the temporal layer: lifecycle
+    # snapshots stamped at backfill wall-clock, and a `new_playbook` /
+    # `intel_verdict_flip` inbox flood. So force full-corpus session clustering
+    # and drop the temporally-corrupting steps. The forward findings/lifecycle
+    # layer is built by a normal `pipeline` run AFTER the backfill completes
+    # (B3/B4). intel + cloud should be off for the historical phase.
+    if getattr(args, "backfill", False):
+        steps = _apply_backfill_mode(
+            steps,
+            lambda: sessions_mod.run_cluster(cfg, secrets, dry_run=dry, window_days=0),
+        )
+        on = [n for n, e in (("intel", cfg.intel.enabled), ("cloud", cfg.cloud.enabled)) if e]
+        if on:
+            log.warning(
+                "[pipeline --backfill] %s enabled — recommend disabling for the "
+                "historical phase (verdicts are anachronistic; cloud budget is "
+                "spent on backfill novelty). See backlog #5/#6.", " + ".join(on),
+            )
+        print_args(
+            "[pipeline] BACKFILL mode: cluster sessions forced to full corpus "
+            "(--window-days 0); 'track lifecycles' + 'mine findings' skipped"
+        )
 
     if dry:
         print_args("[pipeline] DRY-RUN — step plan:")
@@ -1375,6 +1421,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p_pipe.add_argument(
         "--no-cloud", action="store_true",
         help="Pass --no-cloud through to `enrich` (skip cloud escalation paths)",
+    )
+    p_pipe.add_argument(
+        "--backfill", action="store_true",
+        help=(
+            "Historical-backfill safe mode (backlog B2 / problem #1). Forces "
+            "`cluster sessions` to the full corpus (--window-days 0) and DROPS "
+            "the two temporally-corrupting steps — `track lifecycles` and "
+            "`mine findings` — which would stamp backfill wall-clock time onto "
+            "old activity and flood the inbox. Recommends intel + cloud "
+            "disabled (warns if enabled). Use for the 2-year historical phase; "
+            "run a normal pipeline once after to build the forward findings."
+        ),
     )
     p_pipe.add_argument(
         "--no-lock", action="store_true",
