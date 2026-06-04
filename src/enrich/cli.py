@@ -17,6 +17,13 @@ from .__about__ import CLI_NAME
 from .config import load_config, load_secrets
 from . import healthcheck as hc_mod
 
+# Module-level logger. The root config in `_setup_log` attaches a stderr
+# StreamHandler (always) + the cli.log RotatingFileHandler, so `log.*` reaches
+# both the journal/terminal AND the durable file — unlike `print()`, which only
+# hits stdout. Dispatch-level operator errors go through `log.error` (P4.1) so a
+# failed run is reconstructable from cli.log, not just journald.
+log = logging.getLogger(__name__)
+
 
 def _setup_log(level: str, log_dir: str | None = None) -> None:
     """Configure root logging.
@@ -567,7 +574,7 @@ def _run_pipeline(cfg, secrets, args) -> int:
     ips_mod       = _load_source_layer(args.source, "ips")
     campaigns_mod = _load_source_layer(args.source, "campaigns")
     if cmds_mod is None or sessions_mod is None or ips_mod is None or campaigns_mod is None:
-        print_args(f"[ERROR] Source {args.source!r} is missing one or more pipeline layers.")
+        log.error("Source %r is missing one or more pipeline layers.", args.source)
         return 1
 
     dry = args.dry_run
@@ -702,7 +709,9 @@ def _run_pipeline(cfg, secrets, args) -> int:
             print_args(json.dumps(stats, indent=2, default=str))
         except Exception as exc:
             summary["steps"].append({"name": name, "ok": False, "error": str(exc)})
-            print_args(f"[FAIL] {name}: {exc}")
+            # Step failure is operator-actionable → logger (durable in cli.log +
+            # leveled), P4.1. The json summary below still records it on stdout.
+            log.error("[pipeline] step %s failed: %s", name, exc)
             if optional or args.continue_on_error:
                 continue
             failed_hard = True
@@ -1540,12 +1549,12 @@ def _dispatch_verb(args, cfg, secrets) -> int:
         es = make_client(cfg.elasticsearch, secrets)
         mappings = _LAYER_MAPPINGS.get(args.source)
         if mappings is None:
-            print(f"[ERROR] Unknown source: {args.source}", flush=True)
+            log.error("Unknown source: %s", args.source)
             return 1
         layers = [args.layer] if args.layer else list(mappings.keys())
         unknown = [l for l in layers if l not in mappings]
         if unknown:
-            print(f"[ERROR] Unknown layer(s) for source {args.source}: {unknown}", flush=True)
+            log.error("Unknown layer(s) for source %s: %s", args.source, unknown)
             return 1
         results: list[dict] = []
         for layer in layers:
@@ -1562,7 +1571,7 @@ def _dispatch_verb(args, cfg, secrets) -> int:
     if args.verb == "enrich":
         mod = _commands_layer(args.source)
         if mod is None:
-            print(f"[ERROR] Source {args.source!r} has no commands layer", flush=True)
+            log.error("Source %r has no commands layer", args.source)
             return 1
         if getattr(args, "ignore_config_hash", False):
             cfg.worker.cache_auto_invalidate = False
@@ -1587,12 +1596,12 @@ def _dispatch_verb(args, cfg, secrets) -> int:
     if args.verb == "escalate":
         mod = _commands_layer(args.source)
         if mod is None:
-            print(f"[ERROR] Source {args.source!r} has no commands layer", flush=True)
+            log.error("Source %r has no commands layer", args.source)
             return 1
         try:
             stats = mod.run_escalate(cfg, secrets, dry_run=args.dry_run)
         except RuntimeError as exc:
-            print(f"[ERROR] {exc}", flush=True)
+            log.error("%s", exc)
             return 1
         print(json.dumps(stats, indent=2, default=str))
         return 0
@@ -1600,7 +1609,7 @@ def _dispatch_verb(args, cfg, secrets) -> int:
     if args.verb == "reembed":
         mod = _commands_layer(args.source)
         if mod is None:
-            print(f"[ERROR] Source {args.source!r} has no commands layer", flush=True)
+            log.error("Source %r has no commands layer", args.source)
             return 1
         if getattr(args, "ignore_config_hash", False):
             cfg.worker.cache_auto_invalidate = False
@@ -1611,7 +1620,7 @@ def _dispatch_verb(args, cfg, secrets) -> int:
     if args.verb == "re-enrich-stale":
         mod = _commands_layer(args.source)
         if mod is None:
-            print(f"[ERROR] Source {args.source!r} has no commands layer", flush=True)
+            log.error("Source %r has no commands layer", args.source)
             return 1
         stats = mod.run_reenrich_stale(cfg, secrets, dry_run=args.dry_run)
         print(json.dumps(stats, indent=2, default=str))
@@ -1620,7 +1629,7 @@ def _dispatch_verb(args, cfg, secrets) -> int:
     if args.verb == "backfill-shape":
         mod = _commands_layer(args.source)
         if mod is None:
-            print(f"[ERROR] Source {args.source!r} has no commands layer", flush=True)
+            log.error("Source %r has no commands layer", args.source)
             return 1
         stats = mod.run_backfill_shape(cfg, secrets, dry_run=args.dry_run)
         print(json.dumps(stats, indent=2, default=str))
@@ -1631,7 +1640,7 @@ def _dispatch_verb(args, cfg, secrets) -> int:
         from .clustering import prune_cluster_runs
         targets = _cluster_indices_for_source(cfg, args.source)
         if targets is None:
-            print(f"[ERROR] Source {args.source!r} has no cluster indices", flush=True)
+            log.error("Source %r has no cluster indices", args.source)
             return 1
         es = make_client(cfg.elasticsearch, secrets)
         out: dict = {
@@ -1661,16 +1670,15 @@ def _dispatch_verb(args, cfg, secrets) -> int:
 
     if args.verb == "re-triage":
         if not args.backward:
-            print(
-                "[ERROR] re-triage requires --backward. Forward mode isn't "
+            log.error(
+                "re-triage requires --backward. Forward mode isn't "
                 "implemented yet; --backward signals 'rewrite triage_reasons "
-                "on every already-enriched doc using current rules.'",
-                flush=True,
+                "on every already-enriched doc using current rules.'"
             )
             return 1
         mod = _commands_layer(args.source)
         if mod is None:
-            print(f"[ERROR] Source {args.source!r} has no commands layer", flush=True)
+            log.error("Source %r has no commands layer", args.source)
             return 1
         stats = mod.run_retriage(
             cfg, secrets,
@@ -1713,10 +1721,9 @@ def _dispatch_verb(args, cfg, secrets) -> int:
         # convenience wrapper for backward-cycle runs.
         bootstrap_from = getattr(args, "bootstrap_from", None)
         if bootstrap_from and args.layer != "sessions":
-            print(
-                f"[ERROR] --bootstrap-from is sessions-layer only "
-                f"(got layer={args.layer!r}). Brutal-review phase 5.4.",
-                flush=True,
+            log.error(
+                "--bootstrap-from is sessions-layer only "
+                "(got layer=%r). Brutal-review phase 5.4.", args.layer,
             )
             return 1
         layers = ("commands", "sessions", "ips") if args.layer == "all" else (args.layer,)
@@ -1724,7 +1731,7 @@ def _dispatch_verb(args, cfg, secrets) -> int:
         for layer in layers:
             mod = _load_source_layer(args.source, layer)
             if mod is None:
-                print(f"[ERROR] Source {args.source!r} has no {layer!r} layer", flush=True)
+                log.error("Source %r has no %r layer", args.source, layer)
                 return 1
             try:
                 kwargs = dict(
@@ -1741,7 +1748,7 @@ def _dispatch_verb(args, cfg, secrets) -> int:
                     kwargs["window_days"] = args.window_days
                 stats = mod.run_cluster(cfg, secrets, **kwargs)
             except (ImportError, RuntimeError) as exc:
-                print(f"[ERROR] cluster {layer}: {exc}", flush=True)
+                log.error("cluster %s: %s", layer, exc)
                 return 1
             all_stats[layer] = stats
         if args.layer == "all":
@@ -1755,12 +1762,12 @@ def _dispatch_verb(args, cfg, secrets) -> int:
     if args.verb == "rollup":
         mod = _load_source_layer(args.source, args.layer)
         if mod is None:
-            print(f"[ERROR] Source {args.source!r} has no {args.layer!r} layer", flush=True)
+            log.error("Source %r has no %r layer", args.source, args.layer)
             return 1
         try:
             stats = mod.run_rollup(cfg, secrets, dry_run=args.dry_run)
         except RuntimeError as exc:
-            print(f"[ERROR] {exc}", flush=True)
+            log.error("%s", exc)
             return 1
         print(json.dumps(stats, indent=2, default=str))
         return 0
@@ -1769,30 +1776,30 @@ def _dispatch_verb(args, cfg, secrets) -> int:
         if args.subject == "playbooks":
             mod = _load_source_layer(args.source, "sessions")
             if mod is None:
-                print(f"[ERROR] Source {args.source!r} has no `sessions` layer", flush=True)
+                log.error("Source %r has no `sessions` layer", args.source)
                 return 1
             try:
                 stats = mod.run_name_playbooks(
                     cfg, secrets, dry_run=args.dry_run, force=args.force,
                 )
             except RuntimeError as exc:
-                print(f"[ERROR] {exc}", flush=True)
+                log.error("%s", exc)
                 return 1
             print(json.dumps(stats, indent=2, default=str))
             return 0
         if args.subject == "ip-clusters":
             mod = _load_source_layer(args.source, "ips")
             if mod is None:
-                print(f"[ERROR] Source {args.source!r} has no `ips` layer", flush=True)
+                log.error("Source %r has no `ips` layer", args.source)
                 return 1
             try:
                 stats = mod.run_name_ip_clusters(cfg, secrets, dry_run=args.dry_run)
             except RuntimeError as exc:
-                print(f"[ERROR] {exc}", flush=True)
+                log.error("%s", exc)
                 return 1
             print(json.dumps(stats, indent=2, default=str))
             return 0
-        print(f"[ERROR] Unknown `name` subject: {args.subject!r}", flush=True)
+        log.error("Unknown `name` subject: %r", args.subject)
         return 1
 
     if args.verb == "mine":
@@ -1849,7 +1856,7 @@ def _dispatch_verb(args, cfg, secrets) -> int:
             return 0 if not result.get("errors") else 1
         mod = _load_source_layer(args.source, "campaigns")
         if mod is None:
-            print(f"[ERROR] Source {args.source!r} has no `campaigns` miner", flush=True)
+            log.error("Source %r has no `campaigns` miner", args.source)
             return 1
         try:
             stats = mod.run_mine(
@@ -1858,7 +1865,7 @@ def _dispatch_verb(args, cfg, secrets) -> int:
                 window_days=args.window_days,
             )
         except RuntimeError as exc:
-            print(f"[ERROR] {exc}", flush=True)
+            log.error("%s", exc)
             return 1
         print(json.dumps(stats, indent=2, default=str))
         return 0
@@ -1894,7 +1901,7 @@ def _dispatch_verb(args, cfg, secrets) -> int:
                 stats = write_threshold_distributions(es, cfg)
             print(json.dumps(stats, indent=2, default=str))
             return 0
-        print(f"[ERROR] Unknown `track` subject: {args.subject!r}", flush=True)
+        log.error("Unknown `track` subject: %r", args.subject)
         return 1
 
     if args.verb == "intel":
@@ -1907,7 +1914,7 @@ def _dispatch_verb(args, cfg, secrets) -> int:
             from .intel.migrate import run_reapply_rules
             stats = run_reapply_rules(cfg, secrets, dry_run=args.dry_run)
         else:
-            print(f"[ERROR] Unknown `intel` subject: {args.subject!r}", flush=True)
+            log.error("Unknown `intel` subject: %r", args.subject)
             return 1
         print(json.dumps(stats, indent=2, default=str))
         return 0

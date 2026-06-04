@@ -36,6 +36,37 @@ from ... import triage as triage_mod
 
 log = logging.getLogger(__name__)
 
+# P4.1 — per-item graceful-degradation fallbacks (e.g. a co-occurrence agg query
+# failing for ONE command) must not log a `warning` each: at corpus scale that
+# floods the journal with hundreds of thousands of identical lines. Instead warn
+# ONCE per run per failure-type (the operator signal), count the rest, and log
+# them at `debug`. Each verb runs as its own process, so these module-level
+# counters are naturally per-run; `flush_degraded_fallbacks` surfaces the totals
+# once at the end of the dominant `enrich` path (mirrors the MITRE-drop aggregate).
+_DEGRADED_FALLBACKS: dict[str, int] = defaultdict(int)
+_DEGRADED_WARNED: set[str] = set()
+
+
+def _note_degraded(key: str, msg: str, *args) -> None:
+    """Record a per-item degradation: warn once per run per `key`, then debug."""
+    _DEGRADED_FALLBACKS[key] += 1
+    if key not in _DEGRADED_WARNED:
+        _DEGRADED_WARNED.add(key)
+        log.warning(msg + " [per-item fallback; further occurrences this run at debug]", *args)
+    else:
+        log.debug(msg, *args)
+
+
+def flush_degraded_fallbacks() -> dict:
+    """Return + reset the per-run degraded-fallback counts so the caller can
+    surface the aggregate once (see the scale of any degradation without the
+    per-item flood)."""
+    snapshot = dict(_DEGRADED_FALLBACKS)
+    _DEGRADED_FALLBACKS.clear()
+    _DEGRADED_WARNED.clear()
+    return snapshot
+
+
 _COMMANDS_MAPPING = "setup/es-mappings/cowrie/commands.json"
 _COMMAND_CLUSTERS_MAPPING = "setup/es-mappings/cowrie/command_clusters.json"
 
@@ -579,7 +610,8 @@ def fetch_cooccurring_commands(
         )
         sids = [b["key"] for b in resp["aggregations"]["sessions"]["buckets"] if b.get("key")]
     except Exception as e:
-        log.warning("co-occurrence: session lookup failed for %r: %s", command[:80], e)
+        _note_degraded("cooccurrence_session_lookup",
+                       "co-occurrence: session lookup failed for %r: %s", command[:80], e)
         return []
 
     if len(sids) < min_sessions:
@@ -606,7 +638,8 @@ def fetch_cooccurring_commands(
         )
         buckets = resp2["aggregations"]["siblings"]["buckets"]
     except Exception as e:
-        log.warning("co-occurrence: sibling agg failed for %r: %s", command[:80], e)
+        _note_degraded("cooccurrence_sibling_agg",
+                       "co-occurrence: sibling agg failed for %r: %s", command[:80], e)
         return []
 
     tf_by_sib: dict[str, int] = {}
@@ -645,7 +678,8 @@ def fetch_cooccurring_commands(
                 for b in resp3["aggregations"]["by_cmd"]["buckets"]
             }
         except Exception as e:
-            log.warning("co-occurrence: corpus df agg failed for %r: %s", command[:80], e)
+            _note_degraded("cooccurrence_corpus_df",
+                           "co-occurrence: corpus df agg failed for %r: %s", command[:80], e)
 
     return score_cooccurring_siblings(tf_by_sib, df_by_sib, total_sessions, top_k)
 
@@ -1569,6 +1603,16 @@ def run_enrich(
         )
     out["mitre_invalid_tactics"] = mitre_drops["tactics"]
     out["mitre_invalid_techniques"] = mitre_drops["techniques"]
+    # P4.1 — surface the per-item degradation counts once (the per-item warnings
+    # were capped to one-per-run + debug above), so a degraded ES is visible at
+    # its true scale without flooding the journal.
+    degraded = flush_degraded_fallbacks()
+    if degraded:
+        log.warning(
+            "degraded per-item fallbacks this run: %s",
+            ", ".join(f"{k}={v}" for k, v in sorted(degraded.items())),
+        )
+        out["degraded_fallbacks"] = degraded
     db.close()
     return out
 
