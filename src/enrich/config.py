@@ -961,12 +961,24 @@ class AnalystRuleConfig(BaseModel):
     max_match_count_per_rule: int = 50000
 
 
+class ClassificationConfig(BaseModel):
+    """Data-privacy gate (src/enrich/classification.py). Confidential sensor
+    data must never be escalated to the cloud LLM or queried against CTI feeds.
+    A per-sensor ingest pipeline stamps `dshield.classification: public|
+    confidential`; the gate releases only explicit `public` data."""
+    # Fail-safe (True, default): data with no explicit `public` tag is treated
+    # as confidential and never released. Set False (fail-open) — only explicit
+    # `confidential` is gated — once every public sensor is tagged `public`.
+    unclassified_is_confidential: bool = True
+
+
 class AppConfig(BaseModel):
     elasticsearch: ESConfig
     llm: LLMConfig
     worker: WorkerConfig
     prompts: PromptsConfig
     cloud: CloudConfig = Field(default_factory=CloudConfig)
+    classification: ClassificationConfig = Field(default_factory=ClassificationConfig)
     command_cluster: CommandClusterConfig = Field(default_factory=CommandClusterConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
     ip: IPConfig = Field(default_factory=IPConfig)

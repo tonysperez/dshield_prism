@@ -33,6 +33,7 @@
 
       "dshield": {
         "properties": {
+          "classification": { "type": "text", "fields": { "keyword": { "type": "keyword" } } },
           "cowrie": {
             "properties": {
               "enrichment": {

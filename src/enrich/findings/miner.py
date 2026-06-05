@@ -541,7 +541,8 @@ def run_mine(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) -> dict[st
     # is already self-explanatory. Best-effort: failures fall back to
     # the structured `narrative` set by the drift miner.
     narrative_stats: dict[str, int] = {
-        "cached": 0, "generated": 0, "budget_skipped": 0, "skipped_kind": 0, "failed": 0,
+        "cached": 0, "generated": 0, "budget_skipped": 0,
+        "skipped_kind": 0, "skipped_confidential": 0, "failed": 0,
     }
     if not dry_run and drift_findings:
         try:

@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Iterable, Iterator, Optional
 
 from ..cache import StateDB
+from ..classification import releasable_filter
 from ..config import AppConfig, IntelPriorityConfig
 from .artifact import Artifact, canonical_hash, canonical_ip, canonical_url, is_in_cidrs
 
@@ -117,7 +118,13 @@ def _iter_ip_artifacts_from_rollup(es, cfg: AppConfig) -> Iterator[tuple[Artifac
             "dshield.cowrie.enrichment.ip.total_sessions",
             "dshield.cowrie.enrichment.ip.first_seen",
         ],
-        "query": {"exists": {"field": "source.ip"}},
+        # Classification gate: never queue a confidential IP for CTI lookup.
+        # releasable_filter() excludes any IP whose rollup isn't explicitly
+        # public (fail-safe), so confidential data never reaches an intel feed.
+        "query": {"bool": {"filter": [
+            {"exists": {"field": "source.ip"}},
+            releasable_filter(cfg),
+        ]}},
         "sort": [{"_doc": "asc"}],
     }
     now = datetime.now(timezone.utc)
@@ -199,7 +206,7 @@ def _iter_in_command_ip_artifacts_from_commands(es, cfg: AppConfig) -> Iterator[
     try:
         resp = es.search(
             index=idx, size=0,
-            query={"match_all": {}},
+            query=releasable_filter(cfg),  # classification gate: releasable docs only
             aggs={
                 "indicators": {
                     "nested": {"path": "threat.indicator"},
@@ -274,7 +281,7 @@ def _iter_url_artifacts_from_commands(es, cfg: AppConfig) -> Iterator[tuple[Arti
     try:
         resp = es.search(
             index=idx, size=0,
-            query={"match_all": {}},
+            query=releasable_filter(cfg),  # classification gate: releasable docs only
             aggs={
                 "indicators": {
                     "nested": {"path": "threat.indicator"},
@@ -371,7 +378,7 @@ def _iter_hash_artifacts_from_sessions(es, cfg: AppConfig) -> Iterator[tuple[Art
     _OCCURRENCE_DENOM = 100.0
     try:
         resp = es.search(
-            index=idx, size=0, query={"match_all": {}},
+            index=idx, size=0, query=releasable_filter(cfg),  # classification gate: releasable docs only
             aggs={"fe": {"nested": {"path": fe}, "aggs": {
                 "by_hash": {"terms": {"field": f"{fe}.sha256", "size": cfg.intel.max_per_run},
                     "aggs": {
@@ -413,7 +420,7 @@ def _iter_hash_artifacts_from_commands(es, cfg: AppConfig) -> Iterator[tuple[Art
     _OCCURRENCE_DENOM = 100.0
     try:
         resp = es.search(
-            index=idx, size=0, query={"match_all": {}},
+            index=idx, size=0, query=releasable_filter(cfg),  # classification gate: releasable docs only
             aggs={"indicators": {"nested": {"path": "threat.indicator"}, "aggs": {
                 "files": {"filter": {"term": {"threat.indicator.type": "file"}}, "aggs": {
                     "by_hash": {"terms": {

@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 from elasticsearch import Elasticsearch
 
 from ...cache import StateDB
+from ...classification import aggregate as _aggregate_classification
 from ...config import AppConfig, IPConfig, Secrets
 from ...data.hassh_known import lookup as _lookup_hassh_known
 from ...es_client import bulk_write, deep_get, fetch_source_subset, init_index, make_client
@@ -183,6 +184,7 @@ def _fetch_ip_session_docs(
             "dshield.cowrie.enrichment.session.embedding",
             "dshield.cowrie.enrichment.session.credentials",
             "dshield.cowrie.enrichment.session.playbook_id",
+            "dshield.classification",
             "cowrie.session_id",
             "cowrie.hassh",
         ],
@@ -229,10 +231,12 @@ def _build_ip_doc(
     credentials_set: set[str] = set()
     hassh_counter: Counter = Counter()
     playbook_counter: Counter = Counter()
+    classifications: list = []
 
     for s in sessions:
         en = ((s.get("dshield") or {}).get("cowrie") or {}).get("enrichment", {}).get("session", {})
         ev = s.get("event") or {}
+        classifications.append((s.get("dshield") or {}).get("classification"))
 
         if en.get("login_success_count", 0) >= 1:
             successful_sessions += 1
@@ -378,16 +382,19 @@ def _build_ip_doc(
     if as_info:
         source_block["as"] = as_info
 
+    # Classification — an IP is multi-sensor, so aggregate across its sessions:
+    # confidential if ANY session is, public only if every session is explicitly
+    # public, else unset (fail-safe gate treats it as confidential). Gates the
+    # intel discovery scan (this IP is never queued for a CTI lookup).
+    dshield_block: dict = {"cowrie": {"enrichment": {"ip": ip_block}}}
+    ip_class = _aggregate_classification(classifications)
+    if ip_class is not None:
+        dshield_block["classification"] = ip_class
+
     return {
         "@timestamp": now,
         "source": source_block,
-        "dshield": {
-            "cowrie": {
-                "enrichment": {
-                    "ip": ip_block,
-                }
-            }
-        },
+        "dshield": dshield_block,
     }
 
 

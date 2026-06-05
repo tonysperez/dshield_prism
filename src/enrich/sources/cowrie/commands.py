@@ -24,6 +24,8 @@ from pydantic import ValidationError
 from elasticsearch import Elasticsearch
 
 from ...cache import StateDB
+from ...classification import aggregate as _aggregate_classification
+from ...classification import is_releasable, releasable_filter
 from ...command_shape import compute_shape_hash, extract_iocs_regex
 from ...config import (
     AppConfig, Secrets, CommandClusterConfig,
@@ -427,6 +429,7 @@ def _build_ecs_doc(
     local_fallback: Optional[dict] = None,
     shape: Optional[dict] = None,
     analyst_artifacts: Optional[list[dict]] = None,
+    classification: Optional[str] = None,
 ) -> dict:
     enrichment_block = {
         "intent": intent,
@@ -482,12 +485,18 @@ def _build_ecs_doc(
             "technique": {"id": techniques} if techniques else {},
             "indicator": indicators,
         },
-        "dshield": {
-            "cowrie": {
-                "enrichment": enrichment_block,
-            },
-        },
+        "dshield": _with_classification(
+            {"cowrie": {"enrichment": enrichment_block}}, classification
+        ),
     }
+
+
+def _with_classification(dshield_block: dict, classification: Optional[str]) -> dict:
+    """Stamp `dshield.classification` on a fresh command doc when known. Absent
+    (None) is left unset so the fail-safe gates treat it as confidential."""
+    if classification is not None:
+        dshield_block["classification"] = classification
+    return dshield_block
 
 
 def _try_parse(raw: str) -> Optional[CommandEnrichment]:
@@ -1138,9 +1147,14 @@ def run_enrich(
                 "first_seen": ts,
                 "last_seen": ts,
                 "count": 0,
+                # Classification of every event that contributed to this
+                # (content-deduped) command — aggregated later, "most
+                # restrictive source wins", to gate cloud escalation.
+                "class_set": set(),
             }
             groups[h] = g
         g["count"] += 1
+        g["class_set"].add(((src.get("dshield") or {}).get("classification")))
         sid = _extract_session(src)
         if sid:
             g["sessions"].add(sid)
@@ -1201,6 +1215,11 @@ def run_enrich(
     with make_llm_client(cfg.llm) as llm:
         for h in _iter_order():
             g = groups[h]
+            # Aggregate classification of this command's source events: any
+            # confidential event taints it; public only if every event is
+            # explicitly public (else None). Gates cloud escalation + stored on
+            # the doc so the `escalate` verb / intel can gate later.
+            g["classification"] = _aggregate_classification(g["class_set"])
             cached = db.is_cached(
                 h, cfg.llm.generation_model, llm_config_hash, embed_config_hash,
             )
@@ -1219,11 +1238,17 @@ def run_enrich(
                             "if (ctx._source.event == null) { ctx._source.event = [:]; }"
                             "if (ctx._source.event.end == null || params.last_seen.compareTo(ctx._source.event.end) > 0) { ctx._source.event.end = params.last_seen; }"
                             "if (ctx._source.event.start == null || params.first_seen.compareTo(ctx._source.event.start) < 0) { ctx._source.event.start = params.first_seen; }"
+                            # Classification is sticky-confidential: a cache-hit
+                            # command that now also appears on a confidential
+                            # sensor must never downgrade back to public.
+                            "if (params.classification == 'confidential') { ctx._source.dshield.classification = 'confidential'; }"
+                            "else if (ctx._source.dshield.classification == null && params.classification != null) { ctx._source.dshield.classification = params.classification; }"
                         ),
                         "params": {
                             "add_count": g["count"],
                             "last_seen": g["last_seen"],
                             "first_seen": g["first_seen"],
+                            "classification": g["classification"],
                         },
                     },
                 })
@@ -1328,6 +1353,7 @@ def run_enrich(
                     embedding=embedding,
                     shape=shape_block,
                     analyst_artifacts=analyst_artifacts,
+                    classification=g["classification"],
                 )
                 actions.append({"_op_type": "index", "_id": h, "_source": doc})
                 # Stamp the child cache row with the parent's llm hash so
@@ -1396,7 +1422,12 @@ def run_enrich(
             doc_model = model
             final_parsed = parsed
 
-            if cloud_enabled:
+            # Classification gate: a confidential command (any contributing
+            # event not explicitly public, fail-safe) keeps its LOCAL
+            # enrichment but is NEVER sent to the cloud LLM.
+            if cloud_enabled and not is_releasable(g["classification"], cfg):
+                stats["skipped_confidential"] += 1
+            if cloud_enabled and is_releasable(g["classification"], cfg):
                 triage_reasons = triage_mod.reasons_to_escalate(
                     command=g["command"],
                     parsed=parsed,
@@ -1532,6 +1563,7 @@ def run_enrich(
                 local_fallback=local_fallback_doc,
                 shape=shape_block_canon,
                 analyst_artifacts=analyst_artifacts,
+                classification=g["classification"],
             )
             actions.append({"_op_type": "index", "_id": h, "_source": doc})
             if doc_provider in ("local", "claude"):
@@ -1630,6 +1662,7 @@ def iter_novel_local_docs(
     novelty_threshold: float,
     confidence_max: int,
     confidence_min: int,
+    cfg: AppConfig,
     page_size: int = 50,
 ) -> Iterator[dict]:
     """Yield enrichment docs with event.provider='local', novelty_score >= novelty_threshold,
@@ -1664,7 +1697,10 @@ def iter_novel_local_docs(
                             "lte": confidence_max,
                         }
                     }},
-                ]
+                ],
+                # Classification gate: never escalate a confidential command to
+                # the cloud LLM (fail-safe — only explicit `public` passes).
+                "filter": [releasable_filter(cfg)],
             }
         },
         "sort": [
@@ -1746,7 +1782,7 @@ def run_escalate(
     actions: list[dict] = []
 
     for hit in iter_novel_local_docs(
-        es, commands_idx, threshold, confidence_max, confidence_min,
+        es, commands_idx, threshold, confidence_max, confidence_min, cfg,
     ):
         stats["candidates"] += 1
 
@@ -1763,6 +1799,13 @@ def run_escalate(
         command = (src.get("process") or {}).get("command_line", "")
         if not command:
             stats["skipped_no_command"] += 1
+            continue
+
+        # Classification gate (defense-in-depth; the scan query at
+        # iter_novel_local_docs already filters to releasable docs): never
+        # escalate a confidential/untagged command to the cloud LLM.
+        if not is_releasable((src.get("dshield") or {}).get("classification"), cfg):
+            stats["skipped_confidential"] += 1
             continue
 
         en = ((src.get("dshield") or {}).get("cowrie") or {}).get("enrichment") or {}

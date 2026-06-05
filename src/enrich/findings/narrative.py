@@ -25,6 +25,8 @@ import json
 import logging
 from typing import Any, Optional
 
+from ..classification import is_releasable
+
 log = logging.getLogger(__name__)
 
 
@@ -142,6 +144,11 @@ def generate_delta_narrative(cfg: Any, secrets: Any, finding: dict) -> Optional[
     """
     if finding.get("kind") in _KINDS_SKIPPED:
         return None
+    # Privacy gate (authoritative, defense-in-depth): a confidential — or,
+    # under the fail-safe default, untagged — playbook delta is never sent to
+    # the cloud for narration. `_classification` is stamped by the drift miner.
+    if not is_releasable(finding.get("_classification"), cfg):
+        return None
     client = _make_client(cfg, secrets)
     if client is None:
         return None
@@ -184,7 +191,10 @@ def attach_drift_narratives(
     Mutates `drift_findings` in place: sets `narrative` /
     `narrative_source` / `narrative_confidence`. Returns counters.
     """
-    stats = {"cached": 0, "generated": 0, "budget_skipped": 0, "skipped_kind": 0, "failed": 0}
+    stats = {
+        "cached": 0, "generated": 0, "budget_skipped": 0,
+        "skipped_kind": 0, "skipped_confidential": 0, "failed": 0,
+    }
     if not drift_findings:
         return stats
     if not (cfg.cloud.enabled and cfg.findings.narrative.enabled):
@@ -213,6 +223,12 @@ def attach_drift_narratives(
     for fid, finding in zip(ids, drift_findings):
         if finding.get("kind") in _KINDS_SKIPPED:
             stats["skipped_kind"] += 1
+            continue
+        # Privacy gate: skip confidential/untagged playbooks entirely — no
+        # cloud call and no cache-reuse. The finding keeps the structured
+        # `narrative` template the drift miner already set.
+        if not is_releasable(finding.get("_classification"), cfg):
+            stats["skipped_confidential"] += 1
             continue
         prev = existing.get(fid) or {}
         if (

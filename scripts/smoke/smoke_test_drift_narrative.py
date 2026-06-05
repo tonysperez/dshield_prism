@@ -122,7 +122,8 @@ class _CfgCloudOff:
 
 check("cloud disabled → None",
       generate_delta_narrative(_CfgCloudOff, _Secrets,
-                               {"kind": "playbook_command_drift", "evidence": {}}) is None)
+                               {"kind": "playbook_command_drift", "evidence": {},
+                                "_classification": "public"}) is None)
 
 
 class _SecretsNoKey:
@@ -131,7 +132,8 @@ class _SecretsNoKey:
 
 check("no api key → None",
       generate_delta_narrative(_Cfg, _SecretsNoKey,
-                               {"kind": "playbook_command_drift", "evidence": {}}) is None)
+                               {"kind": "playbook_command_drift", "evidence": {},
+                                "_classification": "public"}) is None)
 
 
 # -----------------------------------------------------------------------------
@@ -167,6 +169,7 @@ _patch_client('{"summary": "Bigram Jaccard 0.18 vs anchor (sequence changed).", 
 out = generate_delta_narrative(_Cfg, _Secrets, {
     "kind": "playbook_sequence_drift",
     "evidence": {"bigram_jaccard": 0.18},
+    "_classification": "public",
 })
 check("valid JSON → narrative produced", out is not None)
 check("summary text correct",
@@ -179,6 +182,7 @@ _patch_client("Sure! The bigrams changed dramatically.")
 out = generate_delta_narrative(_Cfg, _Secrets, {
     "kind": "playbook_sequence_drift",
     "evidence": {},
+    "_classification": "public",
 })
 check("invalid JSON response → None", out is None)
 _restore_client()
@@ -222,6 +226,7 @@ f = {
     "delta_signature": "dlt-AAA",
     "narrative": "structured fallback",
     "evidence": {},
+    "_classification": "public",
 }
 fid = finding_id(f["kind"], f["artifact"]["kind"], f["artifact"]["value"], f["delta_signature"])
 existing = {fid: {
@@ -261,6 +266,7 @@ f = {
     "delta_signature": "dlt-BBB",
     "narrative": "structured fallback B",
     "evidence": {},
+    "_classification": "public",
 }
 db = _StubDB(spent=0.0)   # remaining = 0.01, < floor=1.0
 stats = attach_drift_narratives(_StubES({}), _CfgBroke, _Secrets, db, "prism.finding", [f])
@@ -280,6 +286,7 @@ f = {
     "delta_signature": "dlt-CCC",
     "narrative": "structured fallback C",
     "evidence": {"signature_anchor": "AAA", "signature_current": "BBB"},
+    "_classification": "public",
 }
 db = _StubDB()
 stats = attach_drift_narratives(_StubES({}), _Cfg, _Secrets, db, "prism.finding", [f])
@@ -301,6 +308,7 @@ f = {
     "delta_signature": "dlt-DDD",
     "narrative": "structured fallback D",
     "evidence": {"signature_anchor": "AAA", "signature_current": "BBB"},
+    "_classification": "public",
 }
 db = _StubDB()
 stats = attach_drift_narratives(_StubES({}), _Cfg, _Secrets, db, "prism.finding", [f])
@@ -326,6 +334,39 @@ check("playbook_command_drift NOT skipped (LLM target)",
       "playbook_command_drift" not in _KINDS_SKIPPED)
 check("playbook_sequence_drift NOT skipped",
       "playbook_sequence_drift" not in _KINDS_SKIPPED)
+
+
+# -----------------------------------------------------------------------------
+# [9] classification privacy gate — confidential / untagged is never narrated.
+# A drift finding carries `_classification` (stamped by the drift miner from the
+# playbook's member sessions). The cloud narration must be skipped for anything
+# not releasable, even when valid JSON is on offer.
+# -----------------------------------------------------------------------------
+print("\n[9] classification gate skips confidential + untagged findings")
+_patch_client('{"summary": "MUST NOT be sent to the cloud", "confidence": 0.9}')
+for label, tag in [("confidential", "confidential"), ("untagged (fail-safe)", None)]:
+    gf = {
+        "kind": "playbook_command_drift",
+        "artifact": {"kind": "playbook", "value": f"sescl-G{label[:3]}"},
+        "delta_signature": f"dlt-G{label[:3]}",
+        "narrative": "structured fallback G",
+        "evidence": {"signature_anchor": "A", "signature_current": "B"},
+    }
+    if tag is not None:
+        gf["_classification"] = tag
+    gdb = _StubDB()
+    gstats = attach_drift_narratives(_StubES({}), _Cfg, _Secrets, gdb, "prism.finding", [gf])
+    check(f"{label} → skipped_confidential",
+          gstats["skipped_confidential"] == 1 and gstats["generated"] == 0, f"got {gstats}")
+    check(f"{label} → no cloud spend", gdb.spend_calls == [])
+    check(f"{label} → structured narrative preserved",
+          gf["narrative"] == "structured fallback G" and gf.get("narrative_source") != "llm")
+# Direct generate_delta_narrative also refuses a confidential finding.
+out = generate_delta_narrative(_Cfg, _Secrets, {
+    "kind": "playbook_command_drift", "evidence": {}, "_classification": "confidential",
+})
+check("generate_delta_narrative refuses confidential", out is None)
+_restore_client()
 
 
 # -----------------------------------------------------------------------------

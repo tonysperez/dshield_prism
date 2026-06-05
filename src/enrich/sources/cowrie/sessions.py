@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 from elasticsearch import Elasticsearch
 
 from ...cache import StateDB
+from ...classification import aggregate as _aggregate_classification
 from ...config import AppConfig, Secrets, SessionConfig
 from ...es_client import bulk_write, deep_get, fetch_source_subset, make_client
 from ...llm.schemas import (
@@ -1299,6 +1300,16 @@ def _build_session_doc(
         doc["user_agent"] = ua_info
     if file_indicators:
         doc["threat"] = {"indicator": file_indicators}
+
+    # Data classification — propagated from the raw events' `dshield.classification`
+    # (a session is one sensor, but aggregate defensively: any confidential event
+    # taints it, public only if every event is explicitly public, else unset so
+    # the fail-safe gates treat it as confidential).
+    _session_class = _aggregate_classification(
+        (ev.get("dshield") or {}).get("classification") for ev in events
+    )
+    if _session_class is not None:
+        doc.setdefault("dshield", {})["classification"] = _session_class
 
     return doc
 

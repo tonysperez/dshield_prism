@@ -36,6 +36,8 @@ from typing import Any, Iterable, Optional
 
 from elasticsearch import Elasticsearch
 
+from ..classification import aggregate as _aggregate_classification
+
 log = logging.getLogger(__name__)
 
 
@@ -93,6 +95,21 @@ def _delta_sig(*parts: str) -> str:
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
+def _playbook_classification(class_buckets: list, session_count: int) -> Optional[str]:
+    """Most-restrictive privacy tag over a playbook's member sessions.
+
+    `class_buckets` are ES `terms` buckets on `dshield.classification.keyword`
+    — only sessions that *have* a tag appear there. When fewer sessions are
+    tagged than `session_count`, the rest are untagged, so a `None` is folded
+    into the aggregate and fail-safe taints the playbook (no cloud narration).
+    """
+    values: list = [b["key"] for b in (class_buckets or [])]
+    classified_total = sum(int(b.get("doc_count") or 0) for b in (class_buckets or []))
+    if classified_total < session_count:
+        values.append(None)
+    return _aggregate_classification(values)
+
+
 def _aggregate_playbook_state(
     es: Elasticsearch, sessions_idx: str, playbook_id: str,
 ) -> dict:
@@ -108,7 +125,13 @@ def _aggregate_playbook_state(
         ip_count: int,
         asn_distribution: dict[str, int],
         dominant_intent: str | None,
+        classification: str | None,  # most-restrictive over member sessions
       }
+
+    `classification` is the privacy tag aggregated across the playbook's
+    member sessions (most-restrictive-wins). A single untagged session taints
+    the playbook to None so the downstream narrative gate fails safe and never
+    sends a confidential playbook's delta to the cloud.
     """
     sess_filter = "dshield.cowrie.enrichment.session.playbook_id"
     bigram_field = "dshield.cowrie.enrichment.session.command_bigram_set.keyword"
@@ -129,6 +152,7 @@ def _aggregate_playbook_state(
                 "artifact_set":   {"terms": {"field": artifact_field, "size": 200}},
                 "asn":            {"terms": {"field": "source.as.number", "size": 50}},
                 "dominant_intent":{"terms": {"field": "dshield.cowrie.enrichment.session.dominant_intent", "size": 1}},
+                "classification": {"terms": {"field": "dshield.classification.keyword", "size": 5}},
             },
         )
     except Exception as exc:
@@ -138,8 +162,10 @@ def _aggregate_playbook_state(
     def _bucket_keys(a, key="key"): return [b[key] for b in ((a or {}).get("buckets") or [])]
     def _mode(a):  bs = (a or {}).get("buckets") or []; return bs[0]["key"] if bs else None
     asn_buckets = (aggs.get("asn") or {}).get("buckets") or []
+    sc = int((aggs.get("session_count") or {}).get("value") or 0)
+    class_buckets = (aggs.get("classification") or {}).get("buckets") or []
     return {
-        "session_count":            int((aggs.get("session_count") or {}).get("value") or 0),
+        "session_count":            sc,
         "ip_count":                 int((aggs.get("ip_count") or {}).get("value") or 0),
         "command_signature":        _mode(aggs.get("cmd_sig")),
         "command_bigram_signature": _mode(aggs.get("bigram_sig")),
@@ -148,6 +174,7 @@ def _aggregate_playbook_state(
         "artifact_set":             _bucket_keys(aggs.get("artifact_set")),
         "asn_distribution":         {str(b["key"]): int(b["doc_count"]) for b in asn_buckets},
         "dominant_intent":          _mode(aggs.get("dominant_intent")),
+        "classification":           _playbook_classification(class_buckets, sc),
     }
 
 
@@ -452,6 +479,10 @@ def run_drift(es: Elasticsearch, cfg: Any, run_id: str) -> dict[str, list[dict[s
                 continue
             f.setdefault("run_id", run_id)
             f.setdefault("artifact", {"kind": "playbook", "value": pid})
+            # Transient privacy tag (not persisted by the writer) read by the
+            # narrative step's cloud gate: a confidential/untagged playbook is
+            # never sent to the cloud for narration.
+            f["_classification"] = curr.get("classification")
             f.setdefault("score", 1.0)  # drift findings prioritise recency; refined in step 5
             template = f.pop("narrative_template", "")
             f.setdefault("narrative", f"{lc.get('playbook_name') or pid}: {template}")
