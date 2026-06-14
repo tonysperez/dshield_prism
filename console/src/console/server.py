@@ -43,6 +43,7 @@ NAV_ITEMS: list[dict[str, str]] = [
     {"id": "inbox",     "label": "Inbox",    "href": "/inbox"},
     {"id": "graph",     "label": "Graph",    "href": "/graph"},
     {"id": "browse",    "label": "Browse",   "href": "/browse"},
+    {"id": "history",   "label": "History",  "href": "/history"},
     {"id": "hunts",     "label": "Hunts",    "href": "/hunts"},
     {"id": "rules",     "label": "Rules",    "href": "/artifact-rules"},
     {"id": "curation",  "label": "Curation", "href": "/curation"},
@@ -224,6 +225,10 @@ def build_app(config_path: str | None = None) -> FastAPI:
     def browse_page(request: Request):
         return _render(request, "insights.html", active_nav="browse")
 
+    @app.get("/history")
+    def history_page(request: Request):
+        return _render(request, "history.html", active_nav="history")
+
     @app.get("/insights")
     def insights_page_redirect(request: Request) -> RedirectResponse:
         return RedirectResponse(_preserve_qs(request, "/browse"), status_code=302)
@@ -307,6 +312,24 @@ def build_app(config_path: str | None = None) -> FastAPI:
         except Exception as e:
             log.exception("insights_summary failed")
             raise HTTPException(500, f"insights query failed: {e}")
+
+    # History (archive discovery). Unlike /api/insights this is parameterised
+    # (date window + Standout ranking lens), so it isn't memoised — the aggs are
+    # cheap and the params vary per click.
+    @app.get("/api/history")
+    def history_api(request: Request) -> JSONResponse:
+        qp = request.query_params
+        try:
+            data = queries.history_summary(
+                es, cfg,
+                start=qp.get("start") or None,
+                end=qp.get("end") or None,
+                standout_sort=qp.get("sort") or "novel_reach",
+            )
+            return JSONResponse(data)
+        except Exception as e:
+            log.exception("history_summary failed")
+            raise HTTPException(500, f"history query failed: {e}")
 
     # Health page — command-grounding coverage report (ROADMAP #11.5).
     # Same 60s in-memory cache pattern as /api/insights; the underlying

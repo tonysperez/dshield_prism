@@ -2305,6 +2305,154 @@ _TL_SOURCE = [
 ]
 
 
+# --- History (archive discovery) -----------------------------------------
+# The History page is the serendipitous-discovery surface over the *archive*
+# (everything older than the last 14 days, which Browse owns). It ranks by
+# salience — novelty, optionally weighted by reach — not volume, so the commodity
+# scanning that dominates a flat list is suppressed and genuinely unusual
+# behaviours surface. The timeline is the navigation map; selecting a range
+# scopes the ranking. Lookup/search is deliberately NOT here — that's the Graph.
+_HISTORY_RECENT_EXCL = "now-14d"   # Browse owns the last 14d; History is the archive
+
+
+def _rank_standout(buckets: list[dict], sort_mode: str,
+                   name_map: dict, limit: int) -> list[dict]:
+    """Rank playbook aggregation buckets for the History 'Standout' section.
+
+    Pure (no ES) so the two ranking lenses are unit-tested directly:
+      * ``novel``       — by avg `novelty_score` alone (the anomalous one-offs:
+        "show me the strangest thing, even if it ran once").
+      * ``novel_reach`` — by `novelty * log1p(distinct_ips)` (anomalous AND
+        widespread). distinct-IPs, not session count, is the "actually used"
+        signal (spread across the internet, not one noisy IP); the log keeps
+        novelty in the driver's seat so this never collapses to a size sort.
+
+    Each bucket: ``{key: playbook_id, doc_count, novelty:{value}, ips:{value},
+    first:{value_as_string}, last:{value_as_string}}``. Returns the top `limit`
+    display dicts, score-sorted desc.
+    """
+    import math
+    rows: list[dict] = []
+    for b in buckets:
+        pid = b.get("key")
+        if not pid:
+            continue
+        nov = float((b.get("novelty") or {}).get("value") or 0.0)
+        ips = int((b.get("ips") or {}).get("value") or 0)
+        score = nov if sort_mode == "novel" else nov * math.log1p(ips)
+        rows.append({
+            "playbook_id": pid,
+            "name":        name_map.get(pid, ""),
+            "novelty":     round(nov, 3),
+            "sessions":    int(b.get("doc_count") or 0),
+            "ips":         ips,
+            "first_seen":  (b.get("first") or {}).get("value_as_string"),
+            "last_seen":   (b.get("last") or {}).get("value_as_string"),
+            "score":       round(score, 4),
+        })
+    rows.sort(key=lambda r: r["score"], reverse=True)
+    return rows[:limit]
+
+
+def _playbook_names(es: Elasticsearch, cfg: AppConfig, pb_ids: list[str]) -> dict:
+    """`{playbook_id: playbook_name}` from the session-cluster centroid docs.
+    A merged playbook fans out to several centroid docs, so size generously."""
+    if not pb_ids:
+        return {}
+    idxs = cfg.elasticsearch.indexes.cowrie
+    field = _resolve_agg_field(es, idxs.session_clusters, "playbook_id")
+    out: dict = {}
+    try:
+        r = es.search(
+            index=idxs.session_clusters,
+            size=min(10000, max(len(pb_ids) * 20, 100)),
+            _source=["playbook_id", "playbook_name"],
+            query={"terms": {field: pb_ids}},
+        )
+        for h in r["hits"]["hits"]:
+            s = h["_source"]
+            pid = s.get("playbook_id")
+            if pid:
+                out[pid] = s.get("playbook_name") or ""
+    except Exception as e:
+        log.warning("history playbook-name lookup failed: %s", e)
+    return out
+
+
+def history_summary(
+    es: Elasticsearch, cfg: AppConfig, *,
+    start: str | None = None, end: str | None = None,
+    standout_sort: str = "novel_reach", limit: int = 12,
+) -> dict:
+    """Archive-discovery payload for the History page (`/api/history`).
+
+    `timeline` is the full-corpus activity histogram (the navigation map);
+    `standout` is the salience-ranked playbooks for the selected `[start, end)`
+    window (default end = `now-14d`, so it is purely the archive). `standout_sort`
+    is the analyst's lens — see `_rank_standout`.
+    """
+    if standout_sort not in ("novel", "novel_reach"):
+        standout_sort = "novel_reach"
+    idxs = cfg.elasticsearch.indexes.cowrie
+    sess = idxs.sessions_rollup
+    pb_field = _resolve_agg_field(
+        es, sess, "dshield.cowrie.enrichment.session.playbook_id",
+    )
+    nov_field = "dshield.cowrie.enrichment.session.cluster.novelty_score"
+
+    # Timeline — full corpus shape, adaptive bucketing (the navigation map).
+    timeline: list[dict] = []
+    try:
+        r = es.search(index=sess, size=0, aggs={
+            "tl": {"auto_date_histogram": {"field": "event.start", "buckets": 120}},
+        })
+        timeline = [
+            {"start": b.get("key_as_string"), "sessions": int(b["doc_count"])}
+            for b in r["aggregations"]["tl"]["buckets"]
+        ]
+    except Exception as e:
+        log.warning("history timeline failed: %s", e)
+
+    # Scope for the sections: [start, end), default end = now-14d (archive only).
+    rng: dict = {"lt": end or _HISTORY_RECENT_EXCL}
+    if start:
+        rng["gte"] = start
+    range_q = {"range": {"event.start": rng}}
+
+    # Standout — pull the most-novel playbook pool, re-rank by the chosen lens.
+    standout: list[dict] = []
+    total_pb = 0
+    try:
+        resp = es.search(index=sess, size=0, query=range_q, aggs={
+            "total": {"cardinality": {"field": pb_field}},
+            "by_playbook": {
+                "terms": {"field": pb_field, "size": 100,
+                          "order": {"novelty": "desc"}, "min_doc_count": 1},
+                "aggs": {
+                    "novelty": {"avg": {"field": nov_field}},
+                    "ips":     {"cardinality": {"field": "source.ip"}},
+                    "first":   {"min": {"field": "event.start"}},
+                    "last":    {"max": {"field": "event.start"}},
+                },
+            },
+        })
+        aggs = resp["aggregations"]
+        total_pb = int((aggs.get("total") or {}).get("value") or 0)
+        buckets = aggs["by_playbook"]["buckets"]
+        name_map = _playbook_names(es, cfg, [b["key"] for b in buckets if b.get("key")])
+        standout = _rank_standout(buckets, standout_sort, name_map, limit)
+    except Exception as e:
+        log.warning("history standout failed: %s", e)
+
+    return {
+        "scope": {"start": start, "end": end or _HISTORY_RECENT_EXCL,
+                  "total_playbooks": total_pb},
+        "standout_sort": standout_sort,
+        "timeline": timeline,
+        "standout": standout,
+    }
+
+
 def timeline_sessions(
     es: Elasticsearch, cfg: AppConfig,
     *,

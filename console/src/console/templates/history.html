@@ -1,0 +1,101 @@
+{% extends "_base.html" %}
+{% block title %}DShield History{% endblock %}
+{% block head_extra %}
+  <style>
+    /* History — archive discovery surface. Salience-ranked, timeline-navigated. */
+    #history-main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 16px 20px 60px;
+      display: flex;
+      flex-direction: column;
+      gap: 30px;
+    }
+    .hist-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+    .hist-head h1 { font-size: 18px; font-weight: 600; color: #c8d0e7; margin: 0; }
+    .hist-sub { font-size: 11px; color: #5a6278; }
+    .hist-scope { margin-left: auto; font-size: 11px; color: #6b7494; }
+    .hist-scope b { color: #4cc1ff; font-family: ui-monospace, SFMono-Regular, monospace; }
+
+    .hist-section-title {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.8px; color: #6b7494; margin: 0 0 12px;
+      display: flex; align-items: baseline; gap: 10px;
+    }
+    .hist-hint { font-size: 10px; text-transform: none; letter-spacing: 0; color: #414b62; font-weight: 400; }
+    .hist-hint a { color: #4cc1ff; cursor: pointer; }
+
+    /* Timeline — clickable activity bars (the navigation map). */
+    #hist-timeline {
+      display: flex; align-items: flex-end; gap: 1px;
+      height: 90px; padding: 6px 0; border-bottom: 1px solid #1a2035;
+    }
+    .tl-bar {
+      flex: 1 1 0; min-width: 2px; background: #2a3558; border-radius: 1px 1px 0 0;
+      cursor: pointer; transition: background 0.1s;
+    }
+    .tl-bar:hover { background: #4cc1ff; }
+    .tl-bar.sel { background: #4cc1ff; }
+    .tl-axis { display: flex; justify-content: space-between; font-size: 10px; color: #414b62; margin-top: 4px; }
+
+    /* Lens toggle */
+    .hist-lens { margin-left: auto; display: flex; align-items: center; gap: 6px; font-weight: 400; text-transform: none; letter-spacing: 0; }
+    .lens-btn {
+      background: #111827; border: 1px solid #1e2540; color: #6b7494;
+      border-radius: 5px; padding: 4px 10px; font-size: 11px; cursor: pointer;
+    }
+    .lens-btn:hover { color: #9aa3b8; }
+    .lens-btn.active { background: #1a2540; border-color: #2a3558; color: #4cc1ff; }
+
+    /* Standout cards */
+    .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+    .hist-card {
+      background: #111827; border: 1px solid #1e2540; border-radius: 8px;
+      padding: 13px 15px; cursor: pointer; transition: border-color 0.1s, background 0.1s;
+    }
+    .hist-card:hover { border-color: #2a3558; background: #151c2e; }
+    .hist-card .hc-name { font-size: 13px; font-weight: 600; color: #c8d0e7; margin-bottom: 8px; line-height: 1.3; }
+    .hist-card .hc-name.unnamed { color: #6b7494; font-style: italic; font-weight: 400; }
+    .hist-card .hc-meta { display: flex; gap: 12px; font-size: 11px; color: #6b7494; margin-bottom: 8px; }
+    .hist-card .hc-meta b { color: #9aa3b8; font-family: ui-monospace, SFMono-Regular, monospace; font-weight: 600; }
+    .hist-card .hc-span { font-size: 10px; color: #414b62; font-family: ui-monospace, SFMono-Regular, monospace; }
+    .nov-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+    .nov-track { width: 100%; height: 5px; background: #1a2035; border-radius: 3px; overflow: hidden; }
+    .nov-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, #4cc1ff 0%, #f87171 100%); }
+    .nov-val { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; color: #6b7494; width: 34px; text-align: right; }
+
+    .hist-empty { font-size: 12px; color: #414b62; padding: 12px; }
+    .hist-error { color: #f87171; font-size: 12px; padding: 12px 14px; background: #1a0e0e; border: 1px solid #f8717128; border-radius: 6px; }
+  </style>
+{% endblock %}
+{% block content %}
+  <main id="history-main">
+    <div class="hist-head">
+      <h1>History</h1>
+      <span class="hist-sub">archive discovery — what's interesting across the corpus (older than the last 14&nbsp;days)</span>
+      <span class="hist-scope" id="hist-scope"></span>
+    </div>
+
+    <section id="hist-timeline-sec">
+      <p class="hist-section-title">Activity over time
+        <span class="hist-hint">click a bar to scope below · <a id="hist-reset">reset to all</a></span>
+      </p>
+      <div id="hist-timeline"><em class="hist-empty">loading…</em></div>
+      <div class="tl-axis" id="hist-axis"></div>
+    </section>
+
+    <section id="hist-standout-sec">
+      <p class="hist-section-title">Standout behaviours
+        <span class="hist-hint">ranked by salience, not volume — click to open in the Graph</span>
+        <span class="hist-lens">Rank:
+          <button class="lens-btn" data-sort="novel">Most novel</button>
+          <button class="lens-btn" data-sort="novel_reach">Novel &amp; widespread</button>
+        </span>
+      </p>
+      <div id="hist-standout" class="card-grid"><em class="hist-empty">loading…</em></div>
+    </section>
+  </main>
+{% endblock %}
+{% block scripts %}
+  <script src="/static/js/history.js"></script>
+{% endblock %}
