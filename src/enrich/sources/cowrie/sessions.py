@@ -11,7 +11,9 @@ import logging
 import math
 import random
 import re
+import threading
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Iterator, Optional
 
@@ -551,6 +553,89 @@ def _iter_closed_sessions(
         search_after = hits[-1]["sort"]
 
 
+def _scan_closed_slice(
+    es: Elasticsearch,
+    pit_id: str,
+    since: Optional[str],
+    page_size: int,
+    slice_id: int,
+    slice_max: int,
+) -> list[tuple[str, str]]:
+    """Scan one slice of the closed-session enumeration against a shared PIT.
+    Sorts by the cheap `_shard_doc` tiebreaker — order is irrelevant here, the
+    caller only needs the full set plus the max `@timestamp`."""
+    must: list[dict] = [{"term": {"event.action": "cowrie.session.closed"}}]
+    if since:
+        must.append({"range": {"@timestamp": {"gt": since}}})
+    body: dict = {
+        "size": page_size,
+        "_source": ["cowrie.session_id", "@timestamp"],
+        "query": {"bool": {"must": must}},
+        "pit": {"id": pit_id, "keep_alive": "5m"},
+        "sort": [{"_shard_doc": "asc"}],
+    }
+    if slice_max > 1:
+        body["slice"] = {"id": slice_id, "max": slice_max}
+    out: list[tuple[str, str]] = []
+    search_after = None
+    while True:
+        if search_after:
+            body["search_after"] = search_after
+        resp = es.search(**body)  # no index= when a PIT is supplied
+        hits = resp["hits"]["hits"]
+        if not hits:
+            return out
+        for h in hits:
+            src = h["_source"]
+            sid = (src.get("cowrie") or {}).get("session_id")
+            ts = src.get("@timestamp")
+            if sid and ts:
+                out.append((sid, ts))
+        search_after = hits[-1]["sort"]
+
+
+def _collect_closed_sessions(
+    es: Elasticsearch,
+    index: str,
+    since: Optional[str],
+    page_size: int,
+    workers: int,
+) -> list[tuple[str, str]]:
+    """Enumerate closed sessions, parallelised across PIT slices when possible.
+
+    Otherwise this up-front scan over the raw events index is a single serial
+    `search_after` pass — the dominant pre-processing cost on a large re-pool.
+    Slices are capped at the index's shard count (more slices than shards makes
+    `_id` slicing re-read each shard once per slice). Falls back to the plain
+    serial generator for `workers<=1` or a single-shard index."""
+    if workers <= 1:
+        return list(_iter_closed_sessions(es, index, since, page_size))
+    try:
+        n_shards = int((es.search(index=index, size=0).get("_shards") or {}).get("total") or 1)
+    except Exception:
+        n_shards = 1
+    slice_max = max(1, min(workers, n_shards))
+    if slice_max <= 1:
+        return list(_iter_closed_sessions(es, index, since, page_size))
+    pit_id = es.open_point_in_time(index=index, keep_alive="5m")["id"]
+    log.info("rollup sessions: enumerating closed sessions across %d PIT slices", slice_max)
+    try:
+        results: list[tuple[str, str]] = []
+        with ThreadPoolExecutor(max_workers=slice_max) as ex:
+            futs = [
+                ex.submit(_scan_closed_slice, es, pit_id, since, page_size, i, slice_max)
+                for i in range(slice_max)
+            ]
+            for fut in as_completed(futs):
+                results.extend(fut.result())
+        return results
+    finally:
+        try:
+            es.close_point_in_time(id=pit_id)
+        except Exception:
+            pass
+
+
 def _fetch_session_events(
     es: Elasticsearch,
     index: str,
@@ -655,17 +740,29 @@ def _command_entropy(counts: dict[str, int]) -> float:
 # above the denominator just clamps to a small positive weight rather than
 # going negative.
 _POOL_IDF_N = 100000.0
+# Floor so the weight is never exactly 0. At backlog scale a command's
+# occurrence_count reaches _POOL_IDF_N and `log((N+1)/(N+1)) == 0`; a session
+# whose member commands ALL hit that (pure ultra-common boilerplate) would pool
+# every contribution at weight 0 → `_mean_pool` returns no vector → the session
+# silently drops out of embedding clustering. A tiny positive floor keeps such a
+# session clusterable as the uniform mean of its commands, while staying ~5
+# orders of magnitude below a rare command's weight (~11) so IDF down-weighting
+# is otherwise unchanged. Monotonicity holds except in the negligible band where
+# the natural weight is already below the floor (occ within ~10 of N).
+_MIN_POOL_WEIGHT = 1e-4
 
 
 def _idf_pool_weight(occurrence_count: int | float | None) -> float:
-    """log((N+1)/(occ+1)) with `occ` clamped to [1, N]. Rare commands get
-    big weights; boilerplate gets small. Always positive (>= ~0)."""
+    """log((N+1)/(occ+1)) with `occ` clamped to [1, N], floored at
+    `_MIN_POOL_WEIGHT`. Rare commands get big weights; boilerplate gets small.
+    Always strictly positive (never 0) so an all-boilerplate session still
+    produces a usable pooled embedding instead of a rejected zero vector."""
     if occurrence_count is None or occurrence_count < 1:
         occurrence_count = 1
-    # Clamp the input so a misconfigured corpus that pushed `occ` above N
-    # doesn't make the log negative. The output minimum is then 0.
+    # Clamp the input so a corpus that pushed `occ` above N doesn't make the log
+    # negative; floor the output so it never collapses to exactly 0.
     occ = min(float(occurrence_count), _POOL_IDF_N)
-    return math.log((_POOL_IDF_N + 1.0) / (occ + 1.0))
+    return max(math.log((_POOL_IDF_N + 1.0) / (occ + 1.0)), _MIN_POOL_WEIGHT)
 
 
 def _mean_pool(
@@ -708,16 +805,18 @@ def _mean_pool(
             result[i] += v * scale
         n_contributing += 1
     if n_contributing == 0:
-        # Every input had zero norm OR zero weight — pathological but possible.
-        # Return a zero vector of correct dim rather than an empty list so
-        # downstream callers (which already gate `if embeddings else None`)
-        # don't have to special-case a sudden change in shape.
-        return [0.0] * dims
+        # Every input had zero norm OR zero weight — pathological but possible
+        # (e.g. a session whose member commands all carry a zero-vector
+        # embedding). Return EMPTY, not a zero vector: a zero-magnitude vector
+        # has no direction to normalise and ES rejects it on a `cosine`
+        # dense_vector field. Empty flows through the caller's `if embedding`
+        # gate so the doc is written without an embedding.
+        return []
     out_norm = math.sqrt(sum(v * v for v in result))
     if out_norm == 0.0:
         # Antipodal vectors summed to zero. Vanishingly unlikely on a 768-d
-        # embedding model; return a zero vector rather than NaN-ing the doc.
-        return [0.0] * dims
+        # embedding model; return empty rather than a zero/NaN vector.
+        return []
     inv_out = 1.0 / out_norm
     return [v * inv_out for v in result]
 
@@ -1238,7 +1337,13 @@ def _build_session_doc(
         session_block["max_novelty_score"] = round(max(novelty_scores), 4)
     if confidences:
         session_block["mean_confidence"] = round(sum(confidences) / len(confidences), 2)
-    if embedding:
+    # Only attach a non-zero-magnitude vector: the rollup embedding field is a
+    # `cosine` dense_vector and ES rejects a zero vector ("does not support
+    # vectors with zero magnitude"), which would 400 the whole doc and drop the
+    # session rollup. A zero pool means no member command had a usable
+    # embedding, so the session simply carries none (and is excluded from
+    # embedding clustering, same as a no-command session).
+    if embedding and any(embedding):
         session_block["embedding"] = embedding
 
     # ROADMAP #3: session-level ECS file indicators, one per distinct hash,
@@ -1330,8 +1435,9 @@ def run_rollup(
     since = db.get_watermark(_SESSION_WATERMARK_KEY)
     log.info("Session watermark: %s", since or "(none, full backfill)")
 
-    closed: list[tuple[str, str]] = list(
-        _iter_closed_sessions(es, events_idx, since, cfg.session.page_size)
+    closed: list[tuple[str, str]] = _collect_closed_sessions(
+        es, events_idx, since, cfg.session.page_size,
+        max(1, int(getattr(cfg.session, "rollup_workers", 1))),
     )
     log.info("Found %d closed sessions since watermark", len(closed))
 
@@ -1363,11 +1469,24 @@ def run_rollup(
 
     session_ids_all = [sid for sid, _ in closed]
     page = cfg.session.page_size
+    workers = max(1, int(getattr(cfg.session, "rollup_workers", 1)))
+    batches = [
+        session_ids_all[i: i + page]
+        for i in range(0, len(session_ids_all), page)
+    ]
+    n_batches = len(batches)
+    # IntelLookup keeps a shared cache; serialise it across worker threads. The
+    # heavy backfill path runs with intel disabled, so the lock is uncontended
+    # there. Everything else per batch is local or a thread-safe ES client call.
+    _intel_lock = threading.Lock()
 
-    for batch_start in range(0, len(session_ids_all), page):
-        batch_ids = session_ids_all[batch_start: batch_start + page]
-
-        events_by_session = _fetch_session_events(es, events_idx, batch_ids)
+    def _process_batch(batch_ids: list[str]) -> dict:
+        """Build + write one batch's session rollups; return local stats so the
+        parallel path merges without shared mutation."""
+        bstats: dict = defaultdict(int)
+        events_by_session = _fetch_session_events(
+            es, events_idx, batch_ids, cfg.session.page_size
+        )
 
         all_hashes: set[str] = set()
         for sid in batch_ids:
@@ -1380,27 +1499,26 @@ def run_rollup(
                             all_hashes.add(hash_command(norm))
 
         enrichment_by_hash = _mget_enrichment(es, commands_idx, list(all_hashes))
-        stats["command_hashes_fetched"] += len(enrichment_by_hash)
+        bstats["command_hashes_fetched"] += len(enrichment_by_hash)
 
         # Phase 1: build the session docs without intel.
         built: list[tuple[str, dict]] = []
         for sid in batch_ids:
             events = events_by_session.get(sid, [])
             if not events:
-                stats["sessions_no_events"] += 1
+                bstats["sessions_no_events"] += 1
                 continue
             doc = _build_session_doc(sid, events, enrichment_by_hash, cfg)
             session_block = (
                 doc.get("dshield", {}).get("cowrie", {}).get("enrichment", {}).get("session", {})
             )
             if session_block.get("embedding"):
-                stats["sessions_with_embedding"] += 1
+                bstats["sessions_with_embedding"] += 1
             built.append((sid, doc))
-            stats["sessions_built"] += 1
+            bstats["sessions_built"] += 1
 
-        # Phase 2: bulk intel lookup over the batch's source IPs,
-        # then mutate each doc to attach the source_ip_intel block.
-        # No-op when intel disabled or when the doc has no source.ip.
+        # Phase 2: bulk intel lookup over the batch's source IPs, then mutate
+        # each doc to attach the source_ip_intel block. Shared cache → locked.
         if intel_lookup is not None and built:
             batch_ips = sorted({
                 (doc.get("source") or {}).get("ip")
@@ -1408,15 +1526,16 @@ def run_rollup(
                 if (doc.get("source") or {}).get("ip")
             })
             if batch_ips:
-                intel_lookup.get_many("ip", batch_ips)
-                for _, doc in built:
-                    ip = (doc.get("source") or {}).get("ip")
-                    if not ip:
-                        continue
-                    summary = intel_lookup.get_one("ip", ip)
-                    if summary is not None:
-                        _attach_source_ip_intel(doc, summary)
-                        stats["sessions_with_intel"] += 1
+                with _intel_lock:
+                    intel_lookup.get_many("ip", batch_ips)
+                    for _, doc in built:
+                        ip = (doc.get("source") or {}).get("ip")
+                        if not ip:
+                            continue
+                        summary = intel_lookup.get_one("ip", ip)
+                        if summary is not None:
+                            _attach_source_ip_intel(doc, summary)
+                            bstats["sessions_with_intel"] += 1
 
         # Namespaced `_id` (P6.2 / D3): `<sensor>:<session_id>`. Sensor from the
         # doc's observer.name (set by _build_session_doc), default when unset.
@@ -1437,24 +1556,41 @@ def run_rollup(
         )
         for uid, doc in uid_by_doc:
             if _preserve_session_attribution(doc, preserved.get(uid)):
-                stats["sessions_attribution_preserved"] += 1
+                bstats["sessions_attribution_preserved"] += 1
 
         actions: list[dict] = [
             {"_op_type": "index", "_id": uid, "_source": doc}
             for uid, doc in uid_by_doc
         ]
-
         if actions:
             ok, errs = bulk_write(es, sessions_idx, actions)
-            stats["bulk_ok"] += ok
-            stats["bulk_errors"] += len(errs)
+            bstats["bulk_ok"] += ok
+            bstats["bulk_errors"] += len(errs)
             if errs:
                 log.warning("rollup-sessions bulk errors (%d): %s", len(errs), errs[:2])
+        return bstats
 
+    def _merge(src: dict) -> None:
+        for k, v in src.items():
+            stats[k] += v
+
+    if workers <= 1:
+        for i, batch in enumerate(batches, 1):
+            _merge(_process_batch(batch))
+            log.info("Processed batch %d/%d", i, n_batches)
+    else:
         log.info(
-            "Processed batch %d/%d (%d sessions)",
-            batch_start + len(batch_ids), len(session_ids_all), len(batch_ids),
+            "rollup sessions: %d batches across %d worker threads (page=%d)",
+            n_batches, workers, page,
         )
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = [ex.submit(_process_batch, b) for b in batches]
+            done = 0
+            for fut in as_completed(futures):
+                _merge(fut.result())
+                done += 1
+                if done % workers == 0 or done == n_batches:
+                    log.info("Processed %d/%d batches", done, n_batches)
 
     # Explicit refresh so the next pipeline step (`cluster sessions`) and the
     # later `rollup ips` see every session doc we just wrote. The mapping
@@ -2017,6 +2153,7 @@ def run_cluster(
                 cluster_matrix, lexical_block,
                 min_cluster_size=min_cluster_size,
                 min_samples=min_samples,
+                n_jobs=cfg.worker.cluster_n_jobs,
             )
             log.info(
                 "[%s] fusion: emb HDBSCAN=%d clusters, lex HDBSCAN=%d clusters, "
@@ -2064,6 +2201,13 @@ def run_cluster(
         # (or fall back to HDBSCAN with --accept-fallback). No-op in hdbscan mode.
         fusion_max_docs=scfg.fusion_max_docs,
         accept_fallback=accept_fallback,
+        n_jobs=cfg.worker.cluster_n_jobs,
+        # Fit-only SVD reduction for the HDBSCAN label assignment (the 768-d
+        # O(n^2) wall on a full-corpus `--window-days 0` run). Rescue / persisted
+        # centroids / novelty / reference stay full-dim. No-op in late_fusion
+        # mode (the cluster_fn replaces HDBSCAN) and on small corpora. Mirrors
+        # the command layer (commands.py).
+        svd_dim=scfg.cluster_svd_dim,
         # P1.2 — the core stamps this on the run_summary doc (so the lifecycle
         # tracker can tell a windowed run from a full one) and in the returned
         # stats / ops doc. 0 = all-time.

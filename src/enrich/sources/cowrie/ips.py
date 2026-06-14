@@ -14,6 +14,7 @@ import hashlib
 import logging
 import time
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Iterator, Optional
 
@@ -344,7 +345,11 @@ def _build_ip_doc(
         ip_block["first_seen"] = first_seen
     if last_seen:
         ip_block["last_seen"] = last_seen
-    if embedding:
+    # Never attach a zero-magnitude vector — ES rejects it on the `cosine`
+    # dense_vector field and would 400 the whole IP rollup doc. `_mean_pool`
+    # already returns [] when no member command has a usable embedding; the
+    # `any(...)` guard is defence-in-depth (matches sessions.py).
+    if embedding and any(embedding):
         ip_block["embedding"] = embedding
     if credentials_set:
         # Sorted + capped so the doc is bounded and idempotent across runs.
@@ -463,31 +468,54 @@ def run_rollup(
 
     stats: dict = defaultdict(int)
     actions: list[dict] = []
+    workers = max(1, int(getattr(cfg.ip, "rollup_workers", 1)))
 
-    for ip in affected_ips:
+    def _build_one(ip: str) -> Optional[tuple[dict, bool]]:
+        """Per-IP fetch + build — the parallelisable, read-only part (the IP
+        rollup's dominant cost is this one-ES-query-per-IP fetch). Returns
+        (index_action, cluster_preserved) or None when the IP has no sessions.
+        `preserved` is read-only here; stats/writes happen single-threaded
+        in the consumer below."""
         sessions = _fetch_ip_session_docs(es, sessions_idx, ip, cfg.ip.page_size)
         if not sessions:
-            stats["ips_no_sessions"] += 1
-            continue
-
+            return None
         doc = _build_ip_doc(ip, sessions, cfg)
-        ip_block = doc.get("dshield", {}).get("cowrie", {}).get("enrichment", {}).get("ip", {})
+        preserved_flag = _preserve_ip_cluster(doc, preserved.get(ip))
+        return {"_op_type": "index", "_id": ip, "_source": doc}, preserved_flag
+
+    def _consume(result: Optional[tuple[dict, bool]]) -> None:
+        """Single-threaded: tally stats + flush bulk writes at batch_size."""
+        if result is None:
+            stats["ips_no_sessions"] += 1
+            return
+        action, preserved_flag = result
+        ip_block = action["_source"].get("dshield", {}).get("cowrie", {}).get("enrichment", {}).get("ip", {})
         if ip_block.get("embedding"):
             stats["ips_with_embedding"] += 1
-
-        if _preserve_ip_cluster(doc, preserved.get(ip)):
+        if preserved_flag:
             stats["ips_cluster_preserved"] += 1
-
-        actions.append({"_op_type": "index", "_id": ip, "_source": doc})
+        actions.append(action)
         stats["ips_built"] += 1
-
         if len(actions) >= cfg.ip.batch_size:
             ok, errs = bulk_write(es, ips_idx, actions)
             stats["bulk_ok"] += ok
             stats["bulk_errors"] += len(errs)
             if errs:
                 log.warning("rollup-ips bulk errors (%d): %s", len(errs), errs[:2])
-            actions = []
+            actions.clear()
+
+    if workers <= 1:
+        for ip in affected_ips:
+            _consume(_build_one(ip))
+    else:
+        # affected_ips can be in the millions, so feed the pool in bounded
+        # chunks rather than submitting every IP up front.
+        log.info("rollup ips: %d IPs across %d worker threads", len(affected_ips), workers)
+        chunk = max(workers * 64, 256)
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for start in range(0, len(affected_ips), chunk):
+                for result in ex.map(_build_one, affected_ips[start: start + chunk]):
+                    _consume(result)
 
     if actions:
         ok, errs = bulk_write(es, ips_idx, actions)
@@ -1413,6 +1441,7 @@ def run_cluster(
         centroid_sample_field="sample_ips",
         dry_run=dry_run,
         layer_label="cowrie.ips",
+        n_jobs=cfg.worker.cluster_n_jobs,
         refresh_reference=refresh_reference,
         use_reference=use_reference,
         reference_max_age_days=ipcfg.reference_max_age_days,

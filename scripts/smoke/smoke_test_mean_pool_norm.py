@@ -14,8 +14,9 @@ What this tests:
      vector would lean toward A.
   4. A zero vector among inputs is skipped (would otherwise inject NaN
      via division by its zero norm).
-  5. All-zero input gracefully returns a zero vector of the right dim
-     instead of crashing or returning NaN.
+  5. A degenerate pool (all-zero inputs, or antipodal cancellation)
+     returns [] — never a zero-magnitude vector, which ES rejects on the
+     `cosine` dense_vector rollup field — instead of crashing or NaN-ing.
   6. Idempotent on already-unit-norm inputs (within float tolerance).
 
 Run from the repo root via the console venv:
@@ -129,13 +130,15 @@ check(
 
 
 # -----------------------------------------------------------------------------
-# [5] All-zero input → zero vector of correct dim (not NaN, not crash).
+# [5] All-zero input → EMPTY (not a zero vector). A zero-magnitude vector is
+# rejected by ES on the `cosine` dense_vector rollup field, which would 400 the
+# whole doc; [] signals "no usable embedding" so the caller omits the field.
 # -----------------------------------------------------------------------------
-print("\n[5] all-zero input → zero vector, no NaN")
+print("\n[5] all-zero input → [] (never a zero vector ES rejects)")
 out = _mean_pool([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
 check(
-    "all-zero input → zero vector of correct dim",
-    out == [0.0, 0.0, 0.0],
+    "all-zero input → []",
+    out == [],
     f"got {out}",
 )
 
@@ -166,13 +169,14 @@ check(
 
 
 # -----------------------------------------------------------------------------
-# [7] Two antipodal unit vectors → zero pool, returned as zero vector.
+# [7] Two antipodal unit vectors → zero pool, returned as EMPTY (no zero vector,
+# no NaN). Same rationale as [5]: never hand ES a zero-magnitude vector.
 # -----------------------------------------------------------------------------
-print("\n[7] antipodal inputs sum to zero → zero vector returned")
+print("\n[7] antipodal inputs sum to zero → [] returned")
 out = _mean_pool([[1.0, 0.0], [-1.0, 0.0]])
 check(
-    "antipodal pair → zero vector of right dim (no NaN)",
-    out == [0.0, 0.0] and all(math.isfinite(x) for x in out),
+    "antipodal pair → []",
+    out == [],
     f"got {out}",
 )
 

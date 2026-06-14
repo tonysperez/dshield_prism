@@ -10,6 +10,7 @@ centroid + novelty score computation.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import time
@@ -28,6 +29,15 @@ log = logging.getLogger(__name__)
 # augmented-space geometry changes — so we require an exact match within float
 # noise.
 _REFERENCE_SCALAR_WEIGHT_TOL = 1e-6
+
+# Thresholds for the "this HDBSCAN fit is in the O(n^2) regime" warning. High-dim
+# euclidean kNN (spatial trees collapse) is the cost driver, so the warning fires
+# only when the fit dimension is large AND the corpus is big enough for the
+# quadratic term to mean hours. Tuned to stay silent on windowed 6h runs, the
+# SVD-reduced path, and the eval/smoke corpora; vocal on a full-dim full-corpus
+# run (the `--window-days 0` backfill / weekly recluster paths).
+_SLOW_FIT_DOC_THRESHOLD = 50_000
+_SLOW_FIT_DIM_THRESHOLD = 200
 
 try:
     import numpy as np
@@ -54,6 +64,123 @@ def l2_normalize(matrix: "np.ndarray") -> "np.ndarray":
     norms = np.linalg.norm(matrix, axis=1, keepdims=True)
     norms = np.where(norms == 0.0, 1.0, norms)
     return matrix / norms
+
+
+def svd_reduce(
+    normalized: "np.ndarray", n_dim: int,
+) -> tuple["np.ndarray", float]:
+    """Reduce L2-normalized embeddings to `n_dim` via TruncatedSVD, then
+    re-L2-normalize so the cosine-as-euclidean geometry HDBSCAN expects holds.
+
+    HDBSCAN's nearest-neighbour phase degrades to ~O(n²) on 768-d euclidean
+    data (spatial trees collapse in high dimensions); projecting to a few dozen
+    dimensions makes it tractable at scale. Returns `(reduced, explained_var)`
+    where `explained_var` is the fraction of variance the kept components retain
+    (a quality proxy). `n_dim <= 0` or `>=` the ambient dim is a no-op
+    (returns the input + 1.0).
+    """
+    require_cluster_deps()
+    # No-op when off, >= ambient dim, or larger than the corpus (TruncatedSVD
+    # needs n_components < both n_features and n_samples — guards small/fresh
+    # deployments now that this is on by default).
+    if n_dim is None or n_dim <= 0 or n_dim >= min(normalized.shape):
+        return normalized, 1.0
+    from sklearn.decomposition import TruncatedSVD
+    svd = TruncatedSVD(n_components=n_dim, random_state=0)
+    reduced = svd.fit_transform(normalized)
+    explained = float(svd.explained_variance_ratio_.sum())
+    return l2_normalize(reduced.astype(np.float32)), explained
+
+
+def _fit_with_heartbeat(clusterer, matrix, layer_label: str, interval_s: float = 120.0):
+    """Run ``clusterer.fit_predict(matrix)`` on a worker thread with a best-effort
+    liveness heartbeat logged from the main thread every ``interval_s``.
+
+    This covers the GIL-RELEASING phases (the parallel kNN / core-distance pass)
+    but goes quiet during HDBSCAN's MST/linkage phase, which holds the GIL — the
+    main thread can't log until it's released, so a long MST shows one stale tick
+    at the end. That silent stretch is the accepted cost of staying in-process.
+
+    **Do not reintroduce a forked heartbeat here.** A previous version ran the
+    heartbeat in a child forked just before the fit so it could log through the
+    GIL-holding MST. But ``os.fork()`` in a process whose OpenBLAS thread pool is
+    live wedges the pool's lock (OpenBLAS is not fork-safe), and the next
+    BLAS-heavy call — the following layer's SVD — then deadlocks every worker on a
+    futex. That is exactly what hung the session-layer SVD after the command-layer
+    HDBSCAN forked under ``pipeline --backfill``. A silent MST beats a hung
+    pipeline. The SVD releases the GIL, so ``_progress_heartbeat`` still ticks for
+    it. Exceptions are re-raised on the calling thread.
+    """
+    import threading
+    out: dict = {}
+    done = threading.Event()
+    t0 = time.time()
+
+    # Warn before the lights go out. The heartbeat ticks through HDBSCAN's
+    # GIL-releasing kNN phase, then the single-threaded MST/linkage phase holds
+    # the GIL and starves it — no logs for the duration (can be hours at scale).
+    # There's no hook between the phases inside fit_predict, so this fires up
+    # front at large n: it's the last line before the silence, telling the
+    # operator the quiet is the MST working, not a hang. Small fits skip it.
+    if int(matrix.shape[0]) >= _SLOW_FIT_DOC_THRESHOLD:
+        log.info(
+            "[%s] entering HDBSCAN on %d docs — the heartbeat ticks through the "
+            "kNN phase, then goes DARK during the single-threaded MST/linkage "
+            "phase (GIL-held, can run for hours). Silence after the last tick is "
+            "the MST working, not a hang; `py-spy dump` on the pipeline PID "
+            "confirms progress. Next log is 'HDBSCAN finished'.",
+            layer_label, int(matrix.shape[0]),
+        )
+
+    def _run():
+        try:
+            out["labels"] = clusterer.fit_predict(matrix)
+        except BaseException as exc:  # re-raised below on the main thread
+            out["error"] = exc
+        finally:
+            done.set()
+
+    worker = threading.Thread(target=_run, name=f"hdbscan-{layer_label}", daemon=True)
+    worker.start()
+    while not done.wait(interval_s):
+        log.info(
+            "[%s] HDBSCAN still running... elapsed %.0fm (n=%d, dim=%d)",
+            layer_label, (time.time() - t0) / 60.0, matrix.shape[0], matrix.shape[1],
+        )
+    worker.join()
+    if "error" in out:
+        raise out["error"]
+    log.info("[%s] HDBSCAN finished in %.1fm", layer_label, (time.time() - t0) / 60.0)
+    return out["labels"]
+
+
+@contextlib.contextmanager
+def _progress_heartbeat(layer_label: str, what: str, interval_s: float = 30.0):
+    """Log ``<what> still running... elapsed Ns`` every `interval_s` until the
+    block exits — cheap insurance against a silent stall.
+
+    A watcher *thread* is enough here (unlike HDBSCAN's GIL-holding MST, which
+    needs the forked heartbeat) because the work it guards — numpy/BLAS SVD —
+    releases the GIL during its heavy matmuls. Normal fits finish before the
+    first tick (nothing logged); a stall (e.g. the SVD thrashing under memory
+    pressure, which otherwise looks identical to a hang) ticks every interval.
+    """
+    import threading
+    stop = threading.Event()
+    t0 = time.time()
+
+    def _watch():
+        while not stop.wait(interval_s):
+            log.info("[%s] %s still running... elapsed %.0fs",
+                     layer_label, what, time.time() - t0)
+
+    th = threading.Thread(target=_watch, name=f"hb-{what}", daemon=True)
+    th.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        th.join(timeout=1.0)
 
 
 def compute_centroids(
@@ -130,6 +257,47 @@ def novelty_score(vec: "np.ndarray", centroids: dict[int, "np.ndarray"]) -> floa
         if sim > best:
             best = sim
     return float(1.0 - max(0.0, best))
+
+
+def batch_novelty(
+    vectors: "np.ndarray", centroids: dict[int, "np.ndarray"],
+) -> tuple["np.ndarray", list, "np.ndarray"]:
+    """Vectorised `novelty_score` for every row of `vectors` at once.
+
+    Returns `(novelty[n], match_key[n], match_cosine[n])` where `novelty[i]`
+    equals `novelty_score(vectors[i], centroids)` and `match_key[i]` is the dict
+    key of the nearest centroid (`None` for a zero-norm row or empty centroids).
+    Replaces the per-doc Python loop — at hundreds of thousands of docs ×
+    hundreds of centroids that loop (which also recomputed every centroid's norm
+    once per doc) was the dominant, unlogged post-HDBSCAN cost. One `(n×d)@(d×k)`
+    matmul instead.
+    """
+    require_cluster_deps()
+    n = int(vectors.shape[0])
+    if not centroids or n == 0:
+        return np.ones(n, dtype=np.float32), [None] * n, np.zeros(n, dtype=np.float32)
+    keys = list(centroids.keys())
+    centroid_mat = np.asarray(
+        [np.asarray(centroids[k], dtype=np.float32) for k in keys], dtype=np.float32,
+    )
+    cnorm = np.linalg.norm(centroid_mat, axis=1, keepdims=True)
+    cnorm[cnorm == 0.0] = 1.0
+    centroid_unit = centroid_mat / cnorm
+    mat = np.asarray(vectors, dtype=np.float32)
+    vnorm = np.linalg.norm(mat, axis=1, keepdims=True)
+    zero = vnorm[:, 0] == 0.0
+    unit = mat / np.where(vnorm == 0.0, 1.0, vnorm)
+    sims = unit @ centroid_unit.T  # (n, k) cosine sims
+    best_pos = sims.argmax(axis=1)
+    best_sim = sims[np.arange(n), best_pos]
+    novelty = (1.0 - np.clip(best_sim, 0.0, None)).astype(np.float32)
+    match_cos = best_sim.astype(np.float32)
+    match_key: list = [keys[int(p)] for p in best_pos]
+    if zero.any():  # zero-norm row → max novelty, no match (matches novelty_score)
+        novelty[zero] = 1.0
+        for i in np.nonzero(zero)[0]:
+            match_key[int(i)] = None
+    return novelty, match_key, match_cos
 
 
 def novelty_score_from_lists(
@@ -225,6 +393,7 @@ def compute_lexical_features(
 def cluster_bag_labels(
     bag_texts: list[str], *,
     min_cluster_size: int, min_samples: int, n_components: int = 64,
+    n_jobs: int = -1,
 ) -> tuple["np.ndarray", "np.ndarray"]:
     """G1 Arm B — cluster sessions on a TF-IDF bag of *command-cluster ids*.
 
@@ -243,6 +412,7 @@ def cluster_bag_labels(
         min_cluster_size=min_cluster_size,
         min_samples=min_samples,
         metric="euclidean",
+        n_jobs=n_jobs,
     ).fit_predict(block)
     return labels, block
 
@@ -287,6 +457,7 @@ def fusion_cluster_labels(
     min_cluster_size: int,
     min_samples: int,
     n_clusters: int | None = None,
+    n_jobs: int = -1,
 ) -> tuple["np.ndarray", "np.ndarray", int, int]:
     """Run the late-fusion clustering math on prepared inputs.
 
@@ -336,6 +507,7 @@ def fusion_cluster_labels(
         min_cluster_size=min_cluster_size,
         min_samples=min_samples,
         metric="euclidean",
+        n_jobs=n_jobs,
     )
     labels_emb = emb_clusterer.fit_predict(embedding_cluster_matrix)
     n_emb = int(len({int(l) for l in labels_emb if l >= 0}))
@@ -344,6 +516,7 @@ def fusion_cluster_labels(
         min_cluster_size=min_cluster_size,
         min_samples=min_samples,
         metric="euclidean",
+        n_jobs=n_jobs,
     )
     labels_lex = lex_clusterer.fit_predict(lexical_block)
     n_lex = int(len({int(l) for l in labels_lex if l >= 0}))
@@ -858,6 +1031,8 @@ def run_layer_clustering(
     fusion_max_docs: Optional[int] = None,
     accept_fallback: bool = False,
     window_days: Optional[int] = None,
+    n_jobs: int = -1,
+    svd_dim: int = 0,
 ) -> dict:
     """Generic HDBSCAN pipeline for one layer (commands / sessions / IPs / future).
 
@@ -935,6 +1110,7 @@ def run_layer_clustering(
     normalized = l2_normalize(matrix)
     del matrix
 
+    scalar_block = None
     cluster_matrix = normalized
     if scalar_weight > 0.0:
         scalar_block = scalar_block_builder(scalars_list, scalar_weight)
@@ -944,6 +1120,34 @@ def run_layer_clustering(
             layer_label, scalar_weight, cluster_matrix.shape,
         )
     del scalars_list
+
+    # SVD-reduce the embedding for the HDBSCAN *fit only* (cluster-label
+    # assignment). Rescue, the persisted pure + augmented centroids, novelty,
+    # and the cross-run reference set all keep the full-dim `cluster_matrix`, so
+    # the reference does NOT invalidate and the novel_embedding threshold is
+    # unchanged — only the otherwise ~O(n²)-at-768-d label assignment runs in
+    # the cheaper reduced space. Command layer only (svd_dim>0); validated via
+    # scripts/sweep_command_svd.py.
+    fit_matrix = cluster_matrix
+    if svd_dim and svd_dim > 0:
+        log.info(
+            "[%s] SVD-reducing %d×%d embeddings -> %d dims for the fit ...",
+            layer_label, normalized.shape[0], normalized.shape[1], svd_dim,
+        )
+        with _progress_heartbeat(layer_label, "SVD", interval_s=30.0):
+            reduced, expl = svd_reduce(normalized, svd_dim)
+        if reduced.shape[1] < normalized.shape[1]:
+            fit_matrix = np.hstack([reduced, scalar_block]) if scalar_block is not None else reduced
+            log.info(
+                "[%s] SVD fit-only %d->%d (%.1f%% variance retained); "
+                "novelty/reference stay full-dim",
+                layer_label, normalized.shape[1], svd_dim, expl * 100,
+            )
+        else:
+            log.info(
+                "[%s] cluster_svd_dim=%d but corpus too small (n=%d); full-dim fit",
+                layer_label, svd_dim, normalized.shape[0],
+            )
 
     # ``cluster_fn`` hook (E4.4 late-fusion adoption): when provided,
     # the caller supplies the clusterer instead of the default HDBSCAN
@@ -969,16 +1173,37 @@ def run_layer_clustering(
     ):
         cluster_fn = None
     if cluster_fn is None:
+        fit_dim = int(fit_matrix.shape[1])
+        full_dim = int(cluster_matrix.shape[1])
         log.info(
-            "[%s] Running HDBSCAN (min_cluster_size=%d, min_samples=%d) on %d docs ...",
-            layer_label, min_cluster_size, min_samples, n_docs,
+            "[%s] Running HDBSCAN (min_cluster_size=%d, min_samples=%d) on "
+            "%d docs x %d dims%s (n_jobs=%d) ...",
+            layer_label, min_cluster_size, min_samples, n_docs, fit_dim,
+            "" if fit_dim >= full_dim else f" [SVD-reduced from {full_dim}]",
+            n_jobs,
         )
+        # Loud, actionable warning for the genuinely-slow regime: high-dim
+        # euclidean kNN degrades to ~O(n^2) (spatial trees collapse), so a
+        # full-corpus full-dim fit can run for HOURS with only the elapsed
+        # heartbeat as a liveness signal. Fires only when nobody reduced the
+        # fit dimension AND the corpus is large — never on the windowed runs,
+        # the reduced-dim path, or the eval/smoke corpora.
+        if n_docs >= _SLOW_FIT_DOC_THRESHOLD and fit_dim > _SLOW_FIT_DIM_THRESHOLD:
+            log.warning(
+                "[%s] full-dim HDBSCAN at scale: %d docs x %d dims. High-dim "
+                "euclidean kNN degrades to ~O(n^2); this can run for HOURS, with "
+                "only the elapsed heartbeat below as a progress signal. Set this "
+                "layer's cluster_svd_dim>0 to fit in a reduced space (fit-only — "
+                "novelty / centroids / cross-run reference stay full-dim).",
+                layer_label, n_docs, fit_dim,
+            )
         clusterer = _HDBSCAN(
             min_cluster_size=min_cluster_size,
             min_samples=min_samples,
             metric="euclidean",
+            n_jobs=n_jobs,
         )
-        cluster_labels_arr = clusterer.fit_predict(cluster_matrix)
+        cluster_labels_arr = _fit_with_heartbeat(clusterer, fit_matrix, layer_label)
     else:
         log.info(
             "[%s] Running provided cluster_fn on %d docs (HDBSCAN replaced)",
@@ -1032,6 +1257,7 @@ def run_layer_clustering(
     )
 
     # Pure-embedding centroids — persisted to ES for triage / external use.
+    log.info("[%s] post-HDBSCAN: computing centroids + resolving reference (ES)...", layer_label)
     centroids = compute_centroids(normalized, cluster_labels_arr)
     # Augmented-space centroids — used for in-run novelty scoring so the
     # score reflects the same geometry HDBSCAN clustered on. When
@@ -1066,6 +1292,7 @@ def run_layer_clustering(
         reference_status = "bootstrap"
         bootstrap_reference = True
     elif use_reference:
+        log.info("[%s] loading reference centroids from %s ...", layer_label, clusters_index)
         ref = load_reference_centroids(
             es, clusters_index, reference_source=reference_source,
         ) if not dry_run else {}
@@ -1185,6 +1412,21 @@ def run_layer_clustering(
     now_str = datetime.now(timezone.utc).isoformat()
     run_id = str(uuid.uuid4())
 
+    # Vectorise novelty for every doc at once (was a per-doc Python loop over
+    # every centroid — the dominant, unlogged post-HDBSCAN cost at scale).
+    # Scored in the same space the loop used: augmented `cluster_matrix` or
+    # pure `normalized`. Outliers still override to 1.0 below.
+    score_vectors = cluster_matrix if score_in_augmented else normalized
+    novelty_all, _, _ = batch_novelty(score_vectors, score_centroids)
+    ext_novelty_all = ext_match_all = ext_cos_all = None
+    if score_centroids_external is not None:
+        ext_vectors = cluster_matrix if score_external_in_augmented else normalized
+        ext_novelty_all, ext_match_all, ext_cos_all = batch_novelty(
+            ext_vectors, score_centroids_external,
+        )
+    log.info("[%s] novelty scored for %d docs; writing cluster assignments...",
+             layer_label, n_docs)
+
     update_actions: list[dict] = []
     for i, (doc_id, lbl) in enumerate(zip(doc_ids, cluster_labels_arr)):
         lbl = int(lbl)
@@ -1198,16 +1440,11 @@ def run_layer_clustering(
             # instead of pattern-matching the id string.
             is_outlier = bool(outlier_flags_override[i])
             cluster_id = f"cluster_{lbl}"
-            doc_vec = cluster_matrix[i] if score_in_augmented else normalized[i]
-            score = novelty_score(doc_vec, score_centroids)
+            score = float(novelty_all[i])
         else:
             is_outlier = lbl < 0
             cluster_id = "outlier" if is_outlier else f"cluster_{lbl}"
-            if is_outlier:
-                score = 1.0
-            else:
-                doc_vec = cluster_matrix[i] if score_in_augmented else normalized[i]
-                score = novelty_score(doc_vec, score_centroids)
+            score = 1.0 if is_outlier else float(novelty_all[i])
         params: dict = {
             "cluster_id":    cluster_id,
             "novelty_score": round(score, 6),
@@ -1227,28 +1464,10 @@ def run_layer_clustering(
                 ext_match_idx = None
                 ext_match_cos = None
             else:
-                ext_vec = (
-                    cluster_matrix[i] if score_external_in_augmented
-                    else normalized[i]
-                )
-                # Find the nearest external centroid in one pass — same
-                # math as `novelty_score`, but we keep the index of the
-                # winning centroid alongside its cosine.
-                norm_v = float(np.linalg.norm(ext_vec))
-                best_idx = None
-                best_sim = -1.0
-                if norm_v > 0.0:
-                    for idx, c_vec in score_centroids_external.items():
-                        norm_c = float(np.linalg.norm(c_vec))
-                        if norm_c == 0.0:
-                            continue
-                        sim = float(np.dot(ext_vec, c_vec)) / (norm_v * norm_c)
-                        if sim > best_sim:
-                            best_sim = sim
-                            best_idx = idx
-                ext_score = float(1.0 - max(0.0, best_sim))
-                ext_match_idx = best_idx
-                ext_match_cos = best_sim if best_idx is not None else None
+                # Vectorised above (batch_novelty over the external ref set).
+                ext_score = float(ext_novelty_all[i])
+                ext_match_idx = ext_match_all[i]
+                ext_match_cos = float(ext_cos_all[i]) if ext_match_idx is not None else None
             params["novelty_score_external"] = round(ext_score, 6)
             if ext_match_idx is not None:
                 params["external_match_id"] = f"cluster_{ext_match_idx}"
@@ -1416,6 +1635,7 @@ def run_layer_clustering(
 
     bulk_ok = 0
     bulk_errors = 0
+    _log_every = max(batch_size * 50, 25000)  # surface progress ~every 25k docs
     for start in range(0, len(update_actions), batch_size):
         chunk = update_actions[start: start + batch_size]
         ok, errs = bulk_write(es, docs_index, chunk)
@@ -1423,7 +1643,9 @@ def run_layer_clustering(
         bulk_errors += len(errs)
         if errs:
             log.warning("[%s] update errors (%d): %s", layer_label, len(errs), errs[:2])
-        log.debug("[%s] Updated %d/%d docs", layer_label, start + len(chunk), n_docs)
+        written = start + len(chunk)
+        if written % _log_every < batch_size or written >= n_docs:
+            log.info("[%s] wrote %d/%d cluster assignments", layer_label, written, n_docs)
 
     # Step 3 — the run_summary sentinel, written last and stamped with the
     # actual write-error counts (P3.3 + P4 bulk-error surfacing) and the true

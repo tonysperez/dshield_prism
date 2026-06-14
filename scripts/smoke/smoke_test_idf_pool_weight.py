@@ -28,6 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from enrich.sources.cowrie.sessions import (
+    _MIN_POOL_WEIGHT,
     _POOL_IDF_N,
     _idf_pool_weight,
     _mean_pool,
@@ -101,13 +102,22 @@ check(
 
 
 # -----------------------------------------------------------------------------
-# [3] Outlier clamping: occ > N saturates at weight 0 (not negative).
+# [3] Outlier clamping: occ >= N floors at a tiny POSITIVE weight, never 0 or
+# negative. (At backlog scale occ reaches N and log((N+1)/(N+1))==0; a session
+# of all-such-commands would otherwise pool to a zero vector ES rejects on the
+# cosine field. The floor keeps it clusterable.)
 # -----------------------------------------------------------------------------
-print("\n[3] occ above N saturates at 0, not negative")
+print("\n[3] occ at/above N floors at a tiny positive weight, never 0")
+w_at_n = _idf_pool_weight(_POOL_IDF_N)
 w_huge = _idf_pool_weight(_POOL_IDF_N * 10)
 check(
-    "occ ≫ N → weight is 0 (clamped), never negative",
-    w_huge == 0.0,
+    "occ == N → weight is the positive floor, not 0",
+    w_at_n == _MIN_POOL_WEIGHT and w_at_n > 0.0,
+    f"got {w_at_n}",
+)
+check(
+    "occ ≫ N → still the positive floor, never negative",
+    w_huge == _MIN_POOL_WEIGHT and w_huge > 0.0,
     f"got {w_huge}",
 )
 
@@ -222,6 +232,41 @@ check(
     "weights=None gives the same bisector result as before",
     abs(out[0] - expected_dir[0]) < 1e-9 and abs(out[1] - expected_dir[1]) < 1e-9,
     f"got {out}, expected {expected_dir}",
+)
+
+
+# -----------------------------------------------------------------------------
+# [10] A degenerate pool returns EMPTY, never a zero vector. ES rejects a
+# zero-magnitude vector on the `cosine` dense_vector rollup field ("does not
+# support vectors with zero magnitude"), 400-ing the whole doc. `_mean_pool`
+# must signal "no usable embedding" with [] so the caller omits the field.
+# -----------------------------------------------------------------------------
+print("\n[10] degenerate pools return [] (not a zero vector ES would reject)")
+check(
+    "all inputs zero-norm → []",
+    _mean_pool([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]) == [],
+    f"got {_mean_pool([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])}",
+)
+check(
+    "all weights zero → []",
+    _mean_pool([[1.0, 0.0], [0.0, 1.0]], [0.0, 0.0]) == [],
+    f"got {_mean_pool([[1.0, 0.0], [0.0, 1.0]], [0.0, 0.0])}",
+)
+check(
+    "antipodal vectors cancelling to zero → []",
+    _mean_pool([[1.0, 0.0], [-1.0, 0.0]]) == [],
+    f"got {_mean_pool([[1.0, 0.0], [-1.0, 0.0]])}",
+)
+# And the realistic trigger end-to-end: a session whose commands are ALL
+# ultra-common boilerplate (occ >= N) no longer pools to zero — the IDF floor
+# keeps it a valid unit vector, so it stays clusterable instead of being dropped.
+_boiler = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+_boiler_w = [_idf_pool_weight(_POOL_IDF_N * 5)] * 3
+_pooled = _mean_pool(_boiler, _boiler_w)
+check(
+    "all-boilerplate session pools to a valid unit vector, not []/zero",
+    _pooled != [] and abs(_norm(_pooled) - 1.0) < 1e-9,
+    f"got {_pooled}",
 )
 
 

@@ -100,6 +100,11 @@ worker:
   # edit landed; bless or wipe the cache manually as needed.
   # ROADMAP issue #7.
   cache_auto_invalidate: true
+  # CPU parallelism for the HDBSCAN clustering passes (cluster commands /
+  # sessions / ips) — sklearn HDBSCAN's n_jobs. Parallelises the
+  # nearest-neighbour / core-distance phase (the dominant cost of the O(n^2) IP
+  # clustering at scale). -1 = all cores, 1 = single-core (legacy), N = cap.
+  cluster_n_jobs: -1
 
 # Cloud LLM escalation. Off by default; enable per-deploy in local.yaml.
 cloud:
@@ -218,6 +223,15 @@ command_cluster:
   # ~27.7% -> ~2.3%. Light scalar augmentation (0.05) keeps pure-embedding
   # rescue geometry-safe, same as sessions. See eval/results/F1-outlier-diagnostic.md.
   rescue_threshold: 0.94
+  # Fit-only TruncatedSVD dim for the command HDBSCAN. 0 = off (full 768-d;
+  # ~O(n^2), the command-layer scale wall). When >0, the embedding is reduced
+  # to this many dims for cluster-label assignment ONLY — rescue / persisted
+  # centroids / novelty / the cross-run reference stay full-dim, so nothing
+  # downstream shifts (no reference rebuild, no novel_embedding retune). 128
+  # (default) preserves — slightly improves — quality at ~6x speed; auto-skips
+  # to full-dim on corpora smaller than this. 0 = off. Sweep your own corpus
+  # (scripts/sweep_command_svd.py) if you change it.
+  cluster_svd_dim: 128
 
 # Session-level rollup + clustering + playbook naming.
 session:
@@ -241,8 +255,14 @@ session:
   # Weight of the scalar feature block in the session cluster matrix.
   # Scalars: command_count, unique_commands, login_success_rate, mean_novelty_score.
   cluster_scalar_weight: 0.05
-  page_size: 1000
+  # Rollup pagination + parallelism (P-scale). page_size = sessions per batch
+  # (also the events-fetch page and the bulk feed; helpers.bulk re-chunks writes
+  # at 500). rollup_workers = worker threads over independent batches — the work
+  # is round-trip-bound, so ~linear up to ES capacity. Push higher in local.yaml
+  # if ES has the headroom; 1 = serial.
+  page_size: 2000
   batch_size: 200
+  rollup_workers: 5
   # Max unique commands sampled per playbook (session cluster) for LLM name generation.
   playbook_sample_commands: 15
   # ROADMAP #11 — naming accuracy. Max member sessions sampled per cluster
@@ -311,6 +331,18 @@ session:
   # (`dshield_prism-recluster-full` timer: `cluster sessions --window-days 0
   # --refresh-reference`) refreshes the reference and re-pools the long tail.
   cluster_window_days: 30
+  # Fit-only TruncatedSVD dim for the session HDBSCAN (mirrors
+  # command_cluster.cluster_svd_dim). HDBSCAN on the 768-d session embedding is
+  # ~O(n^2), so a full-corpus run (`--window-days 0`: `pipeline --backfill` and
+  # the weekly recluster-full timer) fits at full dim and runs for HOURS at
+  # hundreds-of-thousands scale. >0 reduces the embedding to this many dims for
+  # cluster-label assignment ONLY — rescue / persisted centroids / novelty / the
+  # cross-run reference stay full-dim, so nothing downstream shifts. 0 = off
+  # (full-dim, legacy); auto-skips to full-dim below this corpus size. 96 is the
+  # validated speed/quality balance (ARI 1.0 vs full across ~400 → 60k sessions);
+  # 128 = more margin; 64 diverges past ~1k sessions so it's not a safe default.
+  # Sweep your own corpus first to go lower (scripts/sweep_session_svd.py).
+  cluster_svd_dim: 96
 
 # IP-level rollup + clustering.
 ip:
@@ -351,8 +383,12 @@ ip:
   cluster_tier1_enabled: true
   cluster_tier2_enabled: true
   cluster_tier2_svd_dim: 24
-  page_size: 1000
-  batch_size: 200
+  # Rollup pagination + parallelism. rollup_workers parallelises the per-IP
+  # session fetch (the IP rollup's dominant cost — one ES query per IP), so it
+  # is the big lever at scale. 1 = serial.
+  page_size: 2000
+  batch_size: 1000
+  rollup_workers: 5
 
 # External threat-intel subsystem (ROADMAP "Research-mode strategic gaps" A).
 # Runs alongside the enrichment pipeline; writes per-artifact intel docs to

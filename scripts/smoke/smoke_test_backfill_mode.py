@@ -5,9 +5,11 @@ lifecycles`, `mine findings`) — they'd stamp backfill wall-clock onto 2-year-o
 activity and flood the inbox — and must cluster sessions over the FULL corpus
 (`--window-days 0`), not the 30d window. `_apply_backfill_mode` encodes that.
 
-Asserts: the two skip steps are dropped; `cluster sessions` is swapped for the
-full-corpus callable; every other step is preserved in order with its original
-fn; the skip-set constant matches.
+Asserts: the two skip steps are dropped; `cluster sessions` → full-corpus
+callable, `reset rollup watermarks` → force callable, and `enrich` → full-rescan
+callable are each swapped (so a backfill re-enriches + re-pools the full history
+instead of silently skipping everything older than the watermarks); every other
+step is preserved in order with its original fn; the skip-set constant matches.
 
 Standalone — no real ES. Run from the repo root via the console venv:
     /home/styx/git/dshield_prism/console/.venv/bin/python \\
@@ -39,6 +41,7 @@ def _mk(tag):
 
 normal = [
     ("enrich", _mk("enrich"), False),
+    ("reset rollup watermarks", _mk("reset_gated"), True),
     ("cluster commands", _mk("ccmd"), False),
     ("cluster sessions", _mk("csess_windowed"), False),
     ("name playbooks", _mk("name"), True),
@@ -49,8 +52,14 @@ normal = [
     ("mine findings", _mk("find"), True),
 ]
 
-FULL = lambda: "csess_FULL"  # noqa: E731 — sentinel replacement callable
-out = _apply_backfill_mode(normal, FULL)
+FULL = lambda: "csess_FULL"           # noqa: E731 — sentinel replacement callable
+FULL_RESET = lambda: "reset_FORCED"   # noqa: E731 — sentinel replacement callable
+ENRICH_FULL = lambda: "enrich_FULL"   # noqa: E731 — sentinel replacement callable
+out = _apply_backfill_mode(normal, {
+    "cluster sessions": FULL,
+    "reset rollup watermarks": FULL_RESET,
+    "enrich": ENRICH_FULL,
+})
 names = [n for n, _f, _o in out]
 
 print("\n[1] skip-set constant")
@@ -61,20 +70,27 @@ check("skip set is exactly the two corrupting steps",
 print("\n[2] dropped + preserved")
 check("track lifecycles dropped", "track lifecycles" not in names)
 check("mine findings dropped", "mine findings" not in names)
-check("count = 9 - 2 = 7", len(out) == 7, str(len(out)))
+check("count = 10 - 2 = 8", len(out) == 8, str(len(out)))
 check("order preserved for kept steps",
-      names == ["enrich", "cluster commands", "cluster sessions",
-                "name playbooks", "cluster ips", "mine campaigns", "intel refresh"],
+      names == ["enrich", "reset rollup watermarks", "cluster commands",
+                "cluster sessions", "name playbooks", "cluster ips",
+                "mine campaigns", "intel refresh"],
       str(names))
 
-print("\n[3] cluster sessions forced to full corpus")
+print("\n[3] enrich + watermark reset + cluster sessions forced for the full corpus")
 csess_fn = next(f for n, f, _o in out if n == "cluster sessions")
 check("cluster sessions fn replaced with the full-corpus callable",
       csess_fn() == "csess_FULL", csess_fn())
+reset_fn = next(f for n, f, _o in out if n == "reset rollup watermarks")
+check("reset rollup watermarks fn replaced with the force variant",
+      reset_fn() == "reset_FORCED", reset_fn())
+enrich_fn = next(f for n, f, _o in out if n == "enrich")
+check("enrich fn replaced with the full-rescan variant",
+      enrich_fn() == "enrich_FULL", enrich_fn())
 others_intact = all(
     f() == orig_fn()
     for (n, f, _o), (_on, orig_fn, _oo) in zip(out, [s for s in normal if s[0] not in _BACKFILL_SKIP_STEPS])
-    if n != "cluster sessions"
+    if n not in ("cluster sessions", "reset rollup watermarks", "enrich")
 )
 check("other steps keep their original fn", others_intact)
 

@@ -223,6 +223,18 @@ class CommandClusterConfig(BaseModel):
     # score (operator decides when to `cluster commands --refresh-reference`).
     # ROADMAP P1.
     reference_max_age_days: int = 45
+    # Fit-only TruncatedSVD dimensionality for the command HDBSCAN. HDBSCAN on
+    # 768-d euclidean embeddings is ~O(n^2) (spatial trees collapse in high
+    # dimensions), so this is the command-layer scale wall. When >0, the
+    # embedding is SVD-reduced to this many dims for the cluster-label
+    # assignment ONLY — rescue, persisted centroids, novelty, and the cross-run
+    # reference stay full-dim, so nothing downstream (incl. the novel_embedding
+    # threshold) shifts. 0 = off (full-dim, legacy). 128 (default) was validated
+    # to preserve — even slightly improve — cluster quality at ~6x speed (purity
+    # +0.004, more clusters not fewer, lower outlier rate); see
+    # scripts/sweep_command_svd.py. Auto-skips (full-dim) on corpora smaller than
+    # this. Sweep your own corpus if you change it.
+    cluster_svd_dim: int = 128
 
 
 class SessionConfig(BaseModel):
@@ -233,8 +245,16 @@ class SessionConfig(BaseModel):
     # swallow the bulk on a duplicate-heavy corpus. ROADMAP issue #5.
     cluster_min_samples: int = 2
     cluster_scalar_weight: float = 0.05
-    page_size: int = 1000
+    # Rollup pagination: sessions per batch (also the events-fetch page size and
+    # the bulk-write feed — helpers.bulk re-chunks writes at 500 internally).
+    # Bigger = fewer ES round-trips on a large re-pool; push higher in local.yaml
+    # if ES has the heap for it.
+    page_size: int = 2000
     batch_size: int = 200
+    # `rollup sessions` worker threads. Each processes an independent session-id
+    # batch with its own in-flight ES requests; the work is round-trip-bound so
+    # this scales ~linearly up to ES capacity. 1 = serial (legacy behaviour).
+    rollup_workers: int = 5
     # Max unique commands sampled per playbook (session cluster) for LLM
     # name generation.
     playbook_sample_commands: int = 15
@@ -320,6 +340,27 @@ class SessionConfig(BaseModel):
     # re-pools the long tail. The CLI `--window-days` flag overrides this
     # per-run (pass 0 to force a full run).
     cluster_window_days: int = 30
+    # Fit-only TruncatedSVD dimensionality for the session HDBSCAN. Mirrors
+    # CommandClusterConfig.cluster_svd_dim: HDBSCAN on the 768-d session
+    # embedding (mean-pooled command vectors) is ~O(n^2) because spatial trees
+    # collapse in high dimensions, so a full-corpus run (`--window-days 0`:
+    # `pipeline --backfill` and the weekly `dshield_prism-recluster-full` timer)
+    # fits at full dim and can run for HOURS on hundreds of thousands of
+    # sessions. When >0 the embedding is SVD-reduced to this many dims for the
+    # cluster-label assignment ONLY — noise rescue, persisted centroids,
+    # novelty, and the cross-run reference all stay full-dim, so nothing
+    # downstream shifts (no reference rebuild, no novel_embedding retune). 0 =
+    # off (full-dim, legacy). Auto-skips to full-dim on corpora smaller than
+    # this. 96 is the speed/quality balance: it reproduced the full-dim
+    # clustering EXACTLY (ARI 1.0 vs full) across corpus sizes ~400 → 60k — both
+    # subsampled prod-scale snapshots and a live 60k corpus — while running
+    # faster than 128. 64 is NOT a safe default: it stays exact only up to ~1k
+    # sessions, then diverges in the medium/labeled range (ARI ~0.70 at the 4k
+    # labeled eval set, where the hard distinctions concentrate). Bump to 128
+    # for more variance margin, or sweep your own corpus
+    # (scripts/sweep_session_svd.py) to push lower — the windowed 6h runs are
+    # small, so this only bites the full-corpus paths.
+    cluster_svd_dim: int = 96
 
 
 class IPConfig(BaseModel):
@@ -374,8 +415,13 @@ class IPConfig(BaseModel):
     # Feature-hash dimension for the HASSH distribution (same scheme as the
     # credential hash). Small — observed HASSH cardinality is low.
     attribution_hassh_hash_dim: int = 8
-    page_size: int = 1000
-    batch_size: int = 200
+    # Rollup pagination + bulk-write accumulation. Bigger = fewer ES round-trips.
+    page_size: int = 2000
+    batch_size: int = 1000
+    # `rollup ips` worker threads. Parallelises the per-IP session fetch — the
+    # IP rollup's dominant cost is one ES query per IP, so this is the big lever
+    # at scale. 1 = serial (legacy behaviour).
+    rollup_workers: int = 5
     # ROADMAP P1: see CommandClusterConfig.reference_max_age_days. IP layer
     # persists pure-embedding references only (scalar block is variable-width)
     # so per-doc novelty scored against the reference reflects embedding
@@ -849,6 +895,13 @@ class WorkerConfig(BaseModel):
     # you'd rather keep current enrichments through a config drift — you
     # can still wipe or bless the cache manually. ROADMAP issue #7.
     cache_auto_invalidate: bool = True
+    # CPU parallelism for the HDBSCAN clustering passes (`cluster commands /
+    # sessions / ips`). Passed to sklearn HDBSCAN's `n_jobs` — parallelises the
+    # nearest-neighbour / core-distance computation, the dominant cost of the
+    # O(n^2) IP clustering at scale. -1 = all cores (default), 1 = single-core
+    # (legacy), N = cap at N. Only the NN phase parallelises; the linkage step
+    # is still single-threaded.
+    cluster_n_jobs: int = -1
 
 
 class PromptsConfig(BaseModel):

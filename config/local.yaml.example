@@ -1,79 +1,358 @@
-# Per-deploy overrides. Copy to config/local.yaml (or local.yml) and edit. DO NOT COMMIT.
-# Any key here overrides the same key in default.yaml. Omit anything you don't want to override.
+# ============================================================================
+# Per-deploy overrides. Copy to config/local.yaml (or local.yml) and edit.
+# DO NOT COMMIT config/local.yaml.
+#
+# Final config = default.yaml deep-merged with local.yaml. Any key set here
+# overrides the same key in default.yaml; omit anything you don't override.
+#
+# This file lists EVERY tunable at its current effective default, commented
+# out. To override one: uncomment the key (and its parent keys) and change the
+# value. Leave the rest commented.
+#
+#   IMPORTANT: don't uncomment the whole file. A key pinned in local.yaml stops
+#   tracking future default.yaml changes — override the minimum you need.
+#
+# Deploy essentials most installs set: elasticsearch.hosts, llm.base_url
+# (REQUIRED) + llm models, worker.state_db. SECRETS — ES creds,
+# ANTHROPIC_API_KEY, GREYNOISE/ABUSEIPDB/ABUSE_CH/VIRUSTOTAL keys — go in .env,
+# never here.
+# ============================================================================
 
-elasticsearch:
-  hosts: ["https://localhost:9200"]
-  verify_certs: false
-  ca_certs: null    # e.g. "/etc/pki/ca-trust/source/anchors/so-ca.pem"
-  # Override any index name per-deploy. Names are nested under <source>.
-  # indexes:
-  #   cowrie:
-  #     sessions_raw:      "logs-dshield.cowrie.session-myhost"
-  #     commands:          "enriched-dshield.cowrie.command-myhost"
-  #     command_clusters:  "clusters-dshield.cowrie.command-myhost"
-  #     sessions_rollup:   "rollup-dshield.cowrie.session-myhost"
-  #     session_clusters:  "clusters-dshield.cowrie.session-myhost"
-  #     ips_rollup:        "rollup-dshield.cowrie.source_ip-myhost"
-  #     ip_clusters:       "clusters-dshield.cowrie.source_ip-myhost"
 
-llm:
-  # "ollama" or "openai_compat" (LM Studio / vLLM / llama.cpp server)
-  provider: "openai_compat"
-  # REQUIRED: server URL. Examples:
-  #   Ollama:     http://192.168.2.10:11434
-  #   LM Studio:  http://192.168.2.10:1234   (or whatever port you set)
-  base_url: "http://192.168.2.10:11434"
-  # Model identifiers — must match what's loaded on the server.
-  # Ollama uses name:tag (e.g. "qwen2.5:7b-instruct-q4_K_M").
-  # LM Studio uses the model name as shown in its UI.
-  generation_model: "qwen/qwen3-8b"
-  embedding_model: "text-embedding-nomic-embed-text-v1.5@q8_0"
-  # api_key: "lm-studio"   # uncomment if your server requires auth
+# ===== elasticsearch =====
+# ES connection + per-source index names. `hosts` is the deploy essential; creds live in .env.
+# elasticsearch:
+#   hosts:   # <-- REQUIRED per deploy
+#   - https://localhost:9200
+#   verify_certs: false
+#   ca_certs: null
+#   request_timeout: 60
+#   indexes:
+#     cowrie:
+#       sessions_raw: prism.raw.cowrie.session
+#       commands: prism.enriched.cowrie.command
+#       command_clusters: prism.cluster.cowrie.command
+#       sessions_rollup: prism.rollup.cowrie.session
+#       session_clusters: prism.cluster.cowrie.session
+#       ips_rollup: prism.rollup.cowrie.ip
+#       ip_clusters: prism.cluster.cowrie.ip
+#       campaigns: prism.campaign.cowrie
+#       playbook_anchors: prism.identity.cowrie.playbook_anchor
+#       operations: prism.operations
+#       file_command_crossref: prism.crossref.file_command
+#       reference_sessions: prism.reference.cowrie.session
+#     dshield:
+#       firewall: prism.raw.dshield.firewall
+#       firewall_ip: prism.rollup.dshield.firewall_ip
 
-  # Fields prepended to the raw command before embedding. Changes here
-  # flow into embed_config_hash automatically; run `reembed` after
-  # editing to refresh embeddings without re-running the LLM.
-  # embed_context:
-  #   - intent
-  #   - tactics
-  #   - techniques
-  #   - description
+# ===== llm =====
+# Local LLM (enrichment + embeddings). provider/base_url/models are deploy-specific — base_url is REQUIRED.
+# llm:
+#   provider: ollama
+#   base_url: null   # <-- REQUIRED per deploy (Ollama http://host:11434 | LM Studio http://host:1234)
+#   generation_model: qwen/qwen3.5-9b   # <-- must match a model loaded on your LLM server
+#   embedding_model: text-embedding-nomic-embed-text-v1.5@q8_0   # <-- must match an embedding model on your LLM server
+#   request_timeout: 600
+#   max_retries: 2
+#   api_key: null
+#   embed_context:
+#   - intent
+#   - tactics
+#   - techniques
+#   - description
+#   embed_input_order: prelude_first
 
-worker:
-  state_db: "/var/lib/dshield_prism/state.sqlite"
-  initial_lookback_days: null
-  # cache_auto_invalidate: true  # (default) auto-invalidate cache on
-  #                              # prompt/cooccurrence/embed-config edits.
-  #                              # Set to false to hold the cache through
-  #                              # config drift; use bless-cache to stamp
-  #                              # legacy rows. ROADMAP #7.
+# ===== worker =====
+# Worker runtime: state-DB path, logging, cache auto-invalidation.
+# worker:
+#   state_db: /var/lib/dshield_prism/state.sqlite   # <-- writable path for the SQLite state DB
+#   page_size: 1000
+#   command_max_chars: 4000
+#   initial_lookback_days: null
+#   log_level: INFO
+#   log_dir: /var/log/dshield_prism
+#   cache_auto_invalidate: true
+#   cluster_n_jobs: -1
 
-# Cloud (Claude) escalation for hard / novel / low-confidence commands.
-# Off by default. To enable: flip enabled, set ANTHROPIC_API_KEY in .env, then
-# re-run `init-indexes --update-mapping` once so the new triage_reasons / notes /
-# local_fallback fields exist on the index.
-cloud:
-  enabled: false
-  # model: "claude-sonnet-4-6"
-  # daily_budget_usd: 5.0
-  # triage:
-  #   confidence_max: 5           # enrich: escalate any command with confidence <= this (1-10)
-  #   escalate_confidence_max: 7  # escalate cmd: re-triage novel docs with confidence <= this
-  #                               # novel_embedding triage fires from `escalate` only (not `enrich`)
-  #   sample_rate: 0.01
-  #   novel_embedding_threshold: 0.5
-  # pricing:                 # update to match the model picked
-  #   input_per_mtok: 3.0
-  #   output_per_mtok: 15.0
+# ===== prompts =====
+# Prompt file paths (resolved from the process working directory).
+# prompts:
+#   command_enrichment: config/prompts/command_enrichment.txt
+#   command_deep_dive: config/prompts/command_deep_dive.txt
+#   playbook_name: config/prompts/playbook_name.txt
+#   playbook_disambiguate: config/prompts/playbook_disambiguate.txt
+#   cluster_pair_explanation: config/prompts/cluster_pair_explanation.txt
 
-# Command-level clustering tuning. Defaults are conservative; tune after baseline run.
+# ===== cloud =====
+# Cloud (Claude) escalation for hard/novel/low-confidence commands. Off by default; needs ANTHROPIC_API_KEY in .env.
+# cloud:
+#   enabled: false
+#   provider: anthropic
+#   base_url: null
+#   model: claude-sonnet-4-6
+#   max_tokens: 1024
+#   request_timeout: 120
+#   daily_budget_usd: 5.0
+#   writeup_daily_budget_usd: 0.0
+#   rpm_limit: 10
+#   triage:
+#     confidence_max: 4
+#     escalate_confidence_max: 8
+#     sample_rate: 0.01
+#     base64_min_run: 200
+#     suspicious_tlds:
+#     - xyz
+#     - top
+#     - tk
+#     - ml
+#     - ga
+#     - cf
+#     - gq
+#     - club
+#     - icu
+#     - buzz
+#     - monster
+#     - rest
+#     - bar
+#     - fit
+#     - online
+#     - site
+#     - stream
+#     - cam
+#     novel_embedding_threshold: 0.5
+#     novel_confidence_min: 4
+#     intel_aware: true
+#   pricing:
+#     input_per_mtok: 3.0
+#     output_per_mtok: 15.0
+
+# ===== classification =====
+# Data-privacy gate. Fail-safe: data with no explicit `public` tag is treated confidential and never sent to cloud/CTI.
+# classification:
+#   unclassified_is_confidential: true
+
+# ===== command_cluster =====
+# HDBSCAN over command embeddings.
 # command_cluster:
-#   scalar_weight: 0.05   # weight of behavioral scalar block vs 768-dim embedding (0.0 = disable)
-#                         # scalars: occurrence_count, unique_source_ips, confidence, session_reuse_rate
+#   min_cluster_size: 5
+#   min_samples: 2
+#   page_size: 1000
+#   batch_size: 200
+#   scalar_weight: 0.05
+#   rescue_threshold: 0.94
+#   reference_max_age_days: 45
+#   cluster_svd_dim: 128
 
-# Session-level tuning. Most users won't touch these.
+# ===== session =====
+# Session rollup + clustering + playbook naming.
 # session:
-#   playbook_merge_threshold: 0.96   # cosine-sim cutoff for collapsing HDBSCAN
-#                                    # clusters into one playbook. 1.0 = disable
-#                                    # (legacy 1-cluster-per-playbook behaviour).
-#                                    # See default.yaml for details.
+#   embed_version: v1
+#   cluster_min_cluster_size: 5
+#   cluster_min_samples: 2
+#   cluster_scalar_weight: 0.05
+#   page_size: 2000
+#   batch_size: 200
+#   rollup_workers: 5
+#   playbook_sample_commands: 15
+#   playbook_naming_session_cap: 500
+#   playbook_merge_distinctiveness_floor: 0.25
+#   playbook_merge_threshold: 0.94
+#   specificity_store_cap: 10000
+#   specificity_threshold: 0.5
+#   reference_max_age_days: 45
+#   clustering_mode: hdbscan
+#   fusion_max_docs: 15000
+#   cluster_lexical_features_dim: 100
+#   cluster_window_days: 30
+
+# ===== ip =====
+# IP rollup + clustering. Flip `full_recluster_weekly: true` before pooling the multi-sensor backlog.
+# ip:
+#   embed_version: v1
+#   cluster_min_cluster_size: 3
+#   cluster_min_samples: 2
+#   cluster_scalar_weight: 0.05
+#   cluster_attribution_weight: 0.1
+#   attribution_top_asns: 50
+#   attribution_cred_hash_dim: 16
+#   cluster_hassh_weight: 0.05
+#   cluster_attribution_provenance_enabled: false
+#   cluster_tier1_enabled: true
+#   cluster_tier2_enabled: true
+#   cluster_tier2_svd_dim: 24
+#   attribution_hassh_hash_dim: 8
+#   page_size: 2000
+#   batch_size: 1000
+#   rollup_workers: 5
+#   reference_max_age_days: 45
+#   full_recluster_weekly: false
+
+# ===== cooccurrence =====
+# Per-command session co-occurrence context for enrichment/embedding.
+# cooccurrence:
+#   enabled: true
+#   session_sample_size: 50
+#   top_k: 8
+#   min_sessions: 3
+#   embed_cooccurrence: false
+
+# ===== intel =====
+# External threat-intel subsystem. Off by default; provider API keys go in .env.
+# intel:
+#   enabled: false
+#   indexes:
+#     ip: prism.intel.ip
+#     url: prism.intel.url
+#     domain: prism.intel.domain
+#     hash: prism.intel.hash
+#   providers:
+#     tor:
+#       enabled: true
+#       exit_list_url: https://check.torproject.org/torbulkexitlist
+#       refresh_minutes: 60
+#       cache_file: /var/lib/dshield_prism/intel_tor_exits.txt
+#     feodotracker:
+#       enabled: true
+#       feed_url: https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.json
+#       refresh_minutes: 60
+#       cache_file: /var/lib/dshield_prism/intel_feodotracker.json
+#     firehol:
+#       enabled: true
+#       feed_url: https://iplists.firehol.org/files/firehol_level1.netset
+#       refresh_minutes: 360
+#       cache_file: /var/lib/dshield_prism/intel_firehol_level1.netset
+#     isc:
+#       enabled: true
+#       sources_url: https://isc.sans.edu/api/sources/attacks/2000?json
+#       refresh_minutes: 360
+#       cache_file: /var/lib/dshield_prism/intel_isc_top.json
+#     greynoise:
+#       enabled: true
+#       base_url: https://api.greynoise.io
+#       request_timeout_seconds: 8.0
+#       daily_budget: 6
+#       min_inter_call_seconds: 1.0
+#     abuseipdb:
+#       enabled: true
+#       base_url: https://api.abuseipdb.com
+#       request_timeout_seconds: 8.0
+#       daily_budget: 900
+#       min_inter_call_seconds: 0.0
+#       max_age_days: 90
+#     urlhaus:
+#       enabled: true
+#       feed_url: https://urlhaus.abuse.ch/downloads/csv_online/
+#       refresh_minutes: 60
+#       cache_file: /var/lib/dshield_prism/intel_urlhaus.csv
+#     threatfox:
+#       enabled: true
+#       base_url: https://threatfox-api.abuse.ch/api/v1/
+#       request_timeout_seconds: 8.0
+#       min_inter_call_seconds: 0.5
+#     malwarebazaar:
+#       enabled: true
+#       base_url: https://mb-api.abuse.ch/api/v1/
+#       request_timeout_seconds: 8.0
+#       min_inter_call_seconds: 0.5
+#     virustotal_public:
+#       enabled: false
+#       base_url: https://www.virustotal.com/api/v3
+#       request_timeout_seconds: 10.0
+#       daily_budget: 450
+#       min_inter_call_seconds: 16.0
+#   priority:
+#     novelty_w: 0.5
+#     low_conf_w: 0.2
+#     centrality_w: 0.15
+#     recency_w: 0.15
+#     recency_half_life_hours: 168.0
+#   refresh_ttl_days:
+#     ip: 7.0
+#     url: 14.0
+#     domain: 14.0
+#     hash: 30.0
+#   never_query_cidrs: []
+#   max_per_run: 5000
+
+# ===== findings =====
+# Findings mining — drift (stream A), discovery (stream B), narratives, hunts, thresholds.
+# findings:
+#   enabled: true
+#   indexes:
+#     default: prism.finding
+#     playbook_lifecycle: lifecycle-dshield.cowrie.playbook-default
+#     campaign_lifecycle: lifecycle-dshield.cowrie.campaign-default
+#     source_ip_lifecycle: lifecycle-dshield.cowrie.source_ip-default
+#   likely_discovery_novelty_min: 0.7
+#   likely_discovery_rarity_min: 0.5
+#   likely_discovery_min_sessions: 3
+#   max_findings_per_kind: 500
+#   lifecycle:
+#     snapshot_cap: 30
+#     provisional_stable_runs: 8
+#     retire_silent_runs_playbook: 120
+#     retire_silent_runs_campaign: 120
+#     retire_silent_runs_source_ip: 28
+#   discovery:
+#     intel_flip_recent_session_days: 7
+#     ip_shift_js_distance_min: 0.3
+#     ip_shift_min_sessions: 5
+#     unattributed_min_sessions: 5
+#     outlier_burst_window_hours: 24
+#     outlier_burst_min_sessions: 5
+#     novel_edge_top_k_per_cluster: 3
+#     novel_edge_min_cluster_size: 20
+#     convergence_min_ip_overlap_ratio: 0.4
+#   drift:
+#     command_jaccard_threshold: 0.5
+#     bigram_jaccard_threshold: 0.4
+#     artifact_set_drift_min: 0.5
+#     asn_cosine_drift_min: 0.4
+#     size_growth_pct_min: 0.75
+#     size_growth_min_delta_ips: 3
+#     resurgence_silent_runs: 8
+#     campaign_growth_pct_min: 0.75
+#     campaign_growth_min_delta_ips: 3
+#   narrative:
+#     enabled: true
+#     budget_floor_usd: 0.05
+#     max_tokens: 160
+#   window_days: 30
+#   hunts:
+#     config_dir: config/hunts
+#     max_findings_per_hunt: 500
+#   noise_threshold_pct: 0.005
+
+# ===== command_shape_dedup =====
+# Functional-duplicate gating: inherit enrichment across same-shape commands instead of re-calling the LLM.
+# command_shape_dedup:
+#   enabled: true
+#   min_parent_confidence: 5
+#   require_known_intent: true
+
+# ===== analyst =====
+# Analyst-authored artifact-extraction rules subsystem.
+# analyst:
+#   enabled: true
+#   indexes:
+#     artifact_rules: prism.analyst.artifact_rules
+#   scan_batch_size: 100
+#   max_match_per_doc: 50
+#   sync_scan_doc_threshold: 5000
+#   regex_compile_timeout_ms: 50
+#   regex_sample_size: 500
+#   max_match_count_per_rule: 50000
+
+# ===== metrics =====
+# Per-run threshold-distribution snapshot writer.
+# metrics:
+#   enabled: false
+#   indexes:
+#     default: prism.metrics
+
+# ===== ops =====
+# Pipeline run-telemetry writer + console 'pipeline running' banner freshness window.
+# ops:
+#   indexes:
+#     default: prism.ops
+#   pipeline_running_window_min: 2880

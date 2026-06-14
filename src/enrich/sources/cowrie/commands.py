@@ -982,6 +982,7 @@ def enrich_one(
 def run_enrich(
     cfg: AppConfig, secrets: Secrets, dry_run: bool = False, no_cloud: bool = False,
     *, reference_mode: bool = False, budget: Optional[int] = None,
+    full_rescan: bool = False,
 ) -> dict:
     """Main worker entry. Returns stats dict.
 
@@ -1098,6 +1099,17 @@ def run_enrich(
     if reference_mode:
         since = None
         log.info("reference mode: full reference-index scan; no watermark")
+    elif full_rescan:
+        # Backfill: ignore the watermark and re-scan ALL command events, so
+        # commands in newly-ingested OLDER logs get enriched (the watermark would
+        # otherwise skip everything older than the last run). The per-command
+        # cache skips re-LLM on already-enriched commands, so only genuinely-new
+        # commands cost an LLM call; the watermark is re-advanced to the max ts at
+        # the end (`not reference_mode` path below), so the next steady-state run
+        # is incremental again.
+        since = None
+        log.info("full-rescan (backfill): ignoring command watermark; re-scanning "
+                 "all events (cache skips re-LLM on already-enriched commands)")
     else:
         since = db.get_watermark()
         if since is None and cfg.worker.initial_lookback_days is not None:
@@ -3119,6 +3131,8 @@ def run_cluster(
         centroid_sample_field="sample_commands",
         dry_run=dry_run,
         layer_label="cowrie.commands",
+        n_jobs=cfg.worker.cluster_n_jobs,
+        svd_dim=cfg.command_cluster.cluster_svd_dim,
         refresh_reference=refresh_reference,
         use_reference=use_reference,
         reference_max_age_days=ccfg.reference_max_age_days,

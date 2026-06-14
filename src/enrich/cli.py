@@ -100,18 +100,27 @@ _DEFAULT_CLUSTER_KEEP_RUNS = 5
 _BACKFILL_SKIP_STEPS = ("track lifecycles", "mine findings")
 
 
-def _apply_backfill_mode(steps, cluster_sessions_full):
+def _apply_backfill_mode(steps, replacements):
     """Adjust the pipeline step list for `--backfill`: drop the temporally-
-    corrupting steps (`_BACKFILL_SKIP_STEPS`) and replace `cluster sessions`
-    with the full-corpus variant (`--window-days 0`). `cluster_sessions_full`
-    is the replacement callable. Pure list transform — unit-tested."""
+    corrupting steps (`_BACKFILL_SKIP_STEPS`), and for any step whose name is a
+    key in `replacements`, swap its fn for the backfill variant.
+
+    Together the swaps make a backfill a true full-corpus pass — enrich →
+    re-pool → cluster the whole archive — instead of one that silently skips
+    everything older than the last run's watermarks:
+      - `enrich` → full-rescan: re-enrich commands in older-than-watermark
+        history (the per-command cache skips re-LLM on already-enriched ones).
+      - `reset rollup watermarks` → force-clear the session+IP watermarks so the
+        rollups re-pool the full history.
+      - `cluster sessions` → full-corpus cluster (`--window-days 0`).
+
+    `replacements` maps step name → replacement callable. Pure list transform —
+    unit-tested."""
     out = []
     for name, fn, optional in steps:
         if name in _BACKFILL_SKIP_STEPS:
             continue
-        if name == "cluster sessions":
-            fn = cluster_sessions_full
-        out.append((name, fn, optional))
+        out.append((name, replacements.get(name, fn), optional))
     return out
 
 
@@ -735,10 +744,19 @@ def _run_pipeline(cfg, secrets, args) -> int:
     # layer is built by a normal `pipeline` run AFTER the backfill completes
     # (B3/B4). intel + cloud should be off for the historical phase.
     if getattr(args, "backfill", False):
-        steps = _apply_backfill_mode(
-            steps,
-            lambda: sessions_mod.run_cluster(cfg, secrets, dry_run=dry, window_days=0),
-        )
+        steps = _apply_backfill_mode(steps, {
+            # full-corpus session cluster (not the 30d window)
+            "cluster sessions": lambda: sessions_mod.run_cluster(
+                cfg, secrets, dry_run=dry, window_days=0),
+            # clear session+IP watermarks so the rollups re-pool the full history
+            # (force=True bypasses the schema/dirty gate the steady-state runs use)
+            "reset rollup watermarks": lambda: _maybe_reset_rollup_watermarks(
+                cfg, secrets, force=True),
+            # re-enrich commands in the older-than-watermark history; the
+            # per-command cache skips re-LLM on already-enriched commands
+            "enrich": lambda: cmds_mod.run_enrich(
+                cfg, secrets, dry_run=dry, no_cloud=args.no_cloud, full_rescan=True),
+        })
         on = [n for n, e in (("intel", cfg.intel.enabled), ("cloud", cfg.cloud.enabled)) if e]
         if on:
             log.warning(
@@ -747,8 +765,10 @@ def _run_pipeline(cfg, secrets, args) -> int:
                 "spent on backfill novelty). See backlog #5/#6.", " + ".join(on),
             )
         print_args(
-            "[pipeline] BACKFILL mode: cluster sessions forced to full corpus "
-            "(--window-days 0); 'track lifecycles' + 'mine findings' skipped"
+            "[pipeline] BACKFILL mode: full-rescan enrich + session+IP rollup "
+            "watermarks cleared for a full re-pool of the historical corpus; "
+            "cluster sessions forced to full corpus (--window-days 0); "
+            "'track lifecycles' + 'mine findings' skipped"
         )
         if not dry and sys.stdout.isatty():
             print_args(

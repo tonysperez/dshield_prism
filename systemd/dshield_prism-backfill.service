@@ -18,6 +18,19 @@ Group=dshield_prism
 WorkingDirectory=/opt/dshield_prism
 EnvironmentFile=/opt/dshield_prism/.env
 
+# Pin BLAS/OpenMP to one thread for the backfill. `pipeline` clusters commands
+# then sessions in ONE process; the heartbeat around each HDBSCAN fit forks
+# (os.fork in clustering._fit_with_heartbeat), and OpenBLAS's thread pool is not
+# fork-safe — a fork while the pool is live wedges its allocator lock, and the
+# next big LAPACK call (the session-layer SVD's LU factorisation) then deadlocks
+# every worker on a futex. One BLAS thread = no pool to poison. Cost is
+# negligible: the run is dominated by the single-threaded HDBSCAN MST, and the
+# kNN parallelism is joblib (`cluster_n_jobs`), not BLAS. Set AFTER the
+# EnvironmentFile so it wins if .env ever sets these. See
+# eval/results/clustering-scale-levers-verdict.md / the backfill-deadlock note.
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=OMP_NUM_THREADS=1
+
 # The backfill. `pipeline --backfill` already takes the shared exclusive flock on
 # /var/lib/dshield_prism/.lock itself (cli._acquire_pipeline_lock) — the SAME
 # lock the forward/backward/recluster units use — so a still-in-flight steady
@@ -39,7 +52,17 @@ EnvironmentFile=/opt/dshield_prism/.env
 # --force ALSO wipes reference_session (the Tradecraft corpus) — re-import it
 # afterward (scripts/import_reference_corpus.py). Re-enable the timers only after
 # validating the rebuild.
+
+# Bulk-write speedup: drop the rollup indices' refresh_interval to -1 for the
+# duration (no per-30s refresh during a write-heavy multi-hour pass), recording
+# the originals to /var/lib/dshield_prism. ExecStopPost restores them to exactly
+# what they were when the run finishes, fails, or is stopped. The `-` prefix
+# makes both best-effort: a quiesce hiccup never blocks the backfill, and the
+# helper itself always exits 0. ExecStopPost runs on every exit path (success,
+# ExecStart failure, `systemctl stop`), so the index can't be left at -1.
+ExecStartPre=-/opt/dshield_prism/.venv/bin/python /opt/dshield_prism/scripts/backfill_index_settings.py --config /opt/dshield_prism/config/default.yaml quiesce
 ExecStart=/opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml pipeline --backfill
+ExecStopPost=-/opt/dshield_prism/.venv/bin/python /opt/dshield_prism/scripts/backfill_index_settings.py --config /opt/dshield_prism/config/default.yaml restore
 
 # A bulk backfill can run for days — no start timeout.
 TimeoutStartSec=infinity
