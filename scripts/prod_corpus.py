@@ -123,25 +123,27 @@ def score_full(
     labels: np.ndarray,
     corpus: SessionCorpus,
     sid_to_label: dict[str, str],
-    pair_to_sessions: dict[str, list[str]],
+    pair_to_sessions: dict[str, list[str]] | None = None,
     *,
     merge_threshold: float,
 ) -> dict:
-    """Score a production-scale labeling on all 7 F-phase binding metrics.
+    """Score a production-scale labeling on the F-phase binding metrics.
 
-    Metrics 4-7 (ari/nmi/homogeneity/completeness/v_measure +
-    divergent-pair) are computed on the labeled eval subset; metrics 1-3
-    (outlier_rate, small-cluster count/purity/shard-fraction) are computed
-    corpus-wide. Shared by F3.1 + F4.1 so every prod-scale sweep scores
-    identically. ``labels`` is index-aligned with ``corpus``.
+    Metrics 4-7 (ari/nmi/homogeneity/completeness/v_measure) are computed
+    on the labeled eval subset; metrics 1-3 (outlier_rate, small-cluster
+    count/purity/shard-fraction) are computed corpus-wide. Shared by F3.1 +
+    F4.1 so every prod-scale sweep scores identically. ``labels`` is
+    index-aligned with ``corpus``. (``pair_to_sessions`` is accepted for
+    back-compat with older callers but no longer scored — the divergent-pair
+    metric was retired with the semantic-clustering claim; see
+    eval/archive/semantic-clustering-claim/.)
     """
+    del pair_to_sessions  # retired; accepted for caller back-compat only
     from sklearn.metrics import (
         adjusted_rand_score, completeness_score, homogeneity_score,
         normalized_mutual_info_score, v_measure_score,
     )
-    from eval_clustering import (  # local import to avoid a hard cycle
-        _divergent_pair_metrics, small_cluster_metrics,
-    )
+    from eval_clustering import small_cluster_metrics  # local import
 
     sid_to_cluster = {sid: int(c) for sid, c in zip(corpus.session_ids, labels)}
     eval_sids: list[str] = []
@@ -161,11 +163,6 @@ def score_full(
         "completeness": round(float(completeness_score(truth, pred_arr)), 4),
         "v_measure":    round(float(v_measure_score(truth, pred_arr)), 4),
     }
-    if pair_to_sessions:
-        v2_metrics, _ = _divergent_pair_metrics(
-            eval_sids, pred_arr, truth, pair_to_sessions,
-        )
-        metrics.update(v2_metrics)
 
     norm = normalized_embeddings(corpus)
     sc = small_cluster_metrics(

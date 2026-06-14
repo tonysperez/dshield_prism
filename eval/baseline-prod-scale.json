@@ -58,10 +58,6 @@
     "v_measure": {
       "baseline": 0.7021,
       "tolerance": 0.05
-    },
-    "divergent_pair_resolution_rate": {
-      "baseline": 0.8333,
-      "tolerance": 0.17
     }
   },
   "per_label": {

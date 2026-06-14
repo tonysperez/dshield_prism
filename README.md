@@ -36,30 +36,13 @@ Behavioral campaign mining surfaces the chattr+cron *subset* of a broader shared
 
 The combination is defense-in-depth persistence: install the key, lock it with chattr, re-install via cron if it disappears. Two campaign axes (behavior and infrastructure) corroborate the same finding from different angles: the infra axis names the shared-key pool; the behavior axis names the chattr+cron sub-population *inside* that pool. Frequent-itemset mining (FP-growth) over each IP's playbook set is what surfaces *"these 73 IPs run this exact combination"* — and the playbooks themselves only exist because session embeddings clustered into stable named behaviors. That manual two-axis corroboration is now detected automatically: when a behavior campaign and an infrastructure campaign overlap, Prism promotes the intersection to an **Operation** (`cmp-ope-…`).
 
-## What the clustering actually does — measured
+## What the clustering does — measured
 
-The campaign above only means something if the clustering underneath it groups sessions by *behavior*, not by text. The honest answer from a 108-session analyst-labeled eval set (100 stratified + 12 divergent-pair stress cases):
+The pipeline clusters sessions into named playbooks, and those playbooks drive everything downstream (campaigns, drift, novelty scoring). What it deliberately does **not** claim: that the LLM embedding groups behavior better than plain text.
 
-- **Cluster quality vs. analyst labels.** At the production HDBSCAN config (`min_cluster_size=5`), the embedding-only pipeline scores ARI 0.44 on the eval-isolated 108 sessions and ARI 0.39 when those same sessions are scored against production cluster ids running on the full ~4,000-session corpus ([eval/results/prod-scale-validation-E2.1.md](eval/results/prod-scale-validation-E2.1.md)). Homogeneity holds above 0.80 at both scales; completeness sits at 0.55–0.60. Clusters are internally pure; labels fragment across a moderate number of clusters. The −0.05 ARI gap between eval-isolated and production-scale measurement is a corpus-size property, not a regression — covered in [docs/handoff-embedding-quality-plan.md](docs/handoff-embedding-quality-plan.md).
-- **Copy/paste dominance.** Per [`scripts/eval_cluster_purity.py`](scripts/eval_cluster_purity.py), 5 of the top 20 corpus clusters are copy/paste tight — every member runs the *exact same* command set (`modal_signature_share` ≥ 0.8). One cluster (`cluster_20`, SSH Key Dropper) holds 526 sessions at `modal_signature_share = 0.99`. On this corpus, copy/paste-script lineage drives most clustering signal regardless of representation.
-- **Embedding vs. TF-IDF baseline.** A TF-IDF + truncated-SVD baseline ([eval/results/embedding-ablation.md](eval/results/embedding-ablation.md), [eval/results/embed-input-sweep-20260601T144733Z.md](eval/results/embed-input-sweep-20260601T144733Z.md)) ties the embedding on overall ARI within ~0.07 either direction depending on HDBSCAN config and which eval slice you score on: at `mcs=5`, TF-IDF wins the v1 slice by +0.06 ARI but loses the merged v1+v2 slice by −0.07. On the v2 divergent-pair stress test specifically — pairs hand-picked to look textually different while sharing the same underlying behavior — TF-IDF resolves **6 of 6** while the embedding resolves **5 of 6**. The embedding's value-add is real but narrow: it doesn't beat literal-token overlap on copy/paste-heavy corpus structure, and on the cases designed to stress the "behavior-not-text" claim, TF-IDF happens to clear them all on this corpus.
-
-`cluster_7` below is the kind of case where the embedding mechanism *is* doing work that TF-IDF can't: 39 commands across 19 distinct leading binaries, grouped together as host/environment fingerprinting despite near-zero textual overlap.
-
-```
-w        uname -m      whoami      hostname      ifconfig      top
-nproc || grep -c processor /proc/cpuinfo          lscpu | grep Model
-free -m | grep Mem | awk '{print $2,$3,$4,$5,$6,$7}'
-ls -la ~/.local/share/TelegramDesktop/tdata ...   /ip cloud print
-```
-
-Three properties hold at once in this example:
-
-- **Maximal textual divergence** — members run from one character (`w`) to 90+; they share no common tokens.
-- **Cross-dialect membership** — `/ip cloud print` is MikroTik RouterOS syntax, clustered alongside Linux coreutils.
-- **Semantic coherence** — every member is host recon: CPU, memory, OS/arch, identity, network, competing miners (`ps | grep '[Mm]iner'`), and high-value loot (`ls … TelegramDesktop/tdata`).
-
-The same invariance shows up over shell-wrapping: `echo "…" | sh` and the bare command sequence cluster together because the embedding sees through the wrapper to the underlying behavior. **At the level of individual cases the mechanism works.** What the corpus-wide ablation also shows is that the wins are mostly drowned out by copy/paste traffic, where literal-token overlap already does the heavy lifting. The v2 divergent-pair eval set was built to surface exactly the textually-divergent same-behavior cases the embedding should excel at; on this corpus it cleared 5 of 6 while TF-IDF cleared 6 of 6. The mechanism is real, and Prism's downstream value (cross-session IP-cluster groupings, campaign mining, novelty scoring) leans on it, but the framing this README originally pitched — that semantic embedding generally beats text matching on honeypot logs — over-claimed what's measurable today on a single sensor's corpus.
+- **Cluster quality vs. analyst labels.** At the production HDBSCAN config (`min_cluster_size=5`), the pipeline scores ARI ~0.41, homogeneity ~0.85, completeness ~0.59 on the 100-session analyst-labeled set — clusters are internally pure; labels fragment across a moderate number of clusters. This is the gated quality metric ([`scripts/eval_clustering.py`](scripts/eval_clustering.py), [eval/baseline.json](eval/baseline.json)).
+- **Copy/paste dominance.** Per [`scripts/eval_cluster_purity.py`](scripts/eval_cluster_purity.py), ~5 of the top 20 corpus clusters are copy/paste tight — every member runs the *exact same* command set (`modal_signature_share` ≥ 0.8). On this corpus, script lineage drives most clustering signal regardless of representation.
+- **Embedding vs. text — no measurable edge.** A faithful, payload-keyed evaluation (same-payload sessions with disjoint commands vs. different-payload controls, scored on the *persisted* production clustering with command overlap held constant) found the embedding **does not** separate behavior better than a TF-IDF text baseline — on a 4-year corpus its cosine is dominated by coarse intent, and TF-IDF edges it on the controlled test. Prism therefore makes **no "semantics over text" claim**: the clustering is used because it works operationally, not because it beats text matching. The full evaluation that settled this — and the negative result — is archived under [eval/archive/semantic-clustering-claim/](eval/archive/semantic-clustering-claim/).
 
 ## How it works
 

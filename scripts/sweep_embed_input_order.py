@@ -63,7 +63,6 @@ from enrich.sources.cowrie.sessions import (
 from eval_clustering import (  # type: ignore
     _load_labels,
     _per_label_breakdown,
-    _divergent_pair_metrics,
 )
 
 log = logging.getLogger(__name__)
@@ -318,10 +317,13 @@ def _cluster_at_production_scale(
 def _score_against_labels(
     kept_sessions: list[SessionFacts],
     cluster_labels: np.ndarray,
-    pair_to_sessions: dict[str, list[str]],
+    pair_to_sessions: dict[str, list[str]] | None = None,
 ) -> dict:
     """Filter to the analyst-labeled subset, then compute the same
-    metrics + per-label table the production-scale gate computes."""
+    metrics + per-label table the production-scale gate computes.
+    (``pair_to_sessions`` accepted for back-compat but no longer scored —
+    divergent-pair metric retired; see eval/archive/semantic-clustering-claim/.)"""
+    del pair_to_sessions
     sid_to_cluster = {s.session_id: int(c) for s, c in zip(kept_sessions, cluster_labels)}
     eval_sids: list[str] = []
     eval_labels: list[str] = []
@@ -341,11 +343,6 @@ def _score_against_labels(
         "completeness": round(float(completeness_score(eval_labels, cluster_arr)), 4),
         "v_measure":    round(float(v_measure_score(eval_labels, cluster_arr)), 4),
     }
-    if pair_to_sessions:
-        v2_metrics, _outcomes = _divergent_pair_metrics(
-            eval_sids, cluster_arr, eval_labels, pair_to_sessions,
-        )
-        metrics.update(v2_metrics)
 
     n_clusters_total = len({int(c) for c in cluster_labels if c >= 0})
     n_outliers_total = int((cluster_labels == -1).sum())
@@ -364,7 +361,6 @@ def _score_against_labels(
 
 _METRIC_ORDER = (
     "ari", "completeness", "homogeneity", "nmi", "v_measure",
-    "divergent_pair_resolution_rate",
 )
 
 
@@ -404,7 +400,6 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config-path", type=str, default=None)
     ap.add_argument("--labels", type=Path, default=Path("eval/labels-v1.yaml"))
-    ap.add_argument("--labels-v2", type=Path, default=Path("eval/labels-v2.yaml"))
     ap.add_argument("--limit-rollups", type=int, default=None,
                     help="Cap the production pull at N rollups for dev runs.")
     ap.add_argument("--no-rescue", action="store_true",
@@ -427,19 +422,11 @@ def main() -> int:
     commands_idx = cfg.elasticsearch.indexes.cowrie.commands
 
     sid_to_label: dict[str, str] = {}
-    pair_to_sessions: dict[str, list[str]] = {}
-    for p in (args.labels, args.labels_v2):
-        if not p.exists():
-            continue
-        block = _load_labels(p)
+    if args.labels.exists():
+        block = _load_labels(args.labels)
         sid_to_label.update({sid: b["playbook_label"] for sid, b in block.items()})
-        if p == args.labels_v2:
-            for sid, b in block.items():
-                pid = b.get("divergent_pair_id")
-                if isinstance(pid, str) and pid:
-                    pair_to_sessions.setdefault(pid, []).append(sid)
     if not sid_to_label:
-        raise SystemExit(f"No labels found in {args.labels} or {args.labels_v2}")
+        raise SystemExit(f"No labels found in {args.labels}")
 
     started_at = datetime.now(timezone.utc).isoformat()
     log.info("pulling rollups from %s", sessions_idx)
@@ -532,12 +519,11 @@ def main() -> int:
             labels = _cluster_at_production_scale(
                 pooled, [s.scalars for s in kept], scfg, rescue=not args.no_rescue,
             )
-            score = _score_against_labels(kept, labels, pair_to_sessions)
-            log.info("  ari=%s  hom=%s  comp=%s  v2pair=%s  n_clusters=%d  n_outliers=%d",
+            score = _score_against_labels(kept, labels)
+            log.info("  ari=%s  hom=%s  comp=%s  n_clusters=%d  n_outliers=%d",
                      score["metrics"].get("ari"),
                      score["metrics"].get("homogeneity"),
                      score["metrics"].get("completeness"),
-                     score["metrics"].get("divergent_pair_resolution_rate"),
                      score["n_clusters_total"],
                      score["n_outliers_total"])
             results.append({

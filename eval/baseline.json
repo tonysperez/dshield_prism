@@ -1,51 +1,45 @@
 {
-  "captured_at": "2026-06-01T15:26:31.000000+00:00",
-  "captured_from": "eval/results/clustering-20260601T152631Z.json",
+  "captured_at": "2026-06-13T00:00:00.000000+00:00",
+  "captured_from": "v1-only re-baseline after the semantic-clustering claim was dropped (eval/archive/semantic-clustering-claim/); previously merged the v2 divergent-pair set, which is now archived.",
   "config_at_capture": {
     "min_cluster_size": 5,
     "min_samples": 2,
     "scalar_weight": 0.05
   },
   "input_at_capture": {
-    "labeled_blocks": 108,
-    "labeled_with_embed": 108,
-    "v2_sessions_in_eval": 12,
-    "v2_pairs_in_eval": 6,
+    "labeled_blocks": 100,
+    "labeled_with_embed": 100,
     "label_distribution": {
       "single_command_probe": 35,
-      "ssh_key_chattr_persistence": 30,
-      "botnet_loader": 15,
-      "mirai_busybox_probe": 11,
+      "ssh_key_chattr_persistence": 26,
+      "botnet_loader": 12,
       "shell_wrapper_only": 10,
+      "mirai_busybox_probe": 10,
       "host_recon": 7
     }
   },
-  "embedding_pipeline_at_capture": "production embed_context [intent, tactics, techniques, description], cooccurrence.embed_cooccurrence=false (adopted 2026-06-01 per E2.1 sweep, eval/results/embed-input-sweep-20260601T144733Z.md)",
+  "embedding_pipeline_at_capture": "production embed_context [intent, tactics, techniques, description], cooccurrence.embed_cooccurrence=false. Clustering mirrors run_layer_clustering: L2-normalize + SVD-reduce + scalar-augment + HDBSCAN + noise-rescue.",
   "tolerance_semantic": "Each metric fails the gate when current < baseline - tolerance. Tolerance is an absolute drop, not a relative percentage.",
   "metrics": {
     "ari": {
-      "baseline": 0.4447,
+      "baseline": 0.4079,
       "tolerance": 0.05
     },
     "nmi": {
-      "baseline": 0.7043,
+      "baseline": 0.6957,
       "tolerance": 0.05
     },
     "homogeneity": {
-      "baseline": 0.8446,
+      "baseline": 0.8492,
       "tolerance": 0.05
     },
     "completeness": {
-      "baseline": 0.604,
+      "baseline": 0.5892,
       "tolerance": 0.05
     },
     "v_measure": {
-      "baseline": 0.7043,
+      "baseline": 0.6957,
       "tolerance": 0.05
-    },
-    "divergent_pair_resolution_rate": {
-      "baseline": 0.8333,
-      "tolerance": 0.17
     }
   }
 }

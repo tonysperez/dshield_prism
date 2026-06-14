@@ -1,30 +1,17 @@
 """Eval the session-layer clustering against the analyst-labeled ground truth.
 
-Loads ``eval/labels-v1.yaml`` (the general stratified sample) and, when
-present, ``eval/labels-v2.yaml`` (the divergent-pair stress test), joins
-each by ``session_id`` against its unlabeled JSONL, filters to
-``is_real: true`` blocks with a non-null ``playbook_label``, then re-runs
-the same L2-normalize + scalar-augment + HDBSCAN pipeline the production
-session clusterer uses (``src/enrich/clustering.py``) on the merged eval
-set's embeddings. Reports clustering quality against the analyst labels:
+Loads ``eval/labels-v1.yaml`` (the stratified analyst sample), joins it by
+``session_id`` against its unlabeled JSONL, filters to ``is_real: true``
+blocks with a non-null ``playbook_label``, then re-runs the same
+L2-normalize + SVD-reduce + scalar-augment + HDBSCAN + noise-rescue pipeline
+the production session clusterer uses (``src/enrich/clustering.py``) on the
+eval set's embeddings. Reports clustering quality against the analyst labels:
 
   * ``ari``           — adjusted Rand index (chance-corrected pairwise agreement)
   * ``nmi``           — normalized mutual information
   * ``homogeneity``   — each cluster contains only members of a single label
   * ``completeness``  — all members of a label end up in the same cluster
   * ``v_measure``     — harmonic mean of homogeneity + completeness
-
-And, when the v2 set is loaded, the v2-specific metric:
-
-  * ``divergent_pair_resolution_rate`` — fraction of v2 pairs where the
-    clustering's same-cluster / different-cluster call agrees with the
-    analyst's same-label / different-label call. Direct measure of the
-    embedding's "behavior-not-text" claim: positive-case pairs (same
-    label, textually divergent commands) should land in the same
-    cluster; negative-case pairs (different label, sharing only a
-    coarse intent) should split. HDBSCAN outliers (-1) never count as
-    "same cluster" — pairs whose members both land in noise count as
-    "split" against the metric.
 
 This is a pure-function eval: no ES, no writes, no live cluster index
 state. The HDBSCAN math + hyperparameters mirror what production runs
@@ -58,7 +45,12 @@ from sklearn.metrics import (
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from enrich.clustering import compute_centroids, l2_normalize
+from enrich.clustering import (
+    compute_centroids,
+    l2_normalize,
+    rescue_noise_points,
+    svd_reduce,
+)
 from enrich.config import load_config
 from enrich.sources.cowrie.sessions import build_session_scalar_block
 
@@ -365,60 +357,6 @@ def _extract_session_intent_signature(rec: dict) -> tuple:
     return enr.get("dominant_intent"), enr.get("command_signature")
 
 
-def _extract_session_text(rec: dict) -> str | None:
-    """Concatenate the session's cowrie.command.input / .failed
-    command-line strings in chronological order. Used by the TF-IDF
-    baseline embedder (--embedding-source tfidf-svd) so the ablation
-    grades a model-free comparator on the same labels."""
-    raw_events = rec.get("raw_events") or []
-    parts: list[str] = []
-    for ev in raw_events:
-        action = (ev.get("event") or {}).get("action")
-        if action not in ("cowrie.command.input", "cowrie.command.failed"):
-            continue
-        cmd = (ev.get("process") or {}).get("command_line")
-        if isinstance(cmd, str) and cmd:
-            parts.append(cmd)
-    return " ".join(parts) if parts else None
-
-
-def _tfidf_svd_embed(texts: list[str], *, n_components: int = 100) -> list[list[float]]:
-    """Fit a TF-IDF + truncated-SVD baseline embedder on the eval set
-    and return per-session vectors. Used as a model-free comparator for
-    the brutal-review embedding ablation (phase 3.3).
-
-    Why TF-IDF: it's the simplest text representation that captures
-    "which commands occur" without learned semantics. If the
-    embedding-based clustering does meaningfully better than this
-    baseline on the eval set, the embedding-sees-through-text thesis
-    holds; if TF-IDF ties or wins, the thesis weakens on this corpus.
-
-    Why n_components=100: TF-IDF + SVD at ~50-200 dims is the
-    standard "topic" reduction. 100 lands in the middle; on a
-    100-session eval set with O(1000) unique tokens, this captures
-    most of the explained variance without overfitting to noise.
-    """
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.decomposition import TruncatedSVD
-    vectorizer = TfidfVectorizer(
-        max_features=5000,
-        ngram_range=(1, 2),
-        # Default token pattern is `\b\w\w+\b` — keep it; commands tokenise
-        # cleanly on whitespace + punctuation for our corpus. Pipes,
-        # semicolons, slashes already act as word separators.
-        sublinear_tf=True,
-        norm="l2",
-    )
-    matrix = vectorizer.fit_transform(texts)
-    n_components = min(n_components, matrix.shape[1], matrix.shape[0] - 1)
-    if n_components < 2:
-        # Pathologically tiny corpus — surface as a degenerate run.
-        return [[0.0] for _ in texts]
-    svd = TruncatedSVD(n_components=n_components, random_state=20260531)
-    reduced = svd.fit_transform(matrix)
-    return reduced.tolist()
-
-
 # ---------------------------------------------------------------------------
 # Clustering
 # ---------------------------------------------------------------------------
@@ -430,23 +368,38 @@ def _cluster(
     min_cluster_size: int,
     min_samples: int,
     scalar_weight: float,
+    svd_dim: int,
+    merge_threshold: float,
 ) -> np.ndarray:
-    """L2-normalize embeddings, hstack the session scalar block, run HDBSCAN.
-    Mirrors `enrich.clustering.run_layer_clustering` minus the side-effects
-    (no ES updates, no centroid persist, no reference logic)."""
-    matrix = np.array(embeddings, dtype=np.float32)
-    normalized = l2_normalize(matrix)
+    """L2-normalize → SVD-reduce → scalar-augment → HDBSCAN → noise-rescue,
+    the SAME pipeline `enrich.clustering.run_layer_clustering` runs (minus
+    the ES side-effects, centroid persist, reference logic).
+
+    The SVD reduction and the noise rescue are part of how production
+    actually groups, not optional polish: the fit runs in the reduced
+    space, then `rescue_noise_points` reassigns HDBSCAN outliers to their
+    nearest cluster centroid when cosine ≥ `merge_threshold`, measured in
+    FULL-dim pure-embedding space — so the eval's grouping reflects what
+    the deployed pipeline produces rather than a raw-HDBSCAN approximation
+    with an inflated outlier rate."""
+    normalized = l2_normalize(np.array(embeddings, dtype=np.float32))
+    reduced, _ = svd_reduce(normalized, svd_dim)
     if scalar_weight > 0.0:
         block = build_session_scalar_block(scalars, scalar_weight)
-        cluster_matrix = np.hstack([normalized, block])
+        cluster_matrix = np.hstack([reduced, block])
     else:
-        cluster_matrix = normalized
-    clusterer = HDBSCAN(
+        cluster_matrix = reduced
+    labels = HDBSCAN(
         min_cluster_size=min_cluster_size,
         min_samples=min_samples,
         metric="euclidean",
-    )
-    return clusterer.fit_predict(cluster_matrix)
+    ).fit_predict(cluster_matrix)
+    # Rescue against full-dim pure-embedding space (never the reduced fit
+    # space or the scalar block), exactly as run_layer_clustering does.
+    # threshold > 1.0 disables, matching playbook_merge_threshold semantics.
+    if merge_threshold and merge_threshold <= 1.0:
+        labels, _ = rescue_noise_points(normalized, labels, merge_threshold)
+    return labels
 
 
 # ---------------------------------------------------------------------------
@@ -497,127 +450,13 @@ def _per_label_breakdown(
     return out
 
 
-def _divergent_pair_metrics(
-    session_ids: list[str],
-    cluster_pred: np.ndarray,
-    label_truth: list[str],
-    pair_to_sessions: dict[str, list[str]],
-) -> tuple[dict, list[dict]]:
-    """Compute the v2-specific per-pair metric.
-
-    For each ``divergent_pair_id`` whose two members both ended up in
-    the clustering:
-
-      * positive-case pair (analyst gave both the same playbook_label)
-        — counted as "resolved" iff the embedding put both in the same
-        non-outlier cluster.
-      * negative-case pair (analyst gave different labels) — counted
-        as "resolved" iff the embedding put the members in different
-        clusters (HDBSCAN outliers also count as "different" against
-        any non-outlier).
-
-    ``divergent_pair_resolution_rate`` is the fraction of pairs where
-    the embedding's clustering call agrees with the analyst's label
-    call. Same metric for positive and negative cases — that's the
-    point of the v2 set: positives test the embedding's
-    "behavior-not-text" claim, negatives keep the metric honest
-    against trivial baselines (all-singletons scores ~67% on this
-    corpus' negative-heavy distribution; the embedding has to beat
-    that on the positives to clear).
-
-    Pairs whose members didn't survive the embedding-bearing filter
-    upstream (no embedding, etc.) are skipped — they're a no-op for
-    the metric, surfaced via ``n_pairs_skipped``.
-    """
-    sid_to_cluster: dict[str, int] = {
-        sid: int(c) for sid, c in zip(session_ids, cluster_pred)
-    }
-    sid_to_label: dict[str, str] = {
-        sid: lbl for sid, lbl in zip(session_ids, label_truth)
-    }
-
-    pos_total = pos_resolved = neg_total = neg_separated = 0
-    n_pairs_skipped = 0
-    pair_outcomes: list[dict] = []
-    for pid, members in pair_to_sessions.items():
-        if len(members) != 2:
-            n_pairs_skipped += 1
-            continue
-        sid_a, sid_b = members
-        if sid_a not in sid_to_cluster or sid_b not in sid_to_cluster:
-            n_pairs_skipped += 1
-            continue
-        cluster_a = sid_to_cluster[sid_a]
-        cluster_b = sid_to_cluster[sid_b]
-        labels_match = sid_to_label[sid_a] == sid_to_label[sid_b]
-        # HDBSCAN -1 is noise, not a real cluster. Two outliers don't
-        # constitute "same cluster" — they're separately not-in-any-
-        # cluster, which against the metric counts as "different."
-        clusters_match = cluster_a == cluster_b and cluster_a != -1
-
-        if labels_match:
-            pos_total += 1
-            if clusters_match:
-                pos_resolved += 1
-        else:
-            neg_total += 1
-            if not clusters_match:
-                neg_separated += 1
-        pair_outcomes.append({
-            "pair_id":       pid,
-            "sessions":      [sid_a, sid_b],
-            "labels":        [sid_to_label[sid_a], sid_to_label[sid_b]],
-            "clusters":      [cluster_a, cluster_b],
-            "labels_match":  labels_match,
-            "clusters_match": clusters_match,
-            "resolved":      (labels_match == clusters_match),
-        })
-
-    n_pairs = pos_total + neg_total
-    n_correct = pos_resolved + neg_separated
-    rate = (n_correct / n_pairs) if n_pairs else 0.0
-
-    metrics = {
-        "divergent_pair_resolution_rate": round(rate, 4),
-        "divergent_pair_positive_total":     pos_total,
-        "divergent_pair_positive_resolved":  pos_resolved,
-        "divergent_pair_negative_total":     neg_total,
-        "divergent_pair_negative_separated": neg_separated,
-        "divergent_pair_skipped":            n_pairs_skipped,
-    }
-    return metrics, pair_outcomes
-
-
-def _evaluate(
-    labels_path: Path, jsonl_path: Path, cfg,
-    *,
-    v2_labels_path: Path | None = None,
-    v2_jsonl_path: Path | None = None,
-    embedding_source: str = "model",
-) -> dict:
+def _evaluate(labels_path: Path, jsonl_path: Path, cfg) -> dict:
     label_blocks = _load_labels(labels_path)
     if not label_blocks:
         raise RuntimeError(
             f"No annotated+real labels with non-null playbook_label "
             f"in {labels_path}"
         )
-
-    # Auto-merge v2 when its labels file exists and a JSONL is reachable.
-    # The plan's E1.3 step calls for both sets to feed the same clustering
-    # run — that's the corpus every E2+ experiment will measure against.
-    v2_label_blocks: dict[str, dict] = {}
-    pair_to_sessions: dict[str, list[str]] = {}
-    if v2_labels_path is not None and v2_labels_path.exists() \
-            and v2_jsonl_path is not None and v2_jsonl_path.exists():
-        v2_label_blocks = _load_labels(v2_labels_path)
-        for sid, block in v2_label_blocks.items():
-            pid = block.get("divergent_pair_id")
-            if isinstance(pid, str) and pid:
-                pair_to_sessions.setdefault(pid, []).append(sid)
-        # Merge into the joint label_blocks. Sessions are partitioned
-        # by build: a v2 session_id appearing in v1 would be a bug
-        # caught upstream by the build/validate steps.
-        label_blocks = {**label_blocks, **v2_label_blocks}
 
     session_ids: list[str] = []
     label_truth: list[str] = []
@@ -626,57 +465,27 @@ def _evaluate(
     intents: list = []      # per-session dominant_intent (3a input)
     signatures: list = []   # per-session command_signature (3b input)
     skipped_no_embedding: list[str] = []
-    session_texts: list[str] = []  # populated only when embedding_source=tfidf-svd
-    v2_session_ids: set[str] = set()
 
-    # Iterate v1 first, then v2 (when present). Order doesn't affect the
-    # clustering math but keeps the merged label_distribution histogram
-    # predictable, and v1-first means overlap sessions (sampled in both
-    # sets) load their embedding from v1 — the rollup doc is the same
-    # in both JSONLs, so the choice is cosmetic.
     seen_sids: set[str] = set()
-    for src_jsonl in (jsonl_path, v2_jsonl_path):
-        if src_jsonl is None or not src_jsonl.exists():
+    for rec in _iter_jsonl(jsonl_path):
+        sid = rec.get("session_id")
+        if not isinstance(sid, str) or sid in seen_sids:
             continue
-        is_v2 = (src_jsonl == v2_jsonl_path)
-        for rec in _iter_jsonl(src_jsonl):
-            sid = rec.get("session_id")
-            if not isinstance(sid, str) or sid in seen_sids:
-                # Dedupe by session_id — when the same session is sampled
-                # into both v1 and v2 (the build pipelines don't enforce
-                # disjointness), double-clustering it would silently bias
-                # the metrics toward the overlap set.
-                continue
-            if sid not in label_blocks:
-                continue
-            feats = _extract_session_features(rec)
-            if feats is None:
-                skipped_no_embedding.append(sid)
-                continue
-            emb, sc = feats
-            if embedding_source == "tfidf-svd":
-                text = _extract_session_text(rec)
-                if text is None:
-                    # Session has an embedding but no command text — shouldn't
-                    # happen on the v1 set (build_eval_set ES-filters login-
-                    # only), but skip defensively rather than fit TF-IDF on
-                    # an empty document.
-                    skipped_no_embedding.append(sid)
-                    continue
-                session_texts.append(text)
-            intent, signature = _extract_session_intent_signature(rec)
-            seen_sids.add(sid)
-            session_ids.append(sid)
-            label_truth.append(label_blocks[sid]["playbook_label"])
-            embeddings.append(emb)
-            scalars.append(sc)
-            intents.append(intent)
-            signatures.append(signature)
-            if is_v2 or sid in v2_label_blocks:
-                # A session loaded via v1 but ALSO carrying a v2 label
-                # still counts toward v2 for the divergent-pair lookup —
-                # its pair_id is in pair_to_sessions.
-                v2_session_ids.add(sid)
+        if sid not in label_blocks:
+            continue
+        feats = _extract_session_features(rec)
+        if feats is None:
+            skipped_no_embedding.append(sid)
+            continue
+        emb, sc = feats
+        intent, signature = _extract_session_intent_signature(rec)
+        seen_sids.add(sid)
+        session_ids.append(sid)
+        label_truth.append(label_blocks[sid]["playbook_label"])
+        embeddings.append(emb)
+        scalars.append(sc)
+        intents.append(intent)
+        signatures.append(signature)
 
     if len(embeddings) < cfg.session.cluster_min_cluster_size:
         raise RuntimeError(
@@ -684,18 +493,13 @@ def _evaluate(
             f"need at least {cfg.session.cluster_min_cluster_size}."
         )
 
-    if embedding_source == "tfidf-svd":
-        # Replace the LLM embeddings with the TF-IDF baseline. Scalars
-        # stay; the rest of the pipeline (L2-normalize + scalar augment +
-        # HDBSCAN) is unchanged so the only varying input is the vector
-        # source.
-        embeddings = _tfidf_svd_embed(session_texts)
-
     cluster_pred = _cluster(
         embeddings, scalars,
         min_cluster_size=cfg.session.cluster_min_cluster_size,
         min_samples=cfg.session.cluster_min_samples,
         scalar_weight=cfg.session.cluster_scalar_weight,
+        svd_dim=cfg.session.cluster_svd_dim,
+        merge_threshold=cfg.session.playbook_merge_threshold,
     )
 
     # Standard sklearn metrics. HDBSCAN's -1 (outliers) participates in
@@ -710,17 +514,10 @@ def _evaluate(
         "v_measure":    round(float(v_measure_score(label_truth, cluster_pred)), 4),
     }
 
-    pair_outcomes: list[dict] = []
-    if pair_to_sessions:
-        v2_metrics, pair_outcomes = _divergent_pair_metrics(
-            session_ids, cluster_pred, label_truth, pair_to_sessions,
-        )
-        metrics.update(v2_metrics)
-
     # F-phase small-cluster + outlier axis (plan F0.1). Computed over the
-    # eval-isolated 108-session clustering — advisory at this scale (no
-    # size>100 clusters exist, so the shard test is near-vacuous); the
-    # binding numbers come from eval_production_scale.py (F0.2).
+    # eval-isolated clustering — advisory at this scale (no size>100 clusters
+    # exist, so the shard test is near-vacuous); the binding numbers come
+    # from eval_production_scale.py (F0.2).
     norm_for_centroids = l2_normalize(np.array(embeddings, dtype=np.float32))
     sc_result = small_cluster_metrics(
         cluster_pred, norm_for_centroids, intents, signatures,
@@ -733,7 +530,6 @@ def _evaluate(
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "embedding_source": embedding_source,
         "config": {
             "min_cluster_size": cfg.session.cluster_min_cluster_size,
             "min_samples":      cfg.session.cluster_min_samples,
@@ -743,12 +539,8 @@ def _evaluate(
         "input": {
             "labels_path":          str(labels_path),
             "jsonl_path":           str(jsonl_path),
-            "v2_labels_path":       str(v2_labels_path) if v2_labels_path else None,
-            "v2_jsonl_path":        str(v2_jsonl_path) if v2_jsonl_path else None,
             "labeled_blocks":       len(label_blocks),
             "labeled_with_embed":   len(embeddings),
-            "v2_sessions_in_eval":  len(v2_session_ids),
-            "v2_pairs_in_eval":     len(pair_to_sessions),
             "skipped_no_embedding": len(skipped_no_embedding),
             "label_distribution":   dict(Counter(label_truth).most_common()),
         },
@@ -764,7 +556,6 @@ def _evaluate(
             "detail":              sc_result["small_cluster_detail"],
         },
         "per_label":       _per_label_breakdown(session_ids, label_truth, cluster_pred),
-        "divergent_pairs": pair_outcomes,
     }
 
 
@@ -782,57 +573,15 @@ def _render_stdout(report: dict) -> str:
     out.append(f"labeled blocks      {inp['labeled_blocks']}")
     out.append(f"with embedding      {inp['labeled_with_embed']}  "
                f"(skipped no-embed: {inp['skipped_no_embedding']})")
-    v2_n = inp.get("v2_sessions_in_eval") or 0
-    if v2_n:
-        out.append(
-            f"v2 contribution     {v2_n} sessions across "
-            f"{inp.get('v2_pairs_in_eval', 0)} divergent pairs"
-        )
     out.append(f"label distribution  {inp['label_distribution']}")
     co = report["cluster_output"]
     out.append(f"cluster output      {co['n_clusters']} clusters + "
                f"{co['n_outliers']} outliers")
     out.append("")
     out.append("Metrics (0..1, higher is better):")
-    # Split clustering-quality metrics from the integer divergent-pair
-    # counters so the stdout table doesn't try to print bare ints as
-    # floats. The clustering metrics are all floats; the v2 breakdown
-    # has both a rate (float) and supporting counts (ints).
-    _CLUSTERING_METRICS = (
-        "ari", "nmi", "homogeneity", "completeness", "v_measure",
-    )
-    _V2_RATE_METRIC = "divergent_pair_resolution_rate"
-    _V2_COUNT_METRICS = (
-        "divergent_pair_positive_total", "divergent_pair_positive_resolved",
-        "divergent_pair_negative_total", "divergent_pair_negative_separated",
-        "divergent_pair_skipped",
-    )
-    for k in _CLUSTERING_METRICS:
+    for k in ("ari", "nmi", "homogeneity", "completeness", "v_measure"):
         if k in report["metrics"]:
             out.append(f"  {k:14} {report['metrics'][k]:.4f}")
-    if _V2_RATE_METRIC in report["metrics"]:
-        out.append("")
-        out.append("Divergent-pair (v2) metric:")
-        out.append(f"  {_V2_RATE_METRIC:33} {report['metrics'][_V2_RATE_METRIC]:.4f}")
-        out.append("  per-outcome breakdown:")
-        m = report["metrics"]
-        pos_t = m.get("divergent_pair_positive_total", 0)
-        pos_r = m.get("divergent_pair_positive_resolved", 0)
-        neg_t = m.get("divergent_pair_negative_total", 0)
-        neg_s = m.get("divergent_pair_negative_separated", 0)
-        skipped = m.get("divergent_pair_skipped", 0)
-        pos_pct = (pos_r / pos_t) if pos_t else 0.0
-        neg_pct = (neg_s / neg_t) if neg_t else 0.0
-        out.append(
-            f"    positive (same-label):       {pos_r}/{pos_t} "
-            f"clustered together ({pos_pct:.2%})"
-        )
-        out.append(
-            f"    negative (different-label):  {neg_s}/{neg_t} "
-            f"correctly separated ({neg_pct:.2%})"
-        )
-        if skipped:
-            out.append(f"    skipped (member missing):    {skipped}")
     out.append("")
     out.extend(render_small_cluster_block(report["metrics"], report.get("small_cluster", {})))
     out.append("")
@@ -910,20 +659,6 @@ def main() -> int:
     ap.add_argument("--jsonl", type=Path,
                     default=Path("eval/sessions-v1.unlabeled.jsonl"),
                     help="v1 unlabeled eval JSONL")
-    ap.add_argument("--labels-v2", type=Path,
-                    default=Path("eval/labels-v2.yaml"),
-                    help=(
-                        "v2 (divergent-pair) analyst-labeled YAML. "
-                        "When both this and --jsonl-v2 exist, the "
-                        "evaluator merges v1+v2 into a single clustering "
-                        "run and emits the divergent_pair_resolution_rate "
-                        "metric on top of the standard clustering scores. "
-                        "Point at a non-existent path to opt out and run "
-                        "v1-only (e.g. --labels-v2 /dev/null)."
-                    ))
-    ap.add_argument("--jsonl-v2", type=Path,
-                    default=Path("eval/sessions-v2.unlabeled.jsonl"),
-                    help="v2 unlabeled eval JSONL (paired with --labels-v2)")
     ap.add_argument("--output-dir", type=Path,
                     default=Path("eval/results"),
                     help="Where to write the machine-readable JSON")
@@ -934,26 +669,10 @@ def main() -> int:
                         "Compare metrics to this baseline file and exit "
                         "non-zero on regression. Use to gate PRs."
                     ))
-    ap.add_argument("--embedding-source",
-                    choices=["model", "tfidf-svd"],
-                    default="model",
-                    help=(
-                        "Vector source for clustering. `model` uses the "
-                        "LLM embeddings persisted on each rollup doc "
-                        "(production). `tfidf-svd` fits a baseline "
-                        "TF-IDF + truncated-SVD on session command text "
-                        "as a model-free comparator (brutal-review "
-                        "phase 3.3 embedding ablation)."
-                    ))
     args = ap.parse_args()
 
     cfg = load_config()
-    report = _evaluate(
-        args.labels, args.jsonl, cfg,
-        v2_labels_path=args.labels_v2,
-        v2_jsonl_path=args.jsonl_v2,
-        embedding_source=args.embedding_source,
-    )
+    report = _evaluate(args.labels, args.jsonl, cfg)
     print(_render_stdout(report))
 
     if not args.no_json:

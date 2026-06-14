@@ -24,11 +24,6 @@ CLAUDE.md
 docs
 .ruff_cache
 
-# Eval-set scaffolding (brutal-review phase 1). The unlabeled JSONL,
-# rendered markdown, and labels YAML all ship: the eval scripts read
-# the JSONL (embeddings live in the per-command enrichments), the
-# labels are anchored to the rendered view, and the CI gate (1.5)
-# needs all three pinned at HEAD to grade against a stable target
-# rather than the live corpus that keeps rotating. Per-run eval
-# dumps under eval/results/ are still derivative — not tracked.
+eval/archive
 eval/results/*.json
+eval/confidential/

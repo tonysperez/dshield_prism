@@ -14,10 +14,10 @@ This script:
      augment, HDBSCAN, optional noise rescue) — same hyperparameters as
      ``run_session_clustering``, but no ES writes.
   3. Filters the resulting cluster assignment to the session_ids
-     present in ``eval/sessions-v{1,2}.unlabeled.jsonl`` (the analyst-
+     present in ``eval/sessions-v1.unlabeled.jsonl`` (the analyst-
      labeled subset).
-  4. Scores ARI / NMI / homogeneity / completeness /
-     ``divergent_pair_resolution_rate`` against analyst labels.
+  4. Scores ARI / NMI / homogeneity / completeness / v_measure against
+     analyst labels.
   5. Emits the per-label fragmentation table (E0.1 logic — catches
      "ARI up but one label collapsed" regressions).
   6. Writes ``eval/results/prod-scale-<ts>.json``.
@@ -66,7 +66,6 @@ from enrich.sources.cowrie.sessions import (
 from eval_clustering import (  # type: ignore
     _load_labels,
     _per_label_breakdown,
-    _divergent_pair_metrics,
     render_small_cluster_block,
     small_cluster_metrics,
 )
@@ -96,27 +95,12 @@ _SNAPSHOT_STALE_WARN_DAYS = 90
 _SNAPSHOT_STALE_FAIL_DAYS = 180
 
 
-def _load_eval_session_ids_and_labels(
-    labels_v1: Path, labels_v2: Path,
-) -> tuple[dict[str, str], dict[str, list[str]]]:
-    """Return ``({session_id: playbook_label}, {pair_id: [sid_a, sid_b]})``.
-
-    Joins v1 + v2 by session_id and extracts divergent-pair groupings
-    from the v2 label blocks (mirrors ``eval_clustering._evaluate``).
-    """
+def _load_eval_session_ids_and_labels(labels_v1: Path) -> dict[str, str]:
+    """Return ``{session_id: playbook_label}`` from the v1 analyst labels."""
     blocks: dict[str, dict] = {}
     if labels_v1.exists():
         blocks.update(_load_labels(labels_v1))
-    pair_to_sessions: dict[str, list[str]] = {}
-    if labels_v2.exists():
-        v2_blocks = _load_labels(labels_v2)
-        blocks.update(v2_blocks)
-        for sid, b in v2_blocks.items():
-            pid = b.get("divergent_pair_id")
-            if isinstance(pid, str) and pid:
-                pair_to_sessions.setdefault(pid, []).append(sid)
-    sid_to_label = {sid: b["playbook_label"] for sid, b in blocks.items()}
-    return sid_to_label, pair_to_sessions
+    return {sid: b["playbook_label"] for sid, b in blocks.items()}
 
 
 def _cluster_at_production_scale(
@@ -313,7 +297,6 @@ def _evaluate(
     cfg,
     secrets,
     labels_v1: Path,
-    labels_v2: Path,
     rescue: bool,
     merge: bool,
     limit_rollups: int | None,
@@ -321,12 +304,10 @@ def _evaluate(
     snapshot_path: Path | None,
     dump_assignments: bool = False,
 ) -> dict:
-    sid_to_label, pair_to_sessions = _load_eval_session_ids_and_labels(
-        labels_v1, labels_v2,
-    )
+    sid_to_label = _load_eval_session_ids_and_labels(labels_v1)
     if not sid_to_label:
         raise RuntimeError(
-            f"No analyst labels found in {labels_v1} / {labels_v2}"
+            f"No analyst labels found in {labels_v1}"
         )
 
     scfg = cfg.session
@@ -435,14 +416,6 @@ def _evaluate(
         "completeness": round(float(completeness_score(eval_label_truth, eval_cluster_pred_arr)), 4),
         "v_measure":    round(float(v_measure_score(eval_label_truth, eval_cluster_pred_arr)), 4),
     }
-    pair_outcomes: list[dict] = []
-    if pair_to_sessions:
-        v2_metrics, pair_outcomes = _divergent_pair_metrics(
-            eval_sids_found, eval_cluster_pred_arr,
-            eval_label_truth, pair_to_sessions,
-        )
-        metrics.update(v2_metrics)
-
     n_clusters_total = len({int(c) for c in labels if c >= 0})
     n_outliers_total = int(sum(1 for c in labels if c == -1))
     n_clusters_on_eval = len({c for c in eval_cluster_pred if c >= 0})
@@ -481,12 +454,10 @@ def _evaluate(
             "rollups_pulled":         n_pulled,
             "rollups_limit_applied":  limit_rollups,
             "labels_path":            str(labels_v1),
-            "v2_labels_path":         str(labels_v2),
             "eval_sessions_total":    len(sid_to_label),
             "eval_sessions_found":    len(eval_sids_found),
             "eval_sessions_missing":  len(missing_eval_sids),
             "missing_eval_sids":      missing_eval_sids,
-            "v2_pairs_in_eval":       len(pair_to_sessions),
             "snapshot_path":          str(snapshot_path) if snapshot_path else None,
             "snapshot_metadata":      snapshot_metadata or None,
         },
@@ -507,7 +478,6 @@ def _evaluate(
         "per_label":       _per_label_breakdown(
             eval_sids_found, eval_label_truth, eval_cluster_pred_arr,
         ),
-        "divergent_pairs": pair_outcomes,
         # Full-corpus {session_id: cluster_id} — the input the G-phase
         # cross-arm comparison (compare_clusterings.py) reads. Gated because
         # it adds ~4k entries the gate doesn't need; the G capture runs ask
@@ -698,24 +668,6 @@ def _render_stdout(report: dict) -> str:
         if k in report["metrics"]:
             out.append(f"  {k:14} {report['metrics'][k]:.4f}")
 
-    if "divergent_pair_resolution_rate" in report["metrics"]:
-        m = report["metrics"]
-        out.append("")
-        out.append("Divergent-pair (v2) metric:")
-        out.append(
-            f"  divergent_pair_resolution_rate    "
-            f"{m['divergent_pair_resolution_rate']:.4f}"
-        )
-        pos_t = m.get("divergent_pair_positive_total", 0)
-        pos_r = m.get("divergent_pair_positive_resolved", 0)
-        neg_t = m.get("divergent_pair_negative_total", 0)
-        neg_s = m.get("divergent_pair_negative_separated", 0)
-        skipped = m.get("divergent_pair_skipped", 0)
-        out.append(f"    positive: {pos_r}/{pos_t} same-label pairs clustered together")
-        out.append(f"    negative: {neg_s}/{neg_t} different-label pairs separated")
-        if skipped:
-            out.append(f"    skipped:  {skipped} (member missing in production)")
-
     out.append("")
     out.append("(small-cluster axis below is corpus-wide; ARI axis above is "
                "the labeled subset)")
@@ -752,7 +704,6 @@ _BASELINE_TOLERANCES = {
     "homogeneity":                    0.05,
     "completeness":                   0.05,
     "v_measure":                      0.05,
-    "divergent_pair_resolution_rate": 0.17,
 }
 
 
@@ -814,10 +765,7 @@ def main() -> int:
                          "ENRICH_CONFIG / config/default.yaml).")
     ap.add_argument("--labels", type=Path,
                     default=Path("eval/labels-v1.yaml"),
-                    help="v1 analyst-labeled YAML")
-    ap.add_argument("--labels-v2", type=Path,
-                    default=Path("eval/labels-v2.yaml"),
-                    help="v2 (divergent-pair) analyst-labeled YAML")
+                    help="analyst-labeled YAML")
     ap.add_argument("--snapshot", type=Path, default=None,
                     help=(
                         "Read rollups from a gzipped snapshot file "
@@ -878,7 +826,6 @@ def main() -> int:
         cfg=cfg,
         secrets=secrets,
         labels_v1=args.labels,
-        labels_v2=args.labels_v2,
         rescue=not args.no_rescue,
         merge=not args.no_merge,
         dump_assignments=args.dump_assignments,
