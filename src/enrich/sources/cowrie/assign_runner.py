@@ -1,0 +1,211 @@
+"""I4 — authoritative session assignment runner (Option A cutover).
+
+Single window-batch pass that replaces "HDBSCAN-cluster every session" with
+"assign each session to its nearest anchor; band cases resolved by an in-batch TF-IDF
+fit; whatever matches nothing is novel". Because the TF-IDF is fit per run over the
+batch (anchor sessions + the window), there is NO persisted lexical model and NO
+forward/backward pending state — bands resolve in the same pass.
+
+Gated by `cfg.session.assignment_authoritative`:
+  * True  — writes `playbook_id`/`playbook_name` (assigned), clears them (novel), bumps
+            `playbook_named_at` (so the next `rollup ips` re-rolls the affected IPs).
+            This replaces HDBSCAN as the labeller; run it where `cluster sessions` +
+            `name playbooks` run today (the operator swaps it into the backward service).
+  * False — writes the `cluster.assignment_*` shadow fields only (non-authoritative).
+
+Novel sessions (`assignment_status=novel`) are the only input the HDBSCAN clusterer
+still needs post-cutover (to mint new anchors). Reversal of an authoritative run: set
+the flag False and re-run the HDBSCAN `cluster sessions`/`name playbooks` steps —
+`playbook_id` is recomputable from the embeddings.
+
+Pure cores (`assignment_action`, `build_actions`) are unit-tested; `run_assignment` is
+the thin ES wiring around them and the assignment core (`assignment.assign_batch`).
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Optional
+
+from ...clustering import compute_lexical_features
+from ...es_client import bulk_write
+from .assignment import ASSIGNED, NOVEL, assign_batch
+from .lexical import build_bag_texts, pull_hash_to_cluster
+
+_S = "dshield.cowrie.enrichment.session"
+_PB_FIELD = f"{_S}.playbook_id"
+_PBNAME_FIELD = f"{_S}.playbook_name"
+_EMB_FIELD = f"{_S}.embedding"
+_CMDSET_FIELD = f"{_S}.command_set"
+_BAG_SVD_COMPONENTS = 48
+
+
+def _sb(src: dict) -> dict:
+    return (((src.get("dshield") or {}).get("cowrie") or {})
+            .get("enrichment", {}).get("session", {}))
+
+
+# ---------------------------------------------------------------------------
+# Pure write-action cores (unit-tested)
+# ---------------------------------------------------------------------------
+def assignment_action(doc_id: str, a, now: str, *, authoritative: bool,
+                      playbook_name: Optional[str] = None) -> dict:
+    """ES bulk partial-update for one session. Always writes the `cluster.assignment_*`
+    shadow fields. When `authoritative`, ALSO sets the real `playbook_id`/`playbook_name`
+    (assigned) or clears them (novel), and bumps `playbook_named_at`."""
+    session: dict = {"cluster": {
+        "assigned_playbook_id": a.playbook_id,
+        "assignment_status": a.status,
+        "assignment_cosine": a.cosine,
+        "assignment_cascade_rank": a.cascade_rank,
+        "assignment_at": now,
+    }}
+    if authoritative:
+        if a.status == ASSIGNED:
+            session["playbook_id"] = a.playbook_id
+            session["playbook_name"] = playbook_name
+            session["playbook_named_at"] = now
+        elif a.status == NOVEL:
+            session["playbook_id"] = None
+            session["playbook_name"] = None
+            session["playbook_named_at"] = now
+        # any other status (shouldn't occur after a full resolve) leaves playbook_id as-is
+    return {"_op_type": "update", "_id": doc_id,
+            "doc": {"dshield": {"cowrie": {"enrichment": {"session": session}}}}}
+
+
+def build_actions(ids: list[str], assignments: list, name_of: dict, now: str, *,
+                  authoritative: bool) -> list[dict]:
+    """Map (doc_id, assignment) → bulk actions, resolving each assigned anchor's name."""
+    return [assignment_action(i, a, now, authoritative=authoritative,
+                              playbook_name=name_of.get(a.playbook_id))
+            for i, a in zip(ids, assignments)]
+
+
+# ---------------------------------------------------------------------------
+# ES wiring
+# ---------------------------------------------------------------------------
+def _load_anchors(es, anch_idx):
+    import numpy as np
+    r = es.search(index=anch_idx, size=10000, _source=["playbook_id", "anchor_centroid"],
+                  query={"exists": {"field": "anchor_centroid"}})
+    ids, vecs = [], []
+    for h in r["hits"]["hits"]:
+        s = h["_source"]
+        if s.get("anchor_centroid"):
+            ids.append(s.get("playbook_id") or h["_id"])
+            vecs.append(s["anchor_centroid"])
+    if not vecs:
+        return ids, np.zeros((0, 0), dtype=np.float32)
+    m = np.array(vecs, dtype=np.float32)
+    n = np.linalg.norm(m, axis=1, keepdims=True)
+    return ids, m / np.where(n == 0.0, 1.0, n)
+
+
+def _scan(es, idx, filt, fields, page=2000, limit=None):
+    body = {"size": page, "_source": fields, "query": {"bool": {"filter": filt}},
+            "sort": [{"_doc": "asc"}]}
+    out, sa = [], None
+    while True:
+        if sa:
+            body["search_after"] = sa
+        r = es.search(index=idx, **body)
+        hits = r["hits"]["hits"]
+        if not hits:
+            break
+        out.extend(hits)
+        if limit and len(out) >= limit:
+            return out[:limit]
+        sa = hits[-1]["sort"]
+    return out
+
+
+def _resolve_names(es, idx, filt, playbook_ids):
+    """playbook_id → playbook_name (one representative session each)."""
+    names = {}
+    for pb in playbook_ids:
+        if pb is None:
+            continue
+        r = es.search(index=idx, size=1, _source=[_PBNAME_FIELD],
+                      query={"bool": {"filter": filt + [{"term": {_PB_FIELD: pb}}]}})
+        hits = r["hits"]["hits"]
+        names[pb] = _sb(hits[0]["_source"]).get("playbook_name") if hits else None
+    return names
+
+
+def run_assignment(es, cfg, *, window_filter: list[dict], anchor_sample_filter: list[dict],
+                   per_anchor: int = 300, apply: bool = False) -> dict:
+    """Assign the sessions matched by `window_filter` against the anchor library, with an
+    in-batch TF-IDF fit for the band check. Writes (authoritative or shadow per
+    `cfg.session.assignment_authoritative`) when `apply`. Returns a summary."""
+    import numpy as np
+
+    sc = cfg.session
+    authoritative = bool(getattr(sc, "assignment_authoritative", False))
+    tau = float(getattr(sc, "assignment_tau", 0.94))
+    confident_tau = float(getattr(sc, "assignment_confident_tau", 0.98))
+    tfidf_tau = float(getattr(sc, "assignment_tfidf_tau", 0.80))
+    idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
+    cmd_idx = cfg.elasticsearch.indexes.cowrie.commands
+    anch_idx = cfg.elasticsearch.indexes.cowrie.playbook_anchors
+
+    anchor_ids, anchor_emb = _load_anchors(es, anch_idx)
+    if anchor_emb.shape[0] == 0:
+        return {"error": "no anchors", "authoritative": authoritative}
+
+    src_fields = [_EMB_FIELD, _CMDSET_FIELD]
+    win = _scan(es, idx, window_filter, src_fields)
+    win_ids = [h["_id"] for h in win]
+    win_emb_raw = [_sb(h["_source"]).get("embedding") for h in win]
+    keep = [i for i, e in enumerate(win_emb_raw) if e]
+    if not keep:
+        return {"error": "no sessions in window", "authoritative": authoritative}
+    win_ids = [win_ids[i] for i in keep]
+    win_sets = [list(_sb(win[i]["_source"]).get("command_set") or []) for i in keep]
+    W = np.array([win_emb_raw[i] for i in keep], dtype=np.float32)
+    W = W / np.where(np.linalg.norm(W, axis=1, keepdims=True) == 0.0, 1.0,
+                     np.linalg.norm(W, axis=1, keepdims=True))
+
+    # per-anchor sample → anchor TF-IDF centroids; one fit over (anchors + window)
+    anc_sets, anc_pb = [], []
+    for pb in anchor_ids:
+        f = anchor_sample_filter + [{"term": {_PB_FIELD: pb}}]
+        for h in _scan(es, idx, f, [_CMDSET_FIELD], page=min(per_anchor, 2000), limit=per_anchor):
+            anc_sets.append(list(_sb(h["_source"]).get("command_set") or []))
+            anc_pb.append(pb)
+    h2c = pull_hash_to_cluster(es, cmd_idx)
+    n_anc = len(anc_sets)
+    tfidf_all = compute_lexical_features(build_bag_texts(anc_sets + win_sets, h2c),
+                                         n_components=_BAG_SVD_COMPONENTS)
+    has_tfidf = tfidf_all.shape[1] >= 2
+    anchor_tfidf: dict = {}
+    if has_tfidf:
+        ta = tfidf_all[:n_anc]
+        g = np.asarray(anc_pb)
+        for pb in dict.fromkeys(anc_pb):
+            m = ta[g == pb].mean(axis=0)
+            nn = np.linalg.norm(m)
+            anchor_tfidf[pb] = m / nn if nn > 0 else m
+    tfidf_win = tfidf_all[n_anc:]
+
+    def tfidf_cos(i, a):
+        c = anchor_tfidf.get(anchor_ids[a])
+        return float(tfidf_win[i] @ c) if (has_tfidf and c is not None) else None
+
+    res = assign_batch(W, anchor_emb, anchor_ids, tau=tau, confident_tau=confident_tau,
+                       tfidf_tau=tfidf_tau, tfidf_cos=tfidf_cos)
+    now = datetime.now(timezone.utc).isoformat()
+    name_of = (_resolve_names(es, idx, anchor_sample_filter,
+                              {a.playbook_id for a in res if a.status == ASSIGNED})
+               if authoritative else {})
+    actions = build_actions(win_ids, res, name_of, now, authoritative=authoritative)
+
+    from collections import Counter
+    summary = {"authoritative": authoritative, "n_sessions": len(res),
+               "tfidf_available": has_tfidf,
+               "status_counts": dict(Counter(a.status for a in res)),
+               "written": 0, "errors": 0}
+    if apply:
+        ok, errors = bulk_write(es, idx, actions)
+        summary["written"] = ok
+        summary["errors"] = len(errors)
+    return summary

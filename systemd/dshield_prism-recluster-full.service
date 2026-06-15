@@ -1,5 +1,5 @@
 [Unit]
-Description=DShield Prism weekly full session + IP re-cluster — refresh reference + re-pool the long tail (P1.2 / backlog B0.5)
+Description=DShield Prism weekly full novel-pool session mint + full IP re-cluster (Option A cutover / backlog B0.5)
 After=network-online.target
 Wants=network-online.target
 
@@ -10,29 +10,30 @@ Group=dshield_prism
 WorkingDirectory=/opt/dshield_prism
 EnvironmentFile=/opt/dshield_prism/.env
 
-# The 6h backward pass windows `cluster sessions` to the last
-# session.cluster_window_days (default 30) days. That keeps the per-cycle cost
-# bounded but never re-pools sessions older than the window and lets the frozen
-# reference_centroid set age. This weekly unit does the other half of the D1
-# hybrid: a single all-time `cluster sessions` with --refresh-reference so
-#   * every command-bearing session (not just the last 30d) gets a current
-#     cluster.id, and
-#   * the reference_centroid set is re-minted from the full corpus, keeping
-#     per-doc novelty calibrated (otherwise it warns past
-#     session.reference_max_age_days and drifts).
-# Identity is preserved: playbook ids re-match by centroid anchor, so this does
-# not churn spb- ids or playbook names.
+# Post-Option-A-cutover this weekly unit does two things:
+#   * SESSIONS: a single all-time `cluster sessions --novel-pool` — HDBSCAN over the
+#     FULL novel pool (the 6h backward pass only mints from the last 30d of novel), so
+#     older novel sessions that never got an anchor finally do. It does NOT touch the
+#     assigned bulk (that is owned by `assign_sessions`).
+#   * IPS: the full O(n^2) IP HDBSCAN + `--refresh-reference` (unchanged by the session
+#     cutover) — the only periodic full IP fit + IP reference refresh (backlog B0.5).
+# Identity is preserved: playbook ids re-match by centroid anchor, so this does not churn
+# spb- ids or playbook names.
 
 # Mutex with forward/backward — flock blocks (no -n) so this waits for an
 # in-flight pass rather than colliding on the cache / cluster index.
 ExecStartPre=/usr/bin/flock /var/lib/dshield_prism/.lock /bin/true
 
-# `--window-days 0` overrides the config window to force a full corpus pass;
-# `--refresh-reference` re-mints the reference_centroid generation from it.
-# Non-`-`: if this fails the unit is marked failed (so the operator notices the
-# reference isn't being refreshed), but it is a standalone unit so nothing else
-# is aborted.
-ExecStart=/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml cluster sessions --window-days 0 --refresh-reference
+# Option A cutover: `--novel-pool` scopes this to sessions the authoritative assignment
+# runner marked novel; `--window-days 0` forces the FULL all-time novel pool (the 6h
+# backward pass only mints from the last 30d of novel, so this catches older novel
+# sessions that never got an anchor). It does NOT re-label the assigned bulk — that stays
+# owned by `assign_sessions` in the backward pass. `--refresh-reference` is dropped on the
+# session layer: post-cutover, session novelty is assignment-owned (below-τ / band-reject),
+# not reference-centroid-scored, and re-minting the reference from the novel pool only
+# would mis-calibrate it. If you REVERSE the cutover, restore
+# `cluster sessions --window-days 0 --refresh-reference` here.
+ExecStart=/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml cluster sessions --novel-pool --window-days 0
 
 # Backlog scale-hardening B0.5 — the IP layer has no windowing escape valve, so
 # its full O(n^2) HDBSCAN is the dominant scale wall (~23 min at 50K embedded
@@ -51,3 +52,16 @@ ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/
 # set + run_summary — keeps the newest K runs, preserves every
 # reference_centroid generation (P2.1).
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml prune-clusters
+
+# Retire anchors no session points at any more. Assignment + novel-pool minting
+# leave behind dead anchors (sessions migrate to a nearer/confirmed twin), which
+# the consolidation engine can't reach (0 sessions → no TF-IDF centroid → it
+# won't blind-merge them). `--window-days 0` = all-time, so only TRULY dead
+# anchors retire — a behavior dormant some weeks still has all-time sessions and
+# is kept (seasonal-safe). Runs AFTER the novel-pool mint above, so freshly
+# minted anchors (which carry their own cluster's sessions) are never caught.
+# Reversible (`prune_inactive_anchors.py --unretire`). `-` (soft) so a prune
+# hiccup never blocks the timer; failure surfaces in prism.ops.
+# `--allow-unclassified` so the inactivity count covers every sensor (an anchor
+# active only in confidential data is NOT dead).
+ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python /opt/dshield_prism/scripts/prune_inactive_anchors.py --config /opt/dshield_prism/config/default.yaml --window-days 0 --apply --yes --allow-unclassified

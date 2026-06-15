@@ -106,6 +106,25 @@ check(
 
 
 # -----------------------------------------------------------------------------
+# [5] I4d — novel-pool-only scoping (Option A cutover).
+# -----------------------------------------------------------------------------
+print("\n[5] novel_pool_only adds the assignment_status=novel filter")
+_NOVEL = {"term": {"dshield.cowrie.enrichment.session.cluster.assignment_status": "novel"}}
+check(
+    "default (False) is unchanged — no novel term",
+    _session_cluster_query(30) == _session_cluster_query(30, False),
+)
+qn = _session_cluster_query(0, novel_pool_only=True)
+check("novel-only, no window → bool.filter [exists, novel]",
+      qn.get("bool", {}).get("filter") == [
+          {"exists": {"field": "dshield.cowrie.enrichment.session.embedding"}}, _NOVEL],
+      str(qn))
+qwn = _session_cluster_query(30, novel_pool_only=True)
+check("novel-only + window → exists + range + novel (3 filters)",
+      len(qwn["bool"]["filter"]) == 3 and qwn["bool"]["filter"][-1] == _NOVEL, str(qwn))
+
+
+# -----------------------------------------------------------------------------
 print()
 print(f"=== {len(PASSED)} passed, {len(FAILED)} failed ===")
 if FAILED:

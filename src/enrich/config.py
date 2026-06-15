@@ -263,6 +263,15 @@ class SessionConfig(BaseModel):
     # for naming. Random-subsampled when the cluster is larger; bounds the
     # per-playbook aggregation cost while keeping the sample representative.
     playbook_naming_session_cap: int = 500
+    # Cluster-naming LLM context budget (huge-cluster guard). `playbook_sample_commands`
+    # caps the *count* of commands/IOCs in the naming prompt, but a single attacker
+    # command can be a multi-KB base64 / here-doc blob, so a diverse cluster can still
+    # build a 100k+ prompt that overflows the LLM context window. These cap *size*: each
+    # over-long command is truncated to `playbook_naming_max_command_chars`, and the whole
+    # coverage block is capped at `playbook_naming_max_chars`, dropping the lowest-coverage
+    # (least-defining) tail. Coverage-ranked, so the kept set stays representative.
+    playbook_naming_max_command_chars: int = 600
+    playbook_naming_max_chars: int = 8000
     # ROADMAP #11 — merge-on-no-distinction. In pass-2 disambiguation, a
     # feature (command or IOC) is "distinctive" to a colliding cluster when
     # its session coverage is >= this floor while every sibling's coverage is
@@ -281,6 +290,28 @@ class SessionConfig(BaseModel):
     # disables merging (1 cluster = 1 playbook, legacy behaviour). 0.96 is
     # the empirically-tuned default — see scripts/diagnose_centroid_similarity.py.
     playbook_merge_threshold: float = 0.96
+    # Option A — direct nearest-anchor assignment (the pipeline inversion). See
+    # src/enrich/sources/cowrie/assignment.py and
+    # docs/handoff-prototype-assignment-plan.md §5f. Embedding cosine to the nearest
+    # anchor: >= confident_tau assigns outright; [tau, confident_tau) is the band
+    # (confirm with the TF-IDF secondary signal >= tfidf_tau, else the nearest anchor
+    # is a conflation and we cascade to the next-nearest); < tau is novel.
+    assignment_tau: float = 0.94
+    assignment_confident_tau: float = 0.98
+    assignment_tfidf_tau: float = 0.80
+    # Flag gate for the I3 shadow write (non-authoritative; writes cluster.assignment_*
+    # without touching playbook_id). Off by default.
+    assignment_shadow_enabled: bool = False
+    # I4 cutover gate. When True, the `assign_sessions` runner writes `playbook_id`/
+    # `playbook_name` authoritatively (assigned), clears them (novel), and bumps
+    # `playbook_named_at` so IP rollups self-heal — replacing HDBSCAN as the labeller for
+    # the assignable bulk. **Inert until the runner is wired into the pipeline** (it is
+    # not in any systemd unit by default), so this default only takes effect once the
+    # operator runs `scripts/assign_sessions.py --apply` or swaps it into the backward
+    # service in place of `cluster sessions` + `name playbooks`. Reversal: set False +
+    # re-run the HDBSCAN `cluster sessions`/`name playbooks` steps (playbook_id is
+    # recomputable from embeddings). When False the runner writes shadow fields only.
+    assignment_authoritative: bool = True
     # ROADMAP #4 — cluster specificity. Max keys stored per centroid in each
     # of `ip_specificity` / `command_specificity`. Set well past realistic
     # cluster sizes so EVERY member IP / command carries a score (so the

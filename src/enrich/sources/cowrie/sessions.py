@@ -1618,7 +1618,8 @@ def run_rollup(
 # Cluster sessions
 # ---------------------------------------------------------------------------
 
-def _session_cluster_query(window_days: Optional[int]) -> dict:
+def _session_cluster_query(window_days: Optional[int],
+                           novel_pool_only: bool = False) -> dict:
     """ES query for the session-cluster iterators.
 
     Always requires the session embedding to exist. Scale-hardening P1.2:
@@ -1626,19 +1627,22 @@ def _session_cluster_query(window_days: Optional[int]) -> dict:
     ``@timestamp`` is within the last N days so the backward cycle clusters a
     rolling window instead of the whole all-time rollup. ``None``/0 reproduces
     the historical all-time query.
+
+    Option A cutover (I4d): when ``novel_pool_only`` is True, additionally scope to
+    sessions the authoritative assignment runner marked novel
+    (``cluster.assignment_status == "novel"``) — so HDBSCAN mints anchors from the
+    genuinely-new tail only, instead of re-labelling the assigned bulk and fighting
+    assignment over ``playbook_id``.
     """
     base = "dshield.cowrie.enrichment.session"
-    exists = {"exists": {"field": f"{base}.embedding"}}
+    filters: list[dict] = [{"exists": {"field": f"{base}.embedding"}}]
     if window_days and window_days > 0:
-        return {
-            "bool": {
-                "filter": [
-                    exists,
-                    {"range": {"@timestamp": {"gte": f"now-{int(window_days)}d/d"}}},
-                ]
-            }
-        }
-    return exists
+        filters.append({"range": {"@timestamp": {"gte": f"now-{int(window_days)}d/d"}}})
+    if novel_pool_only:
+        filters.append({"term": {f"{base}.cluster.assignment_status": "novel"}})
+    if len(filters) == 1:
+        return filters[0]
+    return {"bool": {"filter": filters}}
 
 
 def iter_session_docs_with_text(
@@ -1719,11 +1723,13 @@ def iter_session_docs(
     index: str,
     page_size: int = 1000,
     window_days: Optional[int] = None,
+    novel_pool_only: bool = False,
 ) -> Iterator[tuple[str, list[float], str, dict]]:
     """Yield (doc_id, embedding, session_id, scalars).
 
     ``window_days`` (P1.2): when > 0, only sessions with a recent
-    ``@timestamp`` are yielded (see ``_session_cluster_query``).
+    ``@timestamp`` are yielded (see ``_session_cluster_query``). ``novel_pool_only``
+    (I4d): when True, only sessions marked novel by the assignment runner.
     """
     body: dict = {
         "size": page_size,
@@ -1736,7 +1742,7 @@ def iter_session_docs(
             "dshield.cowrie.enrichment.session.mean_novelty_score",
             "cowrie.session_id",
         ],
-        "query": _session_cluster_query(window_days),
+        "query": _session_cluster_query(window_days, novel_pool_only),
         "sort": [{"@timestamp": "asc"}, {"_doc": "asc"}],
     }
     search_after = None
@@ -2041,6 +2047,7 @@ def run_cluster(
     bootstrap_from: Optional[str] = None,
     accept_fallback: bool = False,
     window_days: Optional[int] = None,
+    novel_pool_only: bool = False,
 ) -> dict:
     """HDBSCAN over session embeddings. Delegates to clustering core.
 
@@ -2125,9 +2132,18 @@ def run_cluster(
             layer_label, effective_window,
         )
 
+    # I4d — novel-pool-only clustering (Option A cutover). Forced off on the
+    # external-bootstrap path (synthetic reference sessions carry no assignment status).
+    effective_novel_pool = bool(novel_pool_only) and not is_external_bootstrap
+    if effective_novel_pool:
+        log.info("[%s] novel-pool-only clustering: assignment_status=novel "
+                 "(Option A cutover — minting anchors from the novel tail only)",
+                 layer_label)
+
     cluster_fn = None
     docs_iter_for_core = iter_session_docs(
         es, sessions_idx, scfg.page_size, window_days=effective_window,
+        novel_pool_only=effective_novel_pool,
     )
     if scfg.clustering_mode == "late_fusion":
         from ...clustering import compute_lexical_features, fusion_cluster_labels
@@ -2428,6 +2444,9 @@ def _format_renamable_block(
     pb: dict,
     distinctive_feats: list[tuple[str, float]],
     floor: float,
+    *,
+    max_item_chars: Optional[int] = None,
+    max_chars: Optional[int] = None,
 ) -> str:
     """Rich pass-2 context for one renamable cluster (ROADMAP #11): commands
     and IOCs ranked by session coverage, IOCs prevalence-gated at `floor` so a
@@ -2444,16 +2463,24 @@ def _format_renamable_block(
         f"  Cluster ids: {', '.join(pb.get('member_cids') or []) or '(unknown)'}",
         f"  Sessions sampled: {total}",
         "  Commands by session coverage:",
-        _format_coverage_lines(cmd_cov, total, indent="    "),
+        _format_coverage_lines(cmd_cov, total, indent="    ",
+                               max_item_chars=max_item_chars, max_chars=max_chars),
         f"  Prevalent IOCs (>= {floor:.0%} of sessions):",
-        _format_coverage_lines(ioc_cov, total, indent="    "),
+        _format_coverage_lines(ioc_cov, total, indent="    ",
+                               max_item_chars=max_item_chars, max_chars=max_chars),
     ]
+
+    def _trunc(s: str) -> str:
+        if max_item_chars is not None and len(s) > max_item_chars:
+            return s[:max_item_chars] + f"…[+{len(s) - max_item_chars} chars truncated]"
+        return s
+
     d_cmds = [(f[len("cmd:"):], c) for f, c in distinctive_feats if f.startswith("cmd:")]
     d_iocs = [(f, c) for f, c in distinctive_feats if not f.startswith("cmd:")]
     lines.append("  DISTINCTIVE to this cluster (present here, absent in the others) — anchor the name here:")
     if d_cmds or d_iocs:
-        lines.extend(f"    - command: {f}   ({c:.0%} of sessions)" for f, c in d_cmds)
-        lines.extend(f"    - ioc: {f}   ({c:.0%} of sessions)" for f, c in d_iocs)
+        lines.extend(f"    - command: {_trunc(f)}   ({c:.0%} of sessions)" for f, c in d_cmds)
+        lines.extend(f"    - ioc: {_trunc(f)}   ({c:.0%} of sessions)" for f, c in d_iocs)
     else:
         lines.append("    (none — no prevalent feature separates this cluster from its siblings)")
     return "\n".join(lines)
@@ -2578,7 +2605,10 @@ def _run_disambiguation_pass(
     renamable_blocks: list[str] = []
     for pb in renamable:
         renamable_blocks.append(
-            _format_renamable_block(pb, distinctive.get(pb["playbook_id"], []), floor)
+            _format_renamable_block(
+                pb, distinctive.get(pb["playbook_id"], []), floor,
+                max_item_chars=cfg.session.playbook_naming_max_command_chars,
+                max_chars=cfg.session.playbook_naming_max_chars)
         )
 
     frozen_blocks: list[str] = []
@@ -2909,16 +2939,33 @@ def _format_coverage_lines(
     *,
     strip_cmd_prefix: bool = False,
     indent: str = "  ",
+    max_item_chars: Optional[int] = None,
+    max_chars: Optional[int] = None,
 ) -> str:
     """Render coverage-ranked features as prompt lines with explicit session
     coverage, so the LLM can tell a defining behaviour (high coverage) from a
-    one-off (low coverage). ROADMAP #11."""
+    one-off (low coverage). ROADMAP #11.
+
+    Context-budget guards for huge clusters: `max_item_chars` truncates a single
+    over-long feature — one attacker command can be a multi-KB base64 / here-doc blob
+    whose tail adds nothing to *naming* — and `max_chars` caps the whole block, dropping
+    the lowest-coverage (least-defining) tail. Features are coverage-ranked, so the kept
+    set is the most representative. Both default to no limit (unchanged behaviour)."""
     lines: list[str] = []
-    for feat, n in ranked:
+    used = 0
+    for idx, (feat, n) in enumerate(ranked):
         if strip_cmd_prefix and feat.startswith("cmd:"):
             feat = feat[len("cmd:"):]
+        if max_item_chars is not None and len(feat) > max_item_chars:
+            feat = feat[:max_item_chars] + f"…[+{len(feat) - max_item_chars} chars truncated]"
         pct = f"{(100 * n / total):.0f}%" if total else "?"
-        lines.append(f"{indent}- {feat}   (in {n}/{total} sessions, {pct})")
+        line = f"{indent}- {feat}   (in {n}/{total} sessions, {pct})"
+        if max_chars is not None and lines and used + len(line) + 1 > max_chars:
+            lines.append(f"{indent}… ({len(ranked) - idx} lower-coverage feature(s) "
+                         "pruned to fit the naming context budget)")
+            break
+        lines.append(line)
+        used += len(line) + 1
     return "\n".join(lines) if lines else f"{indent}(none)"
 
 
@@ -3285,7 +3332,10 @@ def run_name_playbooks(
                 .replace("<<<SIZE>>>", str(total_size))
                 .replace("<<<SAMPLE_IDS>>>", ", ".join(sample_sids))
                 .replace("<<<COMMANDS>>>",
-                         fence("commands", _format_coverage_lines(cmd_coverage, cov_total), nonce))
+                         fence("commands", _format_coverage_lines(
+                             cmd_coverage, cov_total,
+                             max_item_chars=cfg.session.playbook_naming_max_command_chars,
+                             max_chars=cfg.session.playbook_naming_max_chars), nonce))
             )
 
             try:

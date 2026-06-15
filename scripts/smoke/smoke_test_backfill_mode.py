@@ -23,7 +23,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 
-from enrich.cli import _BACKFILL_SKIP_STEPS, _apply_backfill_mode
+from enrich.cli import _apply_backfill_mode, _backfill_session_plan, _BACKFILL_SKIP_STEPS
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -93,6 +93,15 @@ others_intact = all(
     if n not in ("cluster sessions", "reset rollup watermarks", "enrich")
 )
 check("other steps keep their original fn", others_intact)
+
+print("\n[4] Option A cutover — backfill session-labelling plan")
+check("authoritative + anchors → assign_then_novel",
+      _backfill_session_plan(True, True) == "assign_then_novel")
+check("authoritative + NO anchors → legacy_full (bootstrap first library)",
+      _backfill_session_plan(True, False) == "legacy_full")
+check("not authoritative → legacy_full",
+      _backfill_session_plan(False, True) == "legacy_full"
+      and _backfill_session_plan(False, False) == "legacy_full")
 
 print()
 print(f"=== {len(PASSED)} passed, {len(FAILED)} failed ===")

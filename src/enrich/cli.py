@@ -124,6 +124,40 @@ def _apply_backfill_mode(steps, replacements):
     return out
 
 
+def _backfill_session_plan(authoritative: bool, has_anchors: bool) -> str:
+    """Which backfill `cluster sessions` path to take (Option A cutover). Pure —
+    unit-tested. Authoritative assignment owns labelling only once an anchor library
+    exists; with no anchors (fresh bootstrap) fall back to the legacy full HDBSCAN that
+    mints the initial library."""
+    return "assign_then_novel" if (authoritative and has_anchors) else "legacy_full"
+
+
+def _backfill_cluster_sessions(cfg, secrets, sessions_mod, dry: bool) -> dict:
+    """Backfill `cluster sessions` step. With assignment_authoritative on (and anchors
+    present), label the FULL corpus by assignment, then HDBSCAN only the novel pool to
+    mint new-behaviour anchors — keeping the backfilled history consistent with the
+    steady-state assignment pipeline. Falls back to the legacy full-corpus HDBSCAN when
+    assignment is off, or to bootstrap the very first anchor library."""
+    authoritative = bool(getattr(cfg.session, "assignment_authoritative", False))
+    if not authoritative:
+        return sessions_mod.run_cluster(cfg, secrets, dry_run=dry, window_days=0)
+    from .es_client import make_client
+    from .sources.cowrie.assign_runner import run_assignment
+    es = make_client(cfg.elasticsearch, secrets)
+    base = "dshield.cowrie.enrichment.session"
+    emb = {"exists": {"field": f"{base}.embedding"}}
+    pb = {"exists": {"field": f"{base}.playbook_id"}}
+    # Full corpus, all classifications (server-side label write, no egress).
+    assign = run_assignment(es, cfg, window_filter=[emb], anchor_sample_filter=[emb, pb],
+                            apply=not dry)
+    has_anchors = assign.get("error") != "no anchors"
+    if _backfill_session_plan(authoritative, has_anchors) == "legacy_full":
+        return sessions_mod.run_cluster(cfg, secrets, dry_run=dry, window_days=0)
+    novel = sessions_mod.run_cluster(cfg, secrets, dry_run=dry, window_days=0,
+                                     novel_pool_only=True)
+    return {"assignment": assign, "novel_pool_cluster": novel}
+
+
 def _ip_full_recluster_skipped(cfg, window_days) -> bool:
     """Backlog B0.5 IP-layer cadence gate. True when the 6-hourly backward
     `cluster ips` should skip its full O(n^2) HDBSCAN because the operator has
@@ -745,9 +779,12 @@ def _run_pipeline(cfg, secrets, args) -> int:
     # (B3/B4). intel + cloud should be off for the historical phase.
     if getattr(args, "backfill", False):
         steps = _apply_backfill_mode(steps, {
-            # full-corpus session cluster (not the 30d window)
-            "cluster sessions": lambda: sessions_mod.run_cluster(
-                cfg, secrets, dry_run=dry, window_days=0),
+            # full-corpus session labelling. Option A cutover: assignment over the whole
+            # corpus + novel-pool HDBSCAN when assignment_authoritative is on (keeps the
+            # backfilled history consistent with steady state); legacy full HDBSCAN
+            # otherwise / to bootstrap the first anchor library.
+            "cluster sessions": lambda: _backfill_cluster_sessions(
+                cfg, secrets, sessions_mod, dry),
             # clear session+IP watermarks so the rollups re-pool the full history
             # (force=True bypasses the schema/dirty gate the steady-state runs use)
             "reset rollup watermarks": lambda: _maybe_reset_rollup_watermarks(
@@ -764,10 +801,13 @@ def _run_pipeline(cfg, secrets, args) -> int:
                 "historical phase (verdicts are anachronistic; cloud budget is "
                 "spent on backfill novelty). See backlog #5/#6.", " + ".join(on),
             )
+        _bf_session = ("assignment (full corpus) + novel-pool HDBSCAN"
+                       if getattr(cfg.session, "assignment_authoritative", False)
+                       else "full-corpus HDBSCAN (--window-days 0)")
         print_args(
             "[pipeline] BACKFILL mode: full-rescan enrich + session+IP rollup "
             "watermarks cleared for a full re-pool of the historical corpus; "
-            "cluster sessions forced to full corpus (--window-days 0); "
+            f"session labelling = {_bf_session}; "
             "'track lifecycles' + 'mine findings' skipped"
         )
         if not dry and sys.stdout.isatty():
@@ -1214,6 +1254,17 @@ def _build_parser() -> argparse.ArgumentParser:
                 "all-time rollup. Overrides session.cluster_window_days. Pass 0 "
                 "to force a full re-cluster (use for the weekly full pass). "
                 "Identity stays stable — playbook ids re-match by centroid anchor."
+            ),
+        )
+        cl.add_argument(
+            "--novel-pool", action="store_true",
+            help=(
+                "Session layer only (Option A cutover, I4d): cluster ONLY the novel "
+                "pool (cluster.assignment_status=novel) — the sessions the authoritative "
+                "`assign_sessions` runner left unassigned — to mint new anchors, instead "
+                "of re-clustering the whole corpus. Use this once assignment is the "
+                "labeller, or HDBSCAN fights assignment over playbook_id. No-op until the "
+                "shadow field is populated."
             ),
         )
         # ROADMAP P1: stable across-run novelty scoring.
@@ -1862,6 +1913,8 @@ def _dispatch_verb(args, cfg, secrets) -> int:
                     kwargs["accept_fallback"] = args.accept_fallback
                     # P1.2 — windowed session clustering (None = use config default).
                     kwargs["window_days"] = args.window_days
+                    # I4d — novel-pool-only clustering (Option A cutover).
+                    kwargs["novel_pool_only"] = getattr(args, "novel_pool", False)
                 stats = mod.run_cluster(cfg, secrets, **kwargs)
             except (ImportError, RuntimeError) as exc:
                 log.error("cluster %s: %s", layer, exc)

@@ -672,14 +672,19 @@ if (( INSTALL_SYSTEMD )); then
         systemctl daemon-reload
     fi
 
+    # Enable (boot persistence) + start the TIMERS so they schedule future runs.
+    # `enable --now` is a no-op on an already-running timer, so it never re-fires a
+    # service. We deliberately do NOT `restart` the timers on a unit change: a timer
+    # reads its *.service unit at fire time, so a changed service is picked up at the
+    # next scheduled run with no restart needed — and `restart` on a `Persistent=true`
+    # timer makes systemd run an immediate catch-up activation, which would START the
+    # services on every setup run. They must only run when the timer fires.
+    # `daemon-reload` above already applies any changed *.timer schedule to the running
+    # timer; to force a one-off run, the operator starts the .service by hand (printed
+    # in the closing instructions).
     systemctl enable --now dshield_prism-forward.timer
     systemctl enable --now dshield_prism-backward.timer
     systemctl enable --now dshield_prism-recluster-full.timer
-    if (( UNITS_CHANGED )); then
-        systemctl restart dshield_prism-forward.timer
-        systemctl restart dshield_prism-backward.timer
-        systemctl restart dshield_prism-recluster-full.timer
-    fi
 
     if (( INSTALL_CONSOLE )); then
         # `enable --now` starts it on a fresh install and is a no-op when

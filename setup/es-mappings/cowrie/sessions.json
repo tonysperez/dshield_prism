@@ -153,6 +153,12 @@
                       "playbook_id":           { "type": "keyword" },
                       "playbook_name":         { "type": "keyword" },
                       "playbook_named_at":     { "type": "date" },
+                      "playbook_merged_from": {
+                        "type": "text",
+                        "fields": {
+                          "keyword": { "type": "keyword", "ignore_above": 256 }
+                        }
+                      },
                       "credentials": {
                         "type": "text",
                         "fields": {
@@ -224,7 +230,12 @@
                           "external_match_id":      { "type": "keyword" },
                           "external_match_cosine":  { "type": "float" },
                           "is_outlier":             { "type": "boolean" },
-                          "scored_at":              { "type": "date" }
+                          "scored_at":              { "type": "date" },
+                          "assigned_playbook_id":   { "type": "keyword" },
+                          "assignment_status":      { "type": "keyword" },
+                          "assignment_cosine":      { "type": "float" },
+                          "assignment_cascade_rank":{ "type": "integer" },
+                          "assignment_at":          { "type": "date" }
                         }
                       },
                       "source_ip_intel": {

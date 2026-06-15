@@ -61,7 +61,21 @@ ExecStart=/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/b
 # (the import stays a setup/manual step). `-` so it never blocks the chain.
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml reference-heal
 
-ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml cluster sessions
+# --- Step 5 (Option A cutover): authoritative session assignment, then novel-pool
+# minting. `assign_sessions` is the labeller for the KNOWN bulk — it writes playbook_id
+# by nearest anchor (+ TF-IDF band confirm) and clears it on the novel tail
+# (cluster.assignment_status=novel). `--allow-unclassified` is REQUIRED here: the pipeline
+# must label every session regardless of classification (a server-side label write, no
+# egress — same posture as the old `cluster sessions`). `cluster sessions --novel-pool`
+# then runs HDBSCAN over ONLY the novel tail to mint new-behaviour anchors (named by
+# step 7), instead of re-clustering — and overwriting — the assigned bulk. Self-converges:
+# next pass `assign_sessions` flips last pass's newly-minted sessions out of the novel pool.
+# Gated by session.assignment_authoritative (true). REVERSE the cutover: set it false and
+# restore a plain `cluster sessions` here (and in recluster-full.service). The weekly
+# `dshield_prism-recluster-full.service` is also scoped to `--novel-pool` for the cutover,
+# so it no longer re-labels the assigned bulk.
+ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python /opt/dshield_prism/scripts/assign_sessions.py --config /opt/dshield_prism/config/default.yaml --window-days 30 --apply --yes --allow-unclassified
+ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml cluster sessions --novel-pool --window-days 30
 # `cluster ips` self-gates on ip.full_recluster_weekly (backlog B0.5): with the
 # default (false) it runs the full IP HDBSCAN here every cycle (legacy); set it
 # true for the multi-sensor backlog and this runs the cheap incremental

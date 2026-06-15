@@ -36,13 +36,13 @@ Behavioral campaign mining surfaces the chattr+cron *subset* of a broader shared
 
 The combination is defense-in-depth persistence: install the key, lock it with chattr, re-install via cron if it disappears. Two campaign axes (behavior and infrastructure) corroborate the same finding from different angles: the infra axis names the shared-key pool; the behavior axis names the chattr+cron sub-population *inside* that pool. Frequent-itemset mining (FP-growth) over each IP's playbook set is what surfaces *"these 73 IPs run this exact combination"* — and the playbooks themselves only exist because session embeddings clustered into stable named behaviors. That manual two-axis corroboration is now detected automatically: when a behavior campaign and an infrastructure campaign overlap, Prism promotes the intersection to an **Operation** (`cmp-ope-…`).
 
-## What the clustering does — measured
+## How sessions get labeled — measured
 
-The pipeline clusters sessions into named playbooks, and those playbooks drive everything downstream (campaigns, drift, novelty scoring). What it deliberately does **not** claim: that the LLM embedding groups behavior better than plain text.
+Each session is **assigned to its nearest named playbook prototype** (a pinned anchor library) by embedding cosine, with a TF-IDF secondary signal confirming the ambiguous band and a threshold below which a session is held out as *novel*. HDBSCAN is retained only to mint fresh playbooks from that novel tail — it no longer re-partitions the whole corpus every cycle. This replaced full-corpus session clustering after the measurements below showed the embedding earns no edge over text; assignment is cheaper, keeps stable playbook identities, and surfaces novelty directly.
 
-- **Cluster quality vs. analyst labels.** At the production HDBSCAN config (`min_cluster_size=5`), the pipeline scores ARI ~0.41, homogeneity ~0.85, completeness ~0.59 on the 100-session analyst-labeled set — clusters are internally pure; labels fragment across a moderate number of clusters. This is the gated quality metric ([`scripts/eval_clustering.py`](scripts/eval_clustering.py), [eval/baseline.json](eval/baseline.json)).
-- **Copy/paste dominance.** Per [`scripts/eval_cluster_purity.py`](scripts/eval_cluster_purity.py), ~5 of the top 20 corpus clusters are copy/paste tight — every member runs the *exact same* command set (`modal_signature_share` ≥ 0.8). On this corpus, script lineage drives most clustering signal regardless of representation.
-- **Embedding vs. text — no measurable edge.** A faithful, payload-keyed evaluation (same-payload sessions with disjoint commands vs. different-payload controls, scored on the *persisted* production clustering with command overlap held constant) found the embedding **does not** separate behavior better than a TF-IDF text baseline — on a 4-year corpus its cosine is dominated by coarse intent, and TF-IDF edges it on the controlled test. Prism therefore makes **no "semantics over text" claim**: the clustering is used because it works operationally, not because it beats text matching. The full evaluation that settled this — and the negative result — is archived under [eval/archive/semantic-clustering-claim/](eval/archive/semantic-clustering-claim/).
+- **Assignment quality vs. analyst labels.** Nearest-prototype assignment recovers the analyst playbook on a held-out split at ~0.84 accuracy / ~0.83 macro-F1, and held-out behaviors read as novel at ~0.74 AUC — gated offline by [`scripts/eval_assignment.py`](scripts/eval_assignment.py) ([eval/baseline-assignment.json](eval/baseline-assignment.json)). The novel-pool HDBSCAN that mints new playbooks is still gated separately ([`scripts/eval_clustering.py`](scripts/eval_clustering.py)).
+- **Copy/paste dominance.** Per [`scripts/eval_cluster_purity.py`](scripts/eval_cluster_purity.py), ~5 of the top 20 corpus behaviors are copy/paste tight — every member runs the *exact same* command set (`modal_signature_share` ≥ 0.8). On this corpus, script lineage drives most of the signal regardless of representation.
+- **Embedding vs. text — no measurable edge** (and why assignment replaced clustering). A faithful, payload-keyed evaluation (same-payload sessions with disjoint commands vs. different-payload controls, command overlap held constant) found the embedding **does not** separate behavior better than a TF-IDF text baseline — on a 4-year corpus its cosine is dominated by coarse intent, and TF-IDF edges it on the controlled test. Prism makes **no "semantics over text" claim**: since the embedding earned no edge, session labeling moved from unsupervised clustering to nearest-prototype assignment with a TF-IDF confirm. The full evaluation that settled this — and the negative result — is archived under [eval/archive/semantic-clustering-claim/](eval/archive/semantic-clustering-claim/).
 
 ## How it works
 
@@ -86,7 +86,7 @@ flowchart TD
     B -.-> X[Cloud LLM, opt-in]
     B --> C[Session rollup]
     C --> D[IP rollup]
-    C -- HDBSCAN --> E[Playbooks]
+    C -- assign + novelty --> E[Playbooks]
     D -- HDBSCAN --> F[IP clusters]
     E --> G[Campaign mining]
     B -.-> H[Threat intel]
@@ -104,7 +104,7 @@ flowchart TD
 
 *Solid lines: always-on local pipeline. Dashed lines: opt-in cloud LLM and external CTI feeds.*
 
-A local LLM + embedding model drives per-command enrichment, with optional escalation to a cloud LLM for the hardest cases. Session and IP rollups are HDBSCAN-clustered into named playbooks and IP clusters, then cross-IP campaign mining. Two streams reach the findings inbox: lifecycle tracking watches each playbook, campaign, and source IP over time so drift becomes a finding, while discovery mining surfaces outlier sessions and previously-unseen edges. A parallel intel pipeline grounds artifacts (URLs from commands, IPs from the rollup) against external feeds. The findings inbox is the analyst's curated triage queue, viewed through the console.
+A local LLM + embedding model drives per-command enrichment, with optional escalation to a cloud LLM for the hardest cases. Sessions are assigned to named playbooks against a pinned prototype library (HDBSCAN now only mints new playbooks from the novel tail); IP rollups are HDBSCAN-clustered; then cross-IP campaign mining. Two streams reach the findings inbox: lifecycle tracking watches each playbook, campaign, and source IP over time so drift becomes a finding, while discovery mining surfaces outlier sessions and previously-unseen edges. A parallel intel pipeline grounds artifacts (URLs from commands, IPs from the rollup) against external feeds. The findings inbox is the analyst's curated triage queue, viewed through the console.
 
 ## Console
 
