@@ -1,0 +1,9 @@
+{
+  "metrics": {
+    "assigned_rate": 0.62,
+    "homogeneity": 0.9178,
+    "anchor_label_purity": 0.9194
+  },
+  "tolerance": 0.05,
+  "n_anchors": 75
+}

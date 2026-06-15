@@ -29,6 +29,26 @@ jobs:
         # improvement, regenerate eval/baseline.json on a feature branch
         # and commit the new file — the next CI run on that branch will
         # gate against the updated numbers.
+        # Clustering still gates the novel-pool HDBSCAN path post-Option-A-cutover.
+      - name: Run assignment eval + gate against baseline
+        run: |
+          python scripts/eval_assignment.py \
+            --baseline eval/baseline-assignment.json \
+            --no-json
+        # Option-A counterpart: gates the nearest-prototype assignment algorithm
+        # (classification accuracy + macro-F1) and held-out novelty separation
+        # (mean_auc_novel) against the analyst labels. Same eval set, no ES. Re-base
+        # via `eval_assignment.py --write-baseline` after an intentional change.
+      - name: Run prod-scale assignment eval (real anchors) + gate
+        run: |
+          python scripts/eval_assignment_prod.py \
+            --baseline eval/baseline-assignment-prod.json \
+            --no-json
+        # Scores the analyst labels against the REAL anchor library (a PUBLIC-only
+        # snapshot the operator captures + commits via capture_anchor_snapshot.py).
+        # Gracefully SKIPS (exit 0) until eval/anchor-snapshot-v1.jsonl.gz exists, so this
+        # step is a harmless no-op on an untagged corpus and activates once the snapshot
+        # + baseline are committed. Re-base via `eval_assignment_prod.py --write-baseline`.
 
   production-scale-gate:
     # E6.2: production-scale eval. The eval-isolated gate above scores
