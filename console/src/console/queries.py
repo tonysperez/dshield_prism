@@ -499,6 +499,11 @@ def lookup_playbook(
     except Exception:
         pass
 
+    # Post-cutover the centroid name is often absent (novel-pool only refreshes a few);
+    # fall back to the session rollup's authoritative playbook_name.
+    if not name:
+        name = _playbook_names(es, cfg, [playbook_id]).get(playbook_id)
+
     pb_field = _resolve_agg_field(
         es, sess_idx, "dshield.cowrie.enrichment.session.playbook_id",
     )
@@ -1042,7 +1047,6 @@ def playbooks_for_ip(
     through the sessions the IP produced.
     """
     sess_idx     = cfg.elasticsearch.indexes.cowrie.sessions_rollup
-    centroid_idx = cfg.elasticsearch.indexes.cowrie.session_clusters
     pb_field     = _resolve_agg_field(
         es, sess_idx, "dshield.cowrie.enrichment.session.playbook_id",
     )
@@ -1065,27 +1069,8 @@ def playbooks_for_ip(
     if not buckets:
         return []
     pb_ids = [b["key"] for b in buckets if b.get("key")]
-    name_map: dict[str, str] = {}
-    if pb_ids:
-        centroid_field = _resolve_agg_field(es, centroid_idx, "playbook_id")
-        # A merged playbook can be backed by multiple centroid docs (one per
-        # constituent HDBSCAN cluster); we'd need every match to be returned
-        # so the name lookup doesn't miss a playbook by chance. The cap is
-        # ES's default index.max_result_window — well above any realistic
-        # cluster-to-playbook fanout. Names are identical across constituents.
-        try:
-            nresp = es.search(
-                index=centroid_idx, size=min(10000, max(len(pb_ids) * 20, 100)),
-                _source=["playbook_id", "playbook_name"],
-                query={"terms": {centroid_field: pb_ids}},
-            )
-            for h in nresp["hits"]["hits"]:
-                s = h["_source"]
-                pid = s.get("playbook_id")
-                if pid:
-                    name_map[pid] = s.get("playbook_name") or ""
-        except Exception:
-            pass
+    # Names from the session rollup (authoritative post-cutover) — see _playbook_names.
+    name_map = _playbook_names(es, cfg, pb_ids)
     rows: list[dict] = []
     for b in buckets:
         pid = b.get("key")
@@ -1237,55 +1222,45 @@ def freetext_search(es: Elasticsearch, cfg: AppConfig, q: str, *, size: int = 25
     # collapse those to a single dropdown candidate keyed on playbook_id.
     # Distinct playbooks with identical display names still surface as
     # separate candidates and get a disambiguating suffix.
-    cluster_idx = idx.cowrie.session_clusters
-    must_clauses: list[dict] = [{"term": {"doc_type": "cluster"}}]
-    # Scope to the latest run so stale centroids from previous runs don't
-    # crowd the dropdown.
-    run_cache_local = RunCache(ttl_seconds=60)
-    latest_run = run_cache_local.latest(es, cluster_idx)
-    if latest_run:
-        must_clauses.append({"term": {"run_id": latest_run}})
-    must_clauses.append({"bool": {"should": [
-        {"term":     {"playbook_name": q}},
-        {"wildcard": {"playbook_name": {"value": f"*{q_esc}*", "case_insensitive": True}}},
-    ], "minimum_should_match": 1}})
+    # Match playbook display names on the SESSION ROLLUP (authoritative post-cutover) —
+    # the session-cluster centroids only carry the novel pool now, scoped to the latest
+    # run, so a name search there misses every established playbook. Aggregate by
+    # playbook_id; the modal playbook_name is the label, session count is the rank.
+    sess_idx   = idx.cowrie.sessions_rollup
+    pb_field   = _resolve_agg_field(es, sess_idx, "dshield.cowrie.enrichment.session.playbook_id")
+    name_field = "dshield.cowrie.enrichment.session.playbook_name"
+    name_q = {"bool": {"should": [
+        {"term":     {name_field: q}},
+        {"wildcard": {name_field: {"value": f"*{q_esc}*", "case_insensitive": True}}},
+    ], "minimum_should_match": 1}}
+    pb_buckets: list[dict] = []
     try:
         r = es.search(
-            index=cluster_idx, size=20,
-            _source=["playbook_id", "playbook_name", "cluster_id", "size"],
-            query={"bool": {"must": must_clauses}},
+            index=sess_idx, size=0, query=name_q,
+            aggs={"by_pb": {
+                "terms": {"field": pb_field, "size": 20},
+                "aggs": {"name": {"terms": {"field": name_field, "size": 1}}},
+            }},
         )
-        hits = r["hits"]["hits"]
+        pb_buckets = r["aggregations"]["by_pb"]["buckets"]
     except Exception:
-        hits = []
-    # Collapse hits by playbook_id (merged playbooks have >1 centroid doc).
-    # Keep the highest-scoring hit per playbook_id; preserve order of first
-    # appearance for stable dropdown ranking.
-    by_pid: dict[str, dict] = {}
-    for h in hits:
-        pid = (h.get("_source") or {}).get("playbook_id")
+        pb_buckets = []
+    pb_names = _names_from_pb_buckets(pb_buckets)
+    # Disambiguate distinct playbooks sharing a display name (suffix the id tail).
+    name_to_pids: dict[str, set[str]] = {}
+    for pid, nm in pb_names.items():
+        name_to_pids.setdefault(nm, set()).add(pid)
+    for b in pb_buckets:
+        pid = b.get("key")
         if not pid:
             continue
-        prev = by_pid.get(pid)
-        if prev is None or h.get("_score", 0) > prev.get("_score", 0):
-            by_pid[pid] = h
-    # Detect display-name collisions across DIFFERENT playbooks so the label
-    # can disambiguate. Same playbook_id sharing a name is not a collision.
-    name_to_pids: dict[str, set[str]] = {}
-    for pid, h in by_pid.items():
-        nm = h["_source"].get("playbook_name") or ""
-        if nm:
-            name_to_pids.setdefault(nm, set()).add(pid)
-    for pid, h in by_pid.items():
-        src = h["_source"]
-        nm     = src.get("playbook_name") or "(unnamed)"
-        sescid = src.get("cluster_id")
-        suffix = f" · sescl {sescid}" if len(name_to_pids.get(nm, ())) > 1 and sescid else ""
+        nm = pb_names.get(pid) or "(unnamed)"
+        suffix = f" · {pid[-6:]}" if len(name_to_pids.get(nm, ())) > 1 else ""
         candidates.append({
             "type":  "playbook",
             "id":    pid,
             "label": f"playbook: {nm}{suffix}",
-            "score": h.get("_score", 0),
+            "score": int(b.get("doc_count") or 0),
         })
 
     # 2b. Multi-session campaigns mined by `mine campaigns`. Has its own
@@ -1826,28 +1801,10 @@ def insights_summary(
         )
         buckets = r["aggregations"]["by_playbook"]["buckets"]
         pb_ids = [b["key"] for b in buckets if b.get("key")]
-        name_map: dict[str, str] = {}
-        if pb_ids:
-            centroid_field = _resolve_agg_field(
-                es, idxs.session_clusters, "playbook_id",
-            )
-            try:
-                # A merged playbook can have multiple centroid docs; bump size
-                # so every constituent comes back even when fanout > 1.
-                nresp = es.search(
-                    index=idxs.session_clusters,
-                    size=min(10000, max(len(pb_ids) * 20, 100)),
-                    _source=["playbook_id", "playbook_name"],
-                    query={"terms": {centroid_field: pb_ids}},
-                )
-                for h in nresp["hits"]["hits"]:
-                    s = h["_source"]
-                    pid = s.get("playbook_id")
-                    nm  = s.get("playbook_name")
-                    if pid:
-                        name_map[pid] = nm or ""
-            except Exception:
-                pass
+        # Names from the session rollup (authoritative post-cutover), not the
+        # session-cluster centroids which `cluster sessions --novel-pool` no longer
+        # refreshes for the assigned bulk.
+        name_map = _playbook_names(es, cfg, pb_ids)
         for b in buckets:
             pid = b.get("key")
             if not pid:
@@ -2354,28 +2311,60 @@ def _rank_standout(buckets: list[dict], sort_mode: str,
     return rows[:limit]
 
 
+def _names_from_pb_buckets(buckets: list[dict]) -> dict:
+    """Pure: terms-agg-on-playbook_id buckets (each with a `name` sub-agg of modal
+    `playbook_name`) → `{playbook_id: playbook_name}`, dropping empties."""
+    out: dict = {}
+    for b in buckets:
+        pid = b.get("key")
+        nb = ((b.get("name") or {}).get("buckets")) or []
+        if pid and nb and nb[0].get("key"):
+            out[pid] = nb[0]["key"]
+    return out
+
+
 def _playbook_names(es: Elasticsearch, cfg: AppConfig, pb_ids: list[str]) -> dict:
-    """`{playbook_id: playbook_name}` from the session-cluster centroid docs.
-    A merged playbook fans out to several centroid docs, so size generously."""
+    """`{playbook_id: playbook_name}` — the canonical resolver. Reads from the SESSION
+    ROLLUP's `playbook_name`, which is the authoritative per-session label after the
+    Option-A cutover (assignment + `name playbooks` both keep it current). The old
+    centroid-only source broke once `cluster sessions --novel-pool` stopped refreshing
+    `session_clusters` centroids for the assigned bulk (and `prune-clusters` aged them
+    out). Falls back to the centroids for any id the rollup can't name."""
     if not pb_ids:
         return {}
     idxs = cfg.elasticsearch.indexes.cowrie
-    field = _resolve_agg_field(es, idxs.session_clusters, "playbook_id")
+    sess = idxs.sessions_rollup
+    pb_field = _resolve_agg_field(es, sess, "dshield.cowrie.enrichment.session.playbook_id")
+    name_field = "dshield.cowrie.enrichment.session.playbook_name"
     out: dict = {}
     try:
         r = es.search(
-            index=idxs.session_clusters,
-            size=min(10000, max(len(pb_ids) * 20, 100)),
-            _source=["playbook_id", "playbook_name"],
-            query={"terms": {field: pb_ids}},
+            index=sess, size=0, query={"terms": {pb_field: pb_ids}},
+            aggs={"by_pb": {
+                "terms": {"field": pb_field, "size": len(pb_ids)},
+                "aggs": {"name": {"terms": {"field": name_field, "size": 1}}},
+            }},
         )
-        for h in r["hits"]["hits"]:
-            s = h["_source"]
-            pid = s.get("playbook_id")
-            if pid:
-                out[pid] = s.get("playbook_name") or ""
+        out = _names_from_pb_buckets(r["aggregations"]["by_pb"]["buckets"])
     except Exception as e:
-        log.warning("history playbook-name lookup failed: %s", e)
+        log.warning("playbook-name lookup (rollup) failed: %s", e)
+    missing = [p for p in pb_ids if p not in out]
+    if missing:  # legacy fallback: session-cluster centroids
+        try:
+            field = _resolve_agg_field(es, idxs.session_clusters, "playbook_id")
+            r = es.search(
+                index=idxs.session_clusters,
+                size=min(10000, max(len(missing) * 20, 100)),
+                _source=["playbook_id", "playbook_name"],
+                query={"terms": {field: missing}},
+            )
+            for h in r["hits"]["hits"]:
+                s = h["_source"]
+                pid = s.get("playbook_id")
+                if pid and pid not in out and s.get("playbook_name"):
+                    out[pid] = s["playbook_name"]
+        except Exception as e:
+            log.warning("playbook-name centroid fallback failed: %s", e)
     return out
 
 
