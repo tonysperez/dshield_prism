@@ -1415,7 +1415,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # discovers artifacts, priority-queues them, dispatches to every
     # enabled provider, writes intel-*-default docs. `backfill` forces a
     # full re-scan (currently identical to refresh; reserved for future
-    # scoping). See docs/ROADMAP.md "Research-mode strategic gaps" A.
+    # scoping). See docs/roadmap.md "Research-mode strategic gaps" A.
     p_intel = sub.add_parser("intel", help="External threat-intel subsystem (ROADMAP A)")
     intel_sub = p_intel.add_subparsers(dest="subject", required=True)
     p_intel_refresh = intel_sub.add_parser(

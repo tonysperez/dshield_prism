@@ -8,7 +8,7 @@ For each layer (commands, sessions, IPs):
     count at each candidate threshold
 
 Tracks the "noise rescue for command + IP layers" open audit item in
-[ROADMAP.md](../docs/ROADMAP.md). When that ships, the would-be-rescue
+[ROADMAP.md](../docs/roadmap.md). When that ships, the would-be-rescue
 counts for those two layers should drop to single digits — this script
 is the metric to confirm it.
 

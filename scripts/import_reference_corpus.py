@@ -6,7 +6,7 @@ sh/bash, resolves `#{var}` placeholders against `input_arguments`
 defaults, splits the multi-line `executor.command` block, and emits a
 single rollup-shaped doc into `prism.reference.cowrie.session`.
 
-See docs/reference-corpus.md for the schema mapping and why this
+See docs/architecture.md for the schema mapping and why this
 particular corpus.
 
 Usage:
@@ -53,7 +53,7 @@ _REPO_URL = "https://github.com/redcanaryco/atomic-red-team.git"
 _MAPPING_PATH = "setup/es-mappings/cowrie/reference_session.json"
 _SOURCE_LABEL = "atomic-red-team"
 
-# Per the schema mapping in docs/reference-corpus.md.
+# Per the schema mapping in docs/architecture.md.
 _LINUX_PLATFORMS = frozenset({"linux"})
 _SHELL_EXECUTORS = frozenset({"sh", "bash"})
 

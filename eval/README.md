@@ -8,6 +8,9 @@ It is a **stratified random sample** of cowrie sessions, hand-labeled with
 the behavior each session expresses. The eval scripts join the labels
 against an unlabeled JSONL by `session_id` at load time.
 
+This file is the eval-set *mechanics*. For what the gates measure and what the
+measurements found, see [`docs/evaluation.md`](../docs/evaluation.md).
+
 > **Archived:** the divergent-pair / "behavior-not-text" stress-test (v2)
 > machinery that used to live here is retired — a faithful evaluation did
 > not support the claim that the embedding clusters by semantics rather
@@ -25,7 +28,7 @@ against an unlabeled JSONL by `session_id` at load time.
 | `labeling-prompt-v1.md` | hand-written | yes | Self-contained LLM prompt to automate labeling. |
 | `RUBRIC.md` | hand-written | yes | Labeling rubric. |
 | `baseline.json` | generated | yes | Metric snapshot the CI gate diffs against. |
-| `results/` | generated | no | Per-run JSON outputs from `eval_*.py` scripts. |
+| `results/` | generated | no | Per-run JSON + per-experiment markdown verdicts from the `eval_*.py` / `sweep_*.py` / `exp_*.py` scripts. Rebuildable; gitignored. |
 | `archive/` | frozen | yes | Retired experiments (see the note above). |
 
 ## Labeling workflow

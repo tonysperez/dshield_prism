@@ -6,7 +6,7 @@ Runs alongside the existing per-source enrichment pipeline. Looks up
 the results to project-owned `intel-<kind>-default` indices. Designed
 to be additive — nothing here mutates existing enrichment docs.
 
-See docs/ROADMAP.md "Research-mode strategic gaps" section A for the
-provider roadmap and `docs/ROADMAP.md` "How free-tier limits reshape
+See docs/roadmap.md "Research-mode strategic gaps" section A for the
+provider roadmap and `docs/roadmap.md` "How free-tier limits reshape
 the architecture" for the priority-queue design rationale.
 """

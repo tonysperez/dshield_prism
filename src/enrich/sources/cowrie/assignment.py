@@ -4,7 +4,7 @@ Replaces "cluster every session with HDBSCAN every cycle" with "assign each sess
 to its nearest playbook anchor; whatever matches nothing is the novel pool (the only
 input HDBSCAN still sees)". This module is the pure decision core; ES/pipeline wiring
 (shadow first, then authoritative) lives in the cluster-sessions flow. See
-docs/handoff-prototype-assignment-plan.md §5f.
+docs/decisions.md §5f.
 
 Per session, against the anchor library (the pinned `anchor_centroid` set), with the
 nearest anchor's embedding cosine `c`:

@@ -22,7 +22,7 @@ intentionally mirror the Compare view's verdict vocabulary
 mental scale, not three.
 
 Until per-cluster centroid-cohesion ships (open audit item in
-docs/ROADMAP.md), the membership-strength bands use *member count*
+docs/roadmap.md), the membership-strength bands use *member count*
 as the cohesion proxy. The function is deliberately named
 "evidence_quality" not "cluster_cohesion" — it summarises what we
 have, not what HDBSCAN measured.

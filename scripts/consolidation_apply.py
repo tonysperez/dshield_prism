@@ -4,7 +4,7 @@ first destructive mutation of production identity).
 Consumes a FROZEN, operator-reviewed plan JSON (a specific
 `consolidation-plan-*.json` from `consolidation_engine.py`) and merges each alias
 anchor into its canonical. **Dry-run by default**; the destructive path needs
-`--apply --yes`. See docs/handoff-prototype-assignment-plan.md §5e.
+`--apply --yes`. See docs/decisions.md §5e.
 
 Two idempotent core mutations per alias:
   1. Re-point sessions (`update_by_query`, playbook_id == alias) → canonical

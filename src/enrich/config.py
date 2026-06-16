@@ -162,7 +162,7 @@ class CloudTriageConfig(BaseModel):
     # Suppress novelty-based escalation/surfacing when the local model's
     # self-rated confidence is below this floor. Confidence-1 enrichments
     # are typically encoding artifacts (raw ELF bytes, mojibake) where
-    # novelty=1.0 is meaningless — see docs/ROADMAP.md issue #3.
+    # novelty=1.0 is meaningless — see docs/roadmap.md issue #3.
     novel_confidence_min: int = 4
     # M3.A: intel-aware escalation gate. When True (default), the triage
     # consults each command's source-IP intel summaries before
@@ -292,7 +292,7 @@ class SessionConfig(BaseModel):
     playbook_merge_threshold: float = 0.96
     # Option A — direct nearest-anchor assignment (the pipeline inversion). See
     # src/enrich/sources/cowrie/assignment.py and
-    # docs/handoff-prototype-assignment-plan.md §5f. Embedding cosine to the nearest
+    # docs/decisions.md §5f. Embedding cosine to the nearest
     # anchor: >= confident_tau assigns outright; [tau, confident_tau) is the band
     # (confirm with the TF-IDF secondary signal >= tfidf_tau, else the nearest anchor
     # is a conflation and we cascade to the next-nearest); < tau is novel.

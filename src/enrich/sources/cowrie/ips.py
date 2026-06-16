@@ -727,7 +727,7 @@ def _build_attribution_block(
     across hosting platforms / geographies (the Zgrab cluster_8/9/10 case). When
     `False` they're dropped and only the credential-hash block (genuine attacker
     behaviour) remains. `True` (default) preserves the ROADMAP-#8 block until the
-    K verdict adopts the prune. See docs/handoff-ip-attribution-prune-plan.md.
+    K verdict adopts the prune. See docs/decisions.md.
 
     Shape: `(n, k_country + k_asn + cred_hash_dim)` with provenance, or
     `(n, cred_hash_dim)` without.
@@ -904,7 +904,7 @@ def _build_tier1_block(scalars_list: list[dict], weight: float) -> "np.ndarray":
         file_download_count (log1p / clip bounded). `file_upload_count` from
         the plan is omitted — not aggregated onto the IP rollup today.
 
-    ROADMAP — Phase K (see docs/handoff-ip-attribution-prune-plan.md).
+    ROADMAP — Phase K (see docs/decisions.md).
     """
     import numpy as np
 
@@ -1094,7 +1094,7 @@ def make_full_scalar_builder(
       - `include_tier2=True` adds the Tier 2 bag-of-session-clusters block
         (needs `session_cluster_bags={ip: {cluster_id: count}}` pre-fetched by
         the caller) at the attribution weight. See
-        docs/handoff-ip-attribution-prune-plan.md.
+        docs/decisions.md.
     """
     import numpy as np
 

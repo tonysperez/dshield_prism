@@ -13,7 +13,7 @@ Two arms, scored on a random sample of live session rollups:
                    max_cos >= tau → that anchor's playbook_id, else "novel".
 
 Read-only. Emits **corpus-level aggregates only** — never any per-session
-record — to eval/results/. See docs/handoff-prototype-assignment-plan.md §5.
+record — to eval/results/. See docs/decisions.md §5.
 
 Data-privacy boundary (binding; see CLAUDE.md): session rollups are per-sensor
 cowrie data. This applies `releasable_filter(cfg)` (public-only) BY DEFAULT.

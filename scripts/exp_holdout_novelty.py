@@ -27,7 +27,7 @@ had low false-novel. The two together are the novelty detector's ROC.
 Read-only; emits aggregates only. Same data-privacy boundary as Experiment 1:
 public-only filter BY DEFAULT (0 docs on the untagged corpus); `--allow-unclassified`
 is an OPERATOR decision, never set by the agent. See
-docs/handoff-prototype-assignment-plan.md and
+docs/decisions.md and
 eval/results/exp-prototype-assignment-verdict.md.
 
 Run from repo root via the console venv:

@@ -19,11 +19,14 @@ dist/
 
 # Claude
 .claude
-CLAUDE.md
 
-docs
 .ruff_cache
 
+# Eval: generated output, never committed (rebuildable from the corpus + scripts).
+# Curated methodology (README, RUBRIC, labeling prompt, baselines) stays tracked;
+# the results/ dir is kept (via .gitkeep) so scripts have a write target.
 eval/archive
-eval/results/*.json
+eval/results/*
+!eval/results/.gitkeep
+eval/sessions-v1/
 eval/confidential/

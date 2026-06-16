@@ -1,8 +1,8 @@
 """I1.0 — field-presence viability probe for currently-dropped Cowrie events.
 
 Prism's ingest promotes a subset of Cowrie's `cowrie.json` event stream to
-ECS and drops the rest. The Phase I plan (`docs/handoff-upstream-
-instrumentation-plan.md`) proposes promoting several of those dropped event
+ECS and drops the rest. The upstream-instrumentation roadmap item
+(`docs/roadmap.md`) proposes promoting several of those dropped event
 kinds — chiefly `direct-tcpip` (honeypot-as-proxy abuse, a behavioural
 category that is currently *invisible*) and `command.success`/`failed`
 (attacker reaction to a faked failure). Before any ingest-pipeline work, this

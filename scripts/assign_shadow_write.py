@@ -5,7 +5,7 @@ per-run batch TF-IDF refit — same as the validator; persistence is an I4 conce
 writes the result to `…session.cluster.assignment_*` WITHOUT touching the
 HDBSCAN-driven `playbook_id`. The operator then browses `assignment_status=novel` /
 band sessions in situ to confirm the pool is sensible before the authoritative I4
-cutover. See docs/handoff-prototype-assignment-plan.md §5f (I3c).
+cutover. See docs/decisions.md §5f (I3c).
 
 **Dry-run by default**; writes need `--apply --yes`. Prerequisite: deploy the shadow
 mapping fields (`init-indexes --update-mapping --source cowrie`) first. The shadow
