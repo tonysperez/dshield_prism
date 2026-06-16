@@ -22,9 +22,9 @@
 
 ---
 
-Internet-facing honeypots are a firehose of mostly identical attacks. Buried in that deluge is the actually interetsing stuff - novel tactics, quietly drifting campaigns, a new cargo-cult IOC. Like many other datastreams, dashboards are a common method to try to make this immense amount of data somewhat digestable. But dashboards are only as useful as the data they're based on, and honeypot data is very raw; IPs commands, files, and timing. There's only so many ways you can vizualize this data, and honestly none of them are very useful.
+Internet-facing honeypots are a firehose of mostly identical attacks. Buried in that deluge is the actually interesting stuff — novel tactics, quietly drifting campaigns, a new cargo-cult IOC. Like many other data streams, the common way to make this immense volume digestible is a dashboard. But a dashboard is only as useful as the data behind it, and honeypot data is very raw: IPs, commands, files, and timing. There are only so many ways to visualize that, and honestly, none of them are very useful.
 
-What this raw data cannot show is exactly what I want to find; it can't what any of those attackers were actually *doing*, which ones were doing the same thing, which ones are doing something diffrent. Anything actually worth your time and attention stay buried under the roar of commodity internet scanning.
+What this raw data cannot show is exactly what I want to find: it can't tell me what any of those attackers were actually *doing*, which ones were doing the same thing, and which ones were doing something different. Anything actually worth your time and attention stays buried under the roar of commodity internet scanning.
 
 Prism is the enrichment and correlation layer that resolves behavior; it turns this flood of raw log events into a handful of named, tracked behaviors you can pivot on by *similarity* — not just by exact artifact — ground against threat intel, and watch change over time.
 
@@ -36,15 +36,13 @@ Built during my internship with the SANS Internet Storm Center to enable faster 
 
 - **Pivot on behavior, not just artifacts.** Most honeypot tooling (most log analysis tooling really) only pivots from one exact artifact to the same artifact — this IP, that exact command. Prism groups attacks by what they actually *do*, so you can ask the question that matters: "what else behaves like this?" — even when the IPs, files, and commands are all different.
 
-- **Watch behavior change over time.** Recurring activity gets named as a playbook; coordinated multi-session activity gets grouped as a campaign — by shared behavior, by shared infrastructure, or (when those two overlap) as an Operation. All keep stable identities across re-analysis runs, so drift and emergence surface as findings in a curated inbox with a confirm/reject workflow that turns analyst decisions into a growing knowledge base.
+- **Watch behavior change over time.** Recurring activity gets named as a playbook; coordinated multi-session activity gets grouped as a campaign — by shared behavior, by shared infrastructure, or (when those two overlap) as an Operation. All keep stable identities across re-analysis runs, so when one drifts — a new command, a new target country, a sudden spike — that *change* surfaces as a finding instead of disappearing into the noise, landing in a curated inbox whose confirm/reject workflow turns analyst decisions into a growing knowledge base.
 
-- **Behaviors keep their identity over time.** Every recurring attack pattern gets a stable name that survives re-analysis, so when one drifts — a new command, a new target country, a sudden spike — that *change* surfaces as a finding instead of disappearing into the noise.
-
-- **Private by default.** The AI analysis runs locally, on your own hardware — nothing about your honeypot traffic leaves the box unless you say so. Escalating a hard case to a frontier model is budget-constrained and opt-in. CTI feeds which require per-artifact queries are disabled by default. Sensor data is classified at ingest (a per-sensor configuration) and can be marked *confidential* so their data is never sent off-box at all, regaurdless of if cloud LLM and/or CTI queries are enabled.
+- **Private by default.** The AI analysis runs locally, on your own hardware — nothing about your honeypot traffic leaves the box unless you say so. Escalating a hard case to a frontier model is budget-capped and opt-in, and the external CTI feeds are disabled by default. Sensor data is classified at ingest, and a sensor can be marked *confidential* so its data is never sent off-box at all — regardless of whether the cloud LLM or CTI queries are enabled.
 
 - **Grounded in threat intel.** Artifacts (IP, URL, and file hash today; domain planned) are checked against freely available CTI feeds. A consensus engine collates verdicts and feeds them back into the pipeline: known-good scanners get quieted, commodity-malicious IPs get cheaper triage. Novelty is scored twice: against the sensor's own corpus *and* against an external reference corpus of documented adversary tradecraft (Atomic Red Team).
 
-- **Hardened by real-world operation.** It has run continuously against a live sensor, and the safety rails earned their place: a daily cloud-spend cap, validation that catches the local AI inventing data that doesn't exist, and automatic cache refresh each stopped a real production failure — not a hypothetical one.
+- **Hardened by real-world operation.** It has run continuously against a live sensor, and the safety rails earned their place: a daily cloud-spend cap, validation that catches the local model inventing data that doesn't exist, and hash-based cache invalidation that can't be forgotten. Each fixed a real production failure, not a hypothetical one.
 
 - **Measured and proven, not assumed.** Clustering quality is graded automatically against a hand-labeled answer key on every change. When my own measurements showed a central assumption was wrong, I rebuilt around the evidence. ([the gates, the numbers, the methodology](docs/evaluation.md))
 
@@ -100,9 +98,9 @@ flowchart TD
 
 From a raw command line to a tracked behavior, in six steps:
 
-1. **Enrich every command.** A honeypot records the raw text of everything an attacker types. Prism hands each *unique* command to a local LLM which explains what it does, the intent behind it, the MITRE ATT&CK techniques it maps to, and any IOCs it carries. This output is recorded, then converted it into an *embedding*: a numeric fingerprint where functionally similar commands land close together, even when the text is different. The few genuinely novel or low-confidence commands can (optional, opt-in) escalate to a frontier cloud model; everything else stays local, and identical commands are explained once and cached.
+1. **Enrich every command.** A honeypot records the raw text of everything an attacker types. Prism hands each *unique* command to a local LLM that explains what it does, the intent behind it, the MITRE ATT&CK techniques it maps to, and any IOCs it carries. That output is recorded, then converted into an *embedding*: a numeric fingerprint where functionally similar commands land close together, even when the text is different. The few genuinely novel or low-confidence commands can optionally escalate to a frontier cloud model; everything else stays local, and identical commands are explained once and cached.
 
-2. **Stack it up: command → session → IP.** The fingerprints of every command in one SSH login are pooled into a single fingerprint for the whole *session* — a compact summary of what that attacker actually did, while weighting rare or complex commands over boilerplate like `cd /tmp`. The same roll-up runs one level higher, giving each *source IP* a fingerprint of its overall behavior.
+2. **Stack it up: command → session → IP.** The fingerprints of every command in one SSH login are pooled into a single fingerprint for the whole *session* — a compact summary of what that attacker actually did, weighting rare commands over boilerplate like `cd /tmp`. The same roll-up runs one level higher, giving each *source IP* a fingerprint of its overall behavior.
 
 3. **Name the behavior.** Prism keeps a library of named attacker *playbooks* (e.g. *SSH Key Injection with chattr Locking*). Each new session is matched to its nearest playbook by fingerprint similarity; anything that matches nothing is flagged **novel**, and recurring novel behavior becomes a brand-new playbook the local LLM names itself. Those names are stable across re-runs, so a single behavior can be followed for weeks.
 
@@ -205,7 +203,7 @@ Licensed under [GPL-3.0](LICENSE).
 - Cargo-cult code within scripts exists as a result of the above. This has funnily enough resulted in some pretty good IOCs, because literally nobody else will run a non-existent command except a script whose operator copy/pasted without bothering to understand it.
 
 ### AI in Production
-- Validation, validation, validation. With a small 8B LLM model, I had to: give it heavy context + grounding; validate its output against my schema (it cheerfully made up MITRE TTP IDs); track output against a known baseline. Even when escalating the same query to a frontier model, I found this extra grounding and validation helped get its output just the way I wanted it.
+- Validation, validation, validation. With a small 8B model, I had to: give it heavy context + grounding; validate its output against my schema (it cheerfully made up MITRE TTP IDs); track output against a known baseline. Even when escalating the same query to a frontier model, I found this extra grounding and validation helped get its output just the way I wanted it.
 - Cloud LLM costs can balloon, fast. I built cost-tracking and a per-day budget cap from day one — which saved me later when a bug caused an endless cloud-LLM query loop. Without the cap, that bug would have burned through my entire Anthropic balance in hours.
 
 ### Operational Lessons
