@@ -158,7 +158,7 @@ check("never returns role=child even when its confidence is higher",
 
 es = FakeES([
     make_doc("u1", "shape-Y", "canonical", "unknown", 9, 50),
-    make_doc("u2", "shape-Y", "standalone", "lateral_movement", 6, 5),
+    make_doc("u2", "shape-Y", "standalone", "execute_payload", 6, 5),
 ])
 got = lookup_canonical_for_shape(es, "idx", "shape-Y",
                                   min_confidence=5,
@@ -179,8 +179,8 @@ check("require_known_intent=False allows intent=unknown",
 # -----------------------------------------------------------------------------
 
 es = FakeES([
-    make_doc("low1", "shape-Z", "canonical", "execution", 3, 100),
-    make_doc("low2", "shape-Z", "standalone", "execution", 4, 200),
+    make_doc("low1", "shape-Z", "canonical", "execute_payload", 3, 100),
+    make_doc("low2", "shape-Z", "standalone", "execute_payload", 4, 200),
 ])
 got = lookup_canonical_for_shape(es, "idx", "shape-Z",
                                   min_confidence=5,
@@ -195,13 +195,13 @@ check("confidence floor excludes all low-confidence parents",
 
 parent = {
     "_id": "x",
-    "intent": "credential_access",
+    "intent": "account_manipulation",
     "confidence": 7,
     "description": "Attempts to set a new password via echo/passwd.",
     "model": "llama3:8b",
 }
 parsed = _synth_parsed_from_parent(parent)
-check("synth parsed: intent inherited", parsed.intent == "credential_access")
+check("synth parsed: intent inherited", parsed.intent == "account_manipulation")
 check("synth parsed: confidence inherited", parsed.confidence == 7)
 check("synth parsed: description inherited",
       parsed.description == "Attempts to set a new password via echo/passwd.")

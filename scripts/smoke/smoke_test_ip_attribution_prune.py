@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from enrich.sources.cowrie.ips import make_full_scalar_builder
 
 _TIER1 = {
-    "intent_distribution": [{"intent": "reconnaissance", "count": 10}],
+    "intent_distribution": [{"intent": "host_recon", "count": 10}],
     "playbook_distribution": [{"playbook_id": "spb-zgrab", "count": 10}],
     "total_sessions": 10, "total_commands": 10, "file_download_count": 0,
     "active_days": 1.0,
@@ -76,7 +76,7 @@ def main() -> int:
     b = _ip(country="DE", asn=63949, hassh="bbb", creds=same_creds)  # diff prov+tool
     c = _ip(country="US", asn=6939, hassh="aaa", creds=["admin:1234"])  # diff creds
     d = _ip(country="US", asn=6939, hassh="aaa", creds=same_creds,
-            tier1={**_TIER1, "intent_distribution": [{"intent": "persistence", "count": 10}]})
+            tier1={**_TIER1, "intent_distribution": [{"intent": "install_persistence", "count": 10}]})
 
     off = _builder(provenance=False, tier1=True)
     on = _builder(provenance=True, tier1=True)

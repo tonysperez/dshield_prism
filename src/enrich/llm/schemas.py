@@ -5,11 +5,25 @@ import ipaddress
 import re
 from pydantic import BaseModel, Field, field_validator
 
+# Honeypot-native, single-label, per-command-decidable action taxonomy.
+# Replaces the prior MITRE ATT&CK *tactic* enum: tactics are session/campaign-
+# scoped goals (not single-command actions), and pre-compromise tactics
+# (reconnaissance / initial_access) are category errors for post-login in-session
+# commands. ATT&CK *techniques* were also rejected as a lossy many-to-one fit for
+# single commands. See docs/decisions.md. Each label here is decidable from one
+# shell line; the prompt's INTENT RULES define them + the tie-breakers.
 INTENTS = {
-    "reconnaissance", "initial_access", "execution", "persistence",
-    "privilege_escalation", "defense_evasion", "credential_access",
-    "discovery", "lateral_movement", "collection", "command_and_control",
-    "exfiltration", "impact", "cryptomining", "benign", "unknown",
+    "host_recon",            # enumerate box/env (uname, /proc/cpuinfo, id, ps, ls)
+    "download_ingress",      # fetch a remote payload to disk, no run step
+    "execute_payload",       # run a dropped/staged binary or inline interpreter
+    "install_persistence",   # cron, rc.local, systemd, authorized_keys
+    "defense_evasion",       # anti-forensics / disable defenses / kill rivals
+    "credential_data_access",# read secrets/exfiltratable data (/etc/shadow, keys)
+    "account_manipulation",  # passwd change, useradd/usermod, sshd root login
+    "cryptomining",          # install/configure/run a coin miner
+    "ddos_botnet",           # botnet enroll / flood / destructive impact
+    "benign_noise",          # login probes & non-actions (exit, echo, banners)
+    "unknown",               # can't tell / truncated / gibberish
 }
 
 
@@ -124,7 +138,14 @@ class IOCs(BaseModel):
 
 class CommandEnrichment(BaseModel):
     description: str
-    intent: str
+    # `intent` stays a plain `str` so the `_intent_in_set` validator can
+    # fail-soft (coerce an off-enum value to "unknown") rather than raising —
+    # important for the cloud / non-grammar path. `json_schema_extra` advertises
+    # the enum in `model_json_schema()` so grammar-constrained local decoders
+    # (LM Studio / Ollama strict `format`) can only emit valid labels at decode
+    # time. The two layers are complementary: constrain where possible, coerce
+    # as a backstop.
+    intent: str = Field(json_schema_extra={"enum": sorted(INTENTS)})
     iocs: IOCs = Field(default_factory=IOCs)
     confidence: int = 1  # 1-10 scale, see prompt for anchors
 

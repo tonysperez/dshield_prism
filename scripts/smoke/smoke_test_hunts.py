@@ -90,7 +90,7 @@ expect_raises(
 for f in [
     {"kind": "artifact_set_contains_any", "values": ["crontab"]},
     {"kind": "artifact_set_contains_all", "values": ["a", "b"]},
-    {"kind": "intent_in",                 "values": ["persistence"]},
+    {"kind": "intent_in",                 "values": ["install_persistence"]},
     {"kind": "command_count_gte",         "threshold": 10},
     {"kind": "login_fail_count_gte",      "threshold": 50},
     {"kind": "external_match_cosine_gte", "threshold": 0.5},
@@ -152,7 +152,7 @@ with tempfile.TemporaryDirectory() as td:
         "name: OK Hunt\n"
         "filters:\n"
         "  - {kind: window, last_days: 7}\n"
-        "  - {kind: intent_in, values: [persistence, execution]}\n"
+        "  - {kind: intent_in, values: [install_persistence, execute_payload]}\n"
     )
     # Disabled hunt — loaded but excluded.
     (Path(td) / "off.yaml").write_text(
@@ -226,7 +226,7 @@ sample_hits = [
                         "end":   "2026-05-31T00:05:00+00:00"},
             "dshield": {"cowrie": {"enrichment": {"session": {
                 "command_count":    12,
-                "dominant_intent":  "persistence",
+                "dominant_intent":  "install_persistence",
                 "playbook_id":      "spb-abc",
                 "playbook_name":    "Some Playbook",
                 "cluster": {

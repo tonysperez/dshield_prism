@@ -47,6 +47,21 @@ every reader gates on it — so a crash mid-write leaves a half-built run invisi
 and readers fall back to the previous complete run. Chosen over a physical
 alias-swap: same read-atomicity, no per-run index duplication.
 
+**Command intent is a honeypot-native action enum, single-label per command.**
+The taxonomy is 11 decidable-from-one-line action labels (`host_recon`,
+`download_ingress`, `execute_payload`, `install_persistence`, `defense_evasion`,
+`credential_data_access`, `account_manipulation`, `cryptomining`, `ddos_botnet`,
+`benign_noise`, `unknown`) — not MITRE ATT&CK tactics. Tactics are session-scoped
+goals and mislabel single post-login commands (a small model reaches for
+`reconnaissance`/`initial_access`, which are pre-compromise category errors
+in-session); the prior bare tactic enum with no per-label guidance was the main
+driver of inconsistent labels. The set is the single source of truth in
+`enrich/llm/schemas.py` (the IP behaviour matrix derives its intent columns and
+its diversity denominator from it), it's advertised as a JSON-schema `enum` so a
+grammar-constrained local decoder can only emit valid values, and the prompt
+carries explicit INTENT RULES + few-shot examples + a "label by the terminal
+objective" tie-breaker.
+
 **Cache invalidation is hash-based, not manual.** `llm_config_hash` /
 `embed_config_hash` are auto-derived from prompts + config + grounding data.
 Manual `prompt_version` knobs got forgotten in ops; a hash can't be.
@@ -77,6 +92,18 @@ closed enum, IOCs filtered to their surface shapes) were built early; both
 caught real failures in production (a runaway escalation loop; hallucinated
 non-IOC strings).
 
+**ES backpressure rides on the client, not the call sites.** A heap-constrained
+node trips the parent circuit breaker (429) at unpredictable places, and the
+transport's millisecond retries are far too fast for the breaker to drain. Rather
+than harden the handful of sites that happen to fail, a transparent
+`ResilientClient` wraps the one object every read/write flows through
+([`make_client`](../src/enrich/es_client.py)), so all requests — plus
+`helpers.bulk`/`scan` — inherit "wait for heap to drain, then retry" with a shared
+~1 h patience budget. The pipeline prefers waiting a long time over failing a
+step. Chosen over transport/node subclassing (brittle across elasticsearch-py
+versions) and over per-site try/except (doesn't scale to new sites or smaller
+nodes).
+
 ## Dead-ends — measured and rejected
 
 Don't re-attempt these without new evidence; each was tried against the live
@@ -91,6 +118,13 @@ corpus and recorded as a null result.
   context, metrics, and console surfaces. The only MITRE labels that remain are
   the **reference-corpus ground truth** (Atomic Red Team, `dshield.reference.*`),
   which are authored, not inferred.
+- **MITRE ATT&CK tactics or techniques as the command-intent label set** — tactics
+  are the wrong granularity (session-scoped goals, plus pre-compromise categories
+  like `reconnaissance`/`initial_access` that never apply to a post-login
+  in-session command), and a curated technique subset is a lossy many-to-one fit
+  for single commands (`host_recon` alone spans several Discovery techniques).
+  Replaced with the honeypot-native action enum (see *Decisions that still
+  constrain*).
 - **Cooccurrence text appended to the embed input** — regressed clustering ARI
   (badly on short commands). LLM-side cooccurrence grounding stays on; only the
   embed-text append was dropped.

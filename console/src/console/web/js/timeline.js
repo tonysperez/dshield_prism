@@ -40,12 +40,17 @@ window.Timeline = (function () {
   const MAX_ZOOM   = 2000;   // max ms→px ratio (~1px per 0.5 ms)
 
   const INTENT_COLOR = {
-    reconnaissance: "#4ade80",
-    execution:      "#f87171",
-    persistence:    "#fb923c",
-    exfiltration:   "#facc15",
-    benign:         "#64748b",
-    unknown:        "#7c8ba1",
+    host_recon:             "#4ade80",
+    download_ingress:       "#38bdf8",
+    execute_payload:        "#f87171",
+    install_persistence:    "#fb923c",
+    defense_evasion:        "#c084fc",
+    credential_data_access: "#facc15",
+    account_manipulation:   "#f472b6",
+    cryptomining:           "#fbbf24",
+    ddos_botnet:            "#ef4444",
+    benign_noise:           "#64748b",
+    unknown:                "#7c8ba1",
   };
 
   function intentColor(s) {

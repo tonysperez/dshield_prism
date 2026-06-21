@@ -60,8 +60,8 @@ anchor = {
 scope = {
     "ips": [{"ip": "1.2.3.4", "country": "RO", "asn": 12345, "intel_verdict": "malicious"}],
     "commands": [
-        {"command_line": "echo X | chpasswd", "intent": "execution", "sha256": "abc123def456"},
-        {"command_line": "chattr +i /root/.ssh/authorized_keys", "intent": "persistence"},
+        {"command_line": "echo X | chpasswd", "intent": "account_manipulation", "sha256": "abc123def456"},
+        {"command_line": "chattr +i /root/.ssh/authorized_keys", "intent": "install_persistence"},
     ],
     "sessions": [{"session_id": "sid_a"}],
     "credentials": ["root:hunter2"],

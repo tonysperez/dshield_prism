@@ -134,7 +134,7 @@ def _seed_pb(es, doc_id, *, runs_observed, silent, anchors=None):
             "run_id": "run-current",
             "@timestamp": "2026-05-22T00:00:00+00:00",
             "session_count": 5, "ip_count": 2, "mean_novelty": 0.5,
-            "dominant_intent": "execution",
+            "dominant_intent": "execute_payload",
             "asn_top": "12345", "asn_distribution": {"12345": 2},
         }],
         "confirm_anchors": anchors or [],

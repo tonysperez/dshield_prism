@@ -3,10 +3,10 @@ deterministic across input orderings, and the rollup doc must now carry
 an `intent_distribution` field with top-N counts.
 
 The old code used `Counter(intents).most_common(1)[0][0]` which relies on
-Counter insertion order. A 2-command session with one `reconnaissance`
-and one `execution` produced a different `dominant_intent` depending on
+Counter insertion order. A 2-command session with one `host_recon`
+and one `execute_payload` produced a different `dominant_intent` depending on
 which hash iterated first. The new helper (`_summarize_intents`) sorts
-ties by `(-count, intent_name)` so `execution` wins lexically every time.
+ties by `(-count, intent_name)` so `execute_payload` wins lexically every time.
 
 Standalone — no ES, no pytest. Pure-function tests of the helper.
 
@@ -49,10 +49,10 @@ check("empty list → (None, [])", dom is None and dist == [], f"got ({dom!r}, {
 # [2] Single-intent session.
 # -----------------------------------------------------------------------------
 print("\n[2] single-element input")
-dom, dist = _summarize_intents(["reconnaissance"])
+dom, dist = _summarize_intents(["host_recon"])
 check(
     "single intent → that intent, count=1",
-    dom == "reconnaissance" and dist == [{"intent": "reconnaissance", "count": 1}],
+    dom == "host_recon" and dist == [{"intent": "host_recon", "count": 1}],
     f"got ({dom!r}, {dist!r})",
 )
 
@@ -61,11 +61,11 @@ check(
 # [3] The core bug: 1-1 tie must resolve deterministically (the headline).
 # -----------------------------------------------------------------------------
 print("\n[3] 1-1 tie resolves deterministically regardless of input order")
-# Try ALL 2! = 2 permutations of {reconnaissance, execution}.
+# Try ALL 2! = 2 permutations of {host_recon, execute_payload}.
 results = set()
 for order in [
-    ["reconnaissance", "execution"],
-    ["execution", "reconnaissance"],
+    ["host_recon", "execute_payload"],
+    ["execute_payload", "host_recon"],
 ]:
     dom, _ = _summarize_intents(order)
     results.add(dom)
@@ -74,10 +74,10 @@ check(
     len(results) == 1,
     f"got results={results} (expected a single-element set)",
 )
-# Lexical tie-break: "execution" < "reconnaissance" alphabetically.
+# Lexical tie-break: "execute_payload" < "host_recon" alphabetically.
 check(
-    "lexical tie-break: 'execution' wins over 'reconnaissance' at 1-1",
-    next(iter(results)) == "execution",
+    "lexical tie-break: 'execute_payload' wins over 'host_recon' at 1-1",
+    next(iter(results)) == "execute_payload",
     f"got dominant_intent={next(iter(results))!r}",
 )
 
@@ -87,7 +87,7 @@ check(
 # -----------------------------------------------------------------------------
 print("\n[4] 3-way tie at top — distribution and dominant_intent stable")
 import itertools
-intents = ["execution", "discovery", "collection"]
+intents = ["execute_payload", "host_recon", "cryptomining"]
 all_results = set()
 for perm in itertools.permutations(intents):
     dom, dist = _summarize_intents(list(perm))
@@ -101,15 +101,15 @@ check(
 )
 dom, dist_t = next(iter(all_results))
 check(
-    "3-way 1-1-1 tie picks lexically smallest ('collection')",
-    dom == "collection",
+    "3-way 1-1-1 tie picks lexically smallest ('cryptomining')",
+    dom == "cryptomining",
     f"got {dom!r}",
 )
 # Distribution must be sorted by (-count, name) → all three at count=1,
-# names alphabetical: collection, discovery, execution.
+# names alphabetical: cryptomining, execute_payload, host_recon.
 check(
     "distribution sorted lexically when all counts equal",
-    list(dist_t) == [("collection", 1), ("discovery", 1), ("execution", 1)],
+    list(dist_t) == [("cryptomining", 1), ("execute_payload", 1), ("host_recon", 1)],
     f"got {dist_t}",
 )
 
@@ -119,20 +119,20 @@ check(
 # -----------------------------------------------------------------------------
 print("\n[5] clear winner with mixed tail")
 dom, dist = _summarize_intents(
-    ["execution", "execution", "execution", "discovery", "reconnaissance"]
+    ["execute_payload", "execute_payload", "execute_payload", "host_recon", "defense_evasion"]
 )
 check(
     "majority winner picked",
-    dom == "execution",
+    dom == "execute_payload",
     f"got {dom!r}",
 )
-# Tail (discovery=1, reconnaissance=1) is a 1-1 tie → lexical order.
+# Tail (host_recon=1, defense_evasion=1) is a 1-1 tie → lexical order.
 check(
-    "tail tie ordered lexically: discovery before reconnaissance",
+    "tail tie ordered lexically: defense_evasion before host_recon",
     dist == [
-        {"intent": "execution", "count": 3},
-        {"intent": "discovery", "count": 1},
-        {"intent": "reconnaissance", "count": 1},
+        {"intent": "execute_payload", "count": 3},
+        {"intent": "defense_evasion", "count": 1},
+        {"intent": "host_recon", "count": 1},
     ],
     f"got {dist}",
 )

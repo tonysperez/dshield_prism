@@ -2,8 +2,8 @@ id: cryptominer-staging
 name: "Cryptominer staging signature"
 description: |
   Sessions that touched `/proc/cpuinfo` AND were classified as
-  non-reconnaissance intent. CPU detection followed by exec / initial
-  access / C2 is the classic miner staging pattern — the actor is
+  non-recon intent. CPU detection followed by payload download /
+  execution / a miner is the classic staging pattern — the actor is
   sizing up the host before deploying the binary.
 
   Recon-only `/proc/cpuinfo` reads are excluded (the corpus is
@@ -15,6 +15,6 @@ filters:
       - "file:/proc/cpuinfo"
   - kind: intent_in
     values:
-      - execution
-      - initial_access
-      - command_and_control
+      - download_ingress
+      - execute_payload
+      - cryptomining

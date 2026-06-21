@@ -83,13 +83,16 @@ _SCALAR_DENOM_ACTIVE_DAYS = 365.0
 _SCALAR_DENOM_TOTAL_COMMANDS = 10000.0
 _SCALAR_DENOM_CMDS_PER_SESSION = 100.0
 _SCALAR_DENOM_FILE_DOWNLOADS = 100.0
-_SCALAR_DENOM_UNIQUE_INTENTS = 16.0      # the INTENTS enum cardinality
 _SCALAR_DENOM_UNIQUE_PLAYBOOKS = 50.0
 
-# Phase K Tier 1 — fixed intent-vector ordering (one cell per ATT&CK-ish
+# Phase K Tier 1 — fixed intent-vector ordering (one cell per honeypot-native
 # intent enum value). Sorted for a stable column layout across runs.
 from ...llm.schemas import INTENTS as _INTENTS  # noqa: E402
 _TIER1_INTENT_ORDER = sorted(_INTENTS)
+# Diversity-block denominator = the intent enum cardinality, derived from
+# INTENTS so it can never drift from the enum (was a hardcoded 16.0; the
+# honeypot-native taxonomy is 11). Bounds unique-intents-per-IP to ~[0,1].
+_SCALAR_DENOM_UNIQUE_INTENTS = float(len(_INTENTS))
 
 
 def _active_days(first_seen: Optional[str], last_seen: Optional[str]) -> float:
@@ -887,9 +890,10 @@ def _build_tier1_block(scalars_list: list[dict], weight: float) -> "np.ndarray":
 
     Thickens the thin per-command-mean IP embedding so behaviour can carry the
     clustering load once provenance (country/ASN/HASSH) is dropped. Columns
-    (30 total), each pre-bounded to ~[0,1] then scaled by `weight`:
+    (`len(_INTENTS)` + 14; currently 25), each pre-bounded to ~[0,1] then scaled
+    by `weight`:
 
-      - intent distribution (16): share of the IP's sessions per
+      - intent distribution (one cell per intent label): share of the IP's sessions per
         `dominant_intent` enum value, L1-normalised. The highest-leverage
         addition — separates scanner / persistence-actor / cryptominer even
         when raw commands look alike. Sourced from the rollup's
@@ -909,7 +913,7 @@ def _build_tier1_block(scalars_list: list[dict], weight: float) -> "np.ndarray":
     import numpy as np
 
     n = len(scalars_list)
-    width = len(_TIER1_INTENT_ORDER) + 8 + 2 + 1 + 3  # 30
+    width = len(_TIER1_INTENT_ORDER) + 8 + 2 + 1 + 3  # = len(_INTENTS) + 14 (25)
     if n == 0:
         return np.zeros((0, width), dtype=np.float32)
     intent_idx = {name: i for i, name in enumerate(_TIER1_INTENT_ORDER)}

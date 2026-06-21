@@ -87,12 +87,12 @@ check("confidence_max carried (int)",  intel["confidence_max"] == 9)
 print("\n[3] _attach_source_ip_intel — does not clobber existing session block")
 doc = {"dshield": {"cowrie": {"enrichment": {"session": {
     "command_count": 5,
-    "dominant_intent": "execution",
+    "dominant_intent": "execute_payload",
 }}}}}
 _attach_source_ip_intel(doc, _summary(consensus_malicious=True))
 session = doc["dshield"]["cowrie"]["enrichment"]["session"]
 check("command_count preserved", session.get("command_count") == 5)
-check("dominant_intent preserved", session.get("dominant_intent") == "execution")
+check("dominant_intent preserved", session.get("dominant_intent") == "execute_payload")
 check("source_ip_intel added",   "source_ip_intel" in session)
 
 

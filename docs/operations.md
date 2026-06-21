@@ -14,10 +14,28 @@ field schemas, see [reference.md](reference.md); for how it works, see
 - [Smoke testing](#smoke-testing)
 - [Troubleshooting — is anything actually wrong](#troubleshooting--is-anything-actually-wrong)
 
-## Install
+## Install (WIP)
+
+Requires:
+- ElasticStack + Fleet
+   - Tested using SecurityOnion's managed ES. This is a very easy way to get a managed ES + Fleet.
+   - Recommended 16GB RAM and 4 CPU cores
+- Elastic Agent installed on whatever device you want to ingest DShield logs from
+- Local AI hosting to provide Nomic embedding and a small LLM. 8GB V/RAM tested/recommended to host the default Qwen3:8B
+- Server to host the Prism pipeline and Prism Console. ES, Prism, and Prism Console can all be hosted on separate servers.
+   - Tested running Prism on Ubuntu 24.04 LTS
+   - Recommended 2GB RAM and 2 CPU cores for a small deployment, up to 8GB RAM and 6 CPU cores for larger deployments with frequent backfilling
+
+```bash
+sudo bash setup/1-create-sensor-pipelines.sh
+```
 
 ```bash
 sudo bash setup/2-setup.sh
+```
+
+```bash
+sudo bash setup/3-bootstrap-reference-corpus.sh
 ```
 
 Idempotent. Requires `.env` + `config/local.yaml` filled in, and a reachable LLM
@@ -273,3 +291,12 @@ The full pre-commit CI surface (lint + smoke + eval gates) is in
 7. **`@timestamp` on enriched docs is event time, not write time** — don't use
    `now-1h` aggregations to confirm "did the pipeline just run." Check the
    SQLite cache `enriched_at` or run verbs with `--dry-run`.
+8. **`circuit_breaking_exception` / `429` ("Data too large") storms, usually a
+   step failing right after cluster assignment** → ES heap pressure on a
+   constrained node, not a pipeline bug. The pipeline now senses parent-breaker
+   pressure and pauses + retries (logs `"ES heap at N%, pausing…"`) for up to
+   `elasticsearch.backpressure.max_wait_s` (1 h default) before failing. If it
+   still can't keep up, the levers are: give the ES node more heap; lower
+   `elasticsearch.backpressure.heap_high_watermark` so it pauses earlier; or
+   reduce the heaviest aggregation's footprint via `session.specificity_store_cap`.
+   Set `elasticsearch.backpressure.enabled: false` to opt out entirely.

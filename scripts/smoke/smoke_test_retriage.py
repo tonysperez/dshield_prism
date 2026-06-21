@@ -165,7 +165,7 @@ def _build_cfg():
 def _doc(doc_id: str, cmd: str, confidence: int,
          triage_reasons: list[str] | None = None,
          embedding: list[float] | None = None,
-         intent: str = "execution") -> dict:
+         intent: str = "execute_payload") -> dict:
     src = {
         "process": {"command_line": cmd},
         "dshield": {"cowrie": {"enrichment": {

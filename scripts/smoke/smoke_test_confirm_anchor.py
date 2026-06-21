@@ -118,7 +118,7 @@ def _seed(es, index, doc_id, *, runs_observed=2, silent=0, anchors=None, source_
             "run_id": "run-current",
             "@timestamp": "2026-05-22T00:00:00+00:00",
             "session_count": 4, "ip_count": 2, "mean_novelty": 0.6,
-            "dominant_intent": "execution",
+            "dominant_intent": "execute_payload",
             "asn_top": "12345", "asn_distribution": {"12345": 2},
         }],
         "confirm_anchors": anchors or [],
@@ -206,7 +206,7 @@ check("1 anchor after confirm", len(anchors) == 1, f"got {len(anchors)}")
 check("source == analyst", anchors[0]["source"] == "analyst")
 check("confirming_finding_id carried", anchors[0]["confirming_finding_id"] == "find-pla-xxxxx")
 check("snapshot fields copied (session_count)", anchors[0]["session_count"] == 4)
-check("snapshot fields copied (dominant_intent)", anchors[0]["dominant_intent"] == "execution")
+check("snapshot fields copied (dominant_intent)", anchors[0]["dominant_intent"] == "execute_payload")
 
 
 # -----------------------------------------------------------------------------

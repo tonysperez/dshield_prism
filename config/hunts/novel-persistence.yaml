@@ -1,7 +1,7 @@
 id: novel-persistence
 name: "Persistence matching documented adversary tradecraft"
 description: |
-  Sessions classified as persistence-intent that ALSO embed-cluster
+  Sessions classified as installing persistence that ALSO embed-cluster
   closely to a documented adversary technique in the external
   reference corpus (Atomic Red Team) — cosine ≥ 0.5. This is the
   inverse of novelty: not "what's new?" but "what looks like a known
@@ -14,6 +14,6 @@ description: |
 filters:
   - kind: intent_in
     values:
-      - persistence
+      - install_persistence
   - kind: external_match_cosine_gte
     threshold: 0.5

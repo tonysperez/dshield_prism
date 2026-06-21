@@ -150,8 +150,8 @@ class _StubES:
                     for i, r in enumerate(agg["range"]["ranges"])
                 ]}}}
             return {"hits": {"hits": []}, "aggregations": {"f": {"buckets": [
-                {"key": "execution", "doc_count": 5},
-                {"key": "reconnaissance", "doc_count": 3},
+                {"key": "execute_payload", "doc_count": 5},
+                {"key": "host_recon", "doc_count": 3},
             ]}}}
         return {"hits": {"hits": []}, "aggregations": {}}
 
@@ -176,7 +176,7 @@ check("ip_band merged ip_count + member_ips per bucket",
 check("intel_verdict merged from two aggs",
       sorted(b["key"] for b in result["intel_verdict"]) == ["clean", "malicious"])
 check("intent populates terms agg",
-      sorted(b["key"] for b in result["intent"]) == ["execution", "reconnaissance"])
+      sorted(b["key"] for b in result["intent"]) == ["execute_payload", "host_recon"])
 
 
 # -----------------------------------------------------------------------------

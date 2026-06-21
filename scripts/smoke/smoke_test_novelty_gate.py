@@ -38,7 +38,7 @@ def _load_cloud_cfg() -> CloudConfig:
 def _enrichment(confidence: int) -> CommandEnrichment:
     """Build a minimally-valid CommandEnrichment with the given confidence."""
     return CommandEnrichment(
-        intent="reconnaissance",
+        intent="host_recon",
         confidence=confidence,
         description="synthetic test enrichment",
         iocs=IOCs(ips=[], domains=[], urls=[], hashes=[], files=[]),

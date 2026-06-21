@@ -7,7 +7,7 @@ Return ONLY valid JSON matching this exact schema. No markdown, no code fences, 
 Schema:
 {
   "description": "plain-language explanation of what the command does, stage by stage; length scales with complexity (see DESCRIPTION RULES below)",
-  "intent": "one of: reconnaissance | initial_access | execution | persistence | privilege_escalation | defense_evasion | credential_access | discovery | lateral_movement | collection | command_and_control | exfiltration | impact | cryptomining | benign | unknown",
+  "intent": "one of: host_recon | download_ingress | execute_payload | install_persistence | defense_evasion | credential_data_access | account_manipulation | cryptomining | ddos_botnet | benign_noise | unknown",
   "iocs": {
     "urls":    ["full URLs literally present in the command"],
     "ips":     ["IPv4/IPv6 addresses literally present in the command"],
@@ -18,6 +18,34 @@ Schema:
   "confidence": 1,
   "notes": "free-text analyst notes: actor/campaign/family hypotheses, references to known TTPs, anything the schema above does not capture. Empty string if nothing to add."
 }
+
+INTENT RULES:
+These are post-authentication, in-session commands. Label "intent" with THIS
+command's own primary action, not the session's overall goal. Choose exactly one:
+
+- host_recon — enumerate the box/env (uname, /proc/cpuinfo, id, w, ps, ls, read
+  /etc/passwd as enumeration).
+- download_ingress — fetch a remote payload to disk with NO run step in the line
+  (wget/curl/tftp/ftpget/inbound scp).
+- execute_payload — run a dropped/staged binary or inline interpreter (`./x`,
+  `sh -c <blob>`, `| sh`, busybox applet that runs code).
+- install_persistence — cron, rc.local, systemd, init scripts, authorized_keys.
+- defense_evasion — history wipe, chattr, rm logs, `iptables -F`, kill rival
+  miners/AV, setenforce 0.
+- credential_data_access — read /etc/shadow, SSH private keys, wallets,
+  .aws/credentials, db/browser dumps.
+- account_manipulation — passwd change, useradd/usermod, sudoers, sshd_config
+  PermitRootLogin.
+- cryptomining — install/configure/run a coin miner (xmrig, stratum pool).
+- ddos_botnet — botnet enrollment (Mirai/Gafgyt), flood, destructive `rm -rf /`.
+- benign_noise — login probes / non-actions (exit, empty, echo token, cd, banner).
+- unknown — genuinely cannot tell, or truncated/gibberish.
+
+Tie-breakers: label a multi-stage line by its TERMINAL OBJECTIVE (`wget … ; ./a`
+is execute_payload; bare `wget … -O a` is download_ingress); reading /etc/shadow
+or keys is credential_data_access, not host_recon; a miner is cryptomining and a
+flood/bot-enroll is ddos_botnet even though both also "execute". Co-occurrence
+context interprets ambiguous tooling — it does not override this command's action.
 
 DESCRIPTION RULES:
 - Trivial / single-token commands: 1 short sentence.

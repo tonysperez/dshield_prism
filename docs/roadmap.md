@@ -34,6 +34,17 @@ Remove an item from this file when it ships; add new open items as they surface.
   command remain unattributed.
 - **IP-layer IDF weighting** — revisit if boilerplate dilution shows up in the IP
   mean-pool.
+- **IP-layer clustering window / incremental re-cluster** — unlike sessions
+  (`--window-days`), the IP HDBSCAN fit re-clusters the whole embedded
+  (command-bearing) IP set every 6-hourly backward cycle, and it's O(n²) at
+  ~800-d (sklearn can't tree-partition, so brute force). Projection from the real
+  anchor: ~25 min at ~250K distinct IPs, paid 4×/day — the structural wall at
+  backlog scale. Needs an IP-layer window or incremental re-cluster escape valve.
+  Note: an `ip.cluster_svd_dim` (fit-only SVD like commands=128 / sessions=96;
+  the core `run_layer_clustering` already accepts `svd_dim`, the IP caller just
+  doesn't pass one) is a cheap ~6–8× constant-factor palliative but doesn't change
+  the O(n²) shape — the window/incremental path is the real fix. Measurements:
+  [`eval/results/B0-preflight-loadtest.md`](../eval/results/B0-preflight-loadtest.md) §B0.3.
 - **Behavior↔infrastructure campaign convergence** flag — when the two miners
   start overlapping, that overlap is itself signal (the Operation promotion is
   the first cut; a standing convergence finding is the follow-up).

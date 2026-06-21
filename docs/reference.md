@@ -89,13 +89,42 @@ Custom enrichment fields live under `dshield.<source>.enrichment.*`.
 | `process.command_line` | text+keyword | normalized command |
 | `process.hash.sha256` | keyword | full sha256 of normalized command |
 | `threat.indicator` | nested[] | `{type, ip, domain, url.full, file.name, file.hash.sha256}` |
-| `dshield.cowrie.enrichment.intent` | keyword | LLM enum |
+| `dshield.cowrie.enrichment.intent` | keyword | one of 11 honeypot-native action labels (see [Intent taxonomy](#intent-taxonomy)) |
 | `dshield.cowrie.enrichment.confidence` | byte | 1–10 |
 | `dshield.cowrie.enrichment.{llm,embed}_config_hash` | keyword | see [Cache](#cache-and-config-hashes) |
 | `dshield.cowrie.enrichment.embedding` | dense_vector(768) | |
 | `dshield.cowrie.enrichment.triage_reasons` | keyword[] | see [Triage rules](#triage-rules) |
 | `dshield.cowrie.enrichment.cluster.{id,novelty_score,is_outlier,scored_at}` | mixed | `id` is run-scoped |
 | `dshield.cowrie.enrichment.shape.{hash,role,functional_parent}` | keyword | shape-dedup: `role` ∈ `canonical`/`standalone`/`child`; child carries its canonical's `_id` |
+
+#### Intent taxonomy
+
+Single-label per command, chosen from a honeypot-native action set (not MITRE
+ATT&CK tactics — see [decisions.md](decisions.md)). Each label is decidable from
+one shell line; the per-label definitions, tie-breakers ("label by the terminal
+objective"), and few-shot examples live in `config/prompts/command_enrichment.txt`.
+The enum is the single source of truth in `enrich/llm/schemas.py` (`INTENTS`) and
+is advertised as a JSON-schema `enum` so a grammar-constrained local decoder can
+only emit valid values; off-enum strings coerce to `unknown`.
+
+| label | command signal |
+|---|---|
+| `host_recon` | enumerate box/env (uname, /proc/cpuinfo, id, w, ps, ls, read /etc/passwd) |
+| `download_ingress` | fetch a remote payload to disk, no run step (wget/curl/tftp) |
+| `execute_payload` | run a dropped/staged binary or inline interpreter (`./x`, `\| sh`, busybox) |
+| `install_persistence` | cron, rc.local, systemd, authorized_keys |
+| `defense_evasion` | history wipe, chattr, rm logs, `iptables -F`, kill rivals |
+| `credential_data_access` | read /etc/shadow, ssh keys, wallets, .aws/credentials |
+| `account_manipulation` | passwd change, useradd/usermod, sshd PermitRootLogin |
+| `cryptomining` | install/configure/run a coin miner (xmrig, stratum pool) |
+| `ddos_botnet` | botnet enroll (Mirai/Gafgyt), flood, destructive `rm -rf /` |
+| `benign_noise` | login probes / non-actions (exit, echo, cd, banners) |
+| `unknown` | can't tell / truncated / gibberish |
+
+Adding/removing a label changes the IP behaviour-matrix width (one intent column
+per label) and the diversity denominator — both derive from `INTENTS`, so they
+stay in sync automatically; a corpus re-enrich + IP re-cluster is required to
+repopulate.
 
 ### Session rollup (`prism.rollup.cowrie.session`)
 
@@ -277,6 +306,19 @@ the local LLM; `min_parent_confidence` (5); `require_known_intent` (true).
 `session.page_size` / `ip.page_size` (2000); `worker.cluster_n_jobs` (-1 = all
 cores, HDBSCAN nearest-neighbour phase). The IP rollup is one ES query per IP,
 so its worker count is the biggest lever.
+
+**ES backpressure** (`elasticsearch.backpressure.*`): heap/circuit-breaker-aware
+retry so a heap-constrained node degrades gracefully instead of hard-failing a
+step. `enabled` (true); `heap_high_watermark` (0.85) / `heap_resume_watermark`
+(0.70) — parent-breaker estimated/limit ratios to pause at / resume below;
+`poll_interval_s` (2.0); `max_wait_s` (3600) — shared wall-clock patience budget
+per operation (prefer waiting over failing); `retry_max_attempts` (200, a
+secondary ceiling); `retry_base_delay_s` (2.0) / `retry_max_delay_s` (30).
+Implemented as a transparent `ResilientClient` wrapper over the ES client (every
+read + write inherits it, plus `helpers.bulk`/`scan`) in
+[`es_health.py`](../src/enrich/es_health.py); the pipeline also gates between
+steps so a heap-spiking step (e.g. cluster-assignment) lets the node drain before
+the next one piles on.
 
 ## Triage rules
 
