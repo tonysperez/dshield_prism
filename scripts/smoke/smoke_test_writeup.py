@@ -46,7 +46,7 @@ print("[1] extract prompt template loads + every placeholder substituted")
 tmpl = load_extract_template()
 for placeholder in [
     "<<<ANCHOR_KIND>>>", "<<<ANCHOR_NAME>>>", "<<<ANCHOR_EVIDENCE>>>",
-    "<<<ANCHOR_WINDOW>>>", "<<<SCOPE_SUMMARY>>>", "<<<MITRE_CHAIN>>>",
+    "<<<ANCHOR_WINDOW>>>", "<<<SCOPE_SUMMARY>>>",
     "<<<INTEL_SUMMARY>>>", "<<<EVIDENCE_QUALITY>>>",
 ]:
     check(f"extract placeholder {placeholder} present", placeholder in tmpl)
@@ -69,11 +69,6 @@ scope = {
     "hashes":   [{"sha256": "abc123def456789", "filename": "loader.sh"}],
     "playbooks": [{"name": "SSH Key Installer: chattr Lock"}],
     "campaigns": [{"name": "Defense-in-depth persistence"}],
-    "mitre": [
-        {"tactic_id": "TA0003", "tactic_name": "Persistence",
-         "technique_id": "T1098.004", "technique_name": "SSH Authorized Keys",
-         "command_count": 38},
-    ],
     "intel": {"ip": {"malicious": 3, "clean": 1, "unknown": 15}},
     "analyst_artifacts": [{"kind": "tag", "value": "chattr_lock_marker", "notes": "the chattr +i call defines this"}],
     "lifecycle_notes": [{"anchor_label": "spb-xxx", "text": "first observed 2026-04-29"}],
@@ -81,7 +76,7 @@ scope = {
 }
 extract_rendered = build_extract_prompt(anchor, scope, "Strong · 47 sess / 19 IPs · 12d", nonce="deadbeef")
 for marker in ["playbook", "SSH Key Installer: chattr Lock", "12d",
-               "Strong · 47 sess / 19 IPs · 12d", "TA0003", "T1098.004",
+               "Strong · 47 sess / 19 IPs · 12d",
                "1.2.3.4", "abc123def456"]:
     check(f"extract rendered carries {marker!r}", marker in extract_rendered)
 check("no extract placeholders left", "<<<" not in extract_rendered)
@@ -164,21 +159,22 @@ check("invalid confidence_band defaults to moderate",
 
 # ---------------------------------------------------------------------------
 print("[5] verify pass strips identifiers not in source")
+# MITRE IDs are no longer part of the writeup source, so any MITRE value
+# in key_identifiers is unverifiable and gets dropped alongside the
+# fabricated hash.
 brief_with_hallucination = {
     "key_identifiers": [
         {"label": "real hash",    "value": "abc123def456"},    # in extract_rendered
         {"label": "hallucinated", "value": "FFFF0000DEADBEEFCAFEBABE"},  # not in source
-        {"label": "MITRE in src", "value": "T1098.004"},     # in extract_rendered
-        {"label": "fake MITRE",   "value": "T9999.999"},     # not in source
+        {"label": "MITRE",        "value": "T1098.004"},     # MITRE no longer in source
     ],
 }
 cleaned, dropped = verify_brief_against_source(brief_with_hallucination, extract_rendered)
 check("verify kept legitimate identifiers",
-      len(cleaned["key_identifiers"]) == 2 and
-      cleaned["key_identifiers"][0]["value"] == "abc123def456" and
-      cleaned["key_identifiers"][1]["value"] == "T1098.004")
+      len(cleaned["key_identifiers"]) == 1 and
+      cleaned["key_identifiers"][0]["value"] == "abc123def456")
 check("verify dropped hallucinated identifiers",
-      set(dropped) == {"FFFF0000DEADBEEFCAFEBABE", "T9999.999"})
+      set(dropped) == {"FFFF0000DEADBEEFCAFEBABE", "T1098.004"})
 
 # ---------------------------------------------------------------------------
 print("[6] narrate prompt template + substitution")
@@ -186,7 +182,7 @@ nrt = load_narrate_template()
 check("narrate placeholder <<<BRIEF_JSON>>> present", "<<<BRIEF_JSON>>>" in nrt)
 narrate_rendered = build_narrate_prompt(cleaned)
 check("brief JSON substituted into narrate prompt",
-      "abc123def456" in narrate_rendered and "T1098.004" in narrate_rendered)
+      "abc123def456" in narrate_rendered)
 check("no narrate placeholders left", "<<<" not in narrate_rendered)
 
 # ---------------------------------------------------------------------------
@@ -194,31 +190,31 @@ print("[7] cite-check passes verified citations through")
 verified_brief = {
     "key_identifiers": [
         {"label": "shared RSA key", "value": "abc123def456"},
-        {"label": "MITRE",          "value": "T1098.004"},
     ],
 }
 prose_clean = (
     "Over the past 12 days the same RSA key (sha256:abc123def456) appeared across 19 IPs. "
-    "T1098.004 was the dominant technique. No hallucinated identifiers here."
+    "No hallucinated identifiers here."
 )
 cleaned_prose, redactions = cite_check_prose(prose_clean, verified_brief, extract_rendered)
-check("verified citations preserved", "abc123def456" in cleaned_prose and "T1098.004" in cleaned_prose)
+check("verified citations preserved", "abc123def456" in cleaned_prose)
 check("no redactions emitted", redactions == [])
 check("prose unchanged when clean", cleaned_prose == prose_clean.strip())
 
 # ---------------------------------------------------------------------------
 print("[8] cite-check strips unverified citations")
+# MITRE IDs are never legitimate now (the pipeline doesn't derive them),
+# so any MITRE ID in prose — real-looking or fabricated — is stripped
+# because it can't be in key_identifiers.
 prose_dirty = (
     "Over the past 12 days the same RSA key (sha256:abc123def456) appeared across 19 IPs. "
     "A fake hash sha256:deadbeefcafebabefffff0001234 was also dropped. "
-    "T1098.004 was the dominant technique. "
     "T9999.999 was the hallucinated technique. "
     "The dropper came from http://hallucinated.example.com/x.sh and AS999999 hosted it."
 )
 cleaned_prose, redactions = cite_check_prose(prose_dirty, verified_brief, extract_rendered)
 # Verified citations and their surrounding sentence text survive.
 check("verified hash survives",          "abc123def456" in cleaned_prose)
-check("verified MITRE survives",         "T1098.004" in cleaned_prose)
 # Sentence text around the unverified citation must be gone (the
 # identifier itself may appear inside the footnote we leave behind —
 # that's deliberate, the analyst needs to see what was stripped).

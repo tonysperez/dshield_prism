@@ -4,7 +4,7 @@ Browser-based, read-only investigation console for the enriched DShield/Cowrie
 indices produced by the `enrich` pipeline in the parent repository.
 
 Search any IOC — IP, session id, command sha256, raw command text, campaign
-name, cluster id, MITRE id, ASN, country code — and see it plus its first-
+name, cluster id, ASN, country code — and see it plus its first-
 degree neighborhood as an interactive node-link graph. Click a node to fill the
 detail panel. Double-click to expand its neighbors into the existing graph
 without losing position. Click links inside the detail panel to pivot to that
@@ -55,7 +55,6 @@ The single search box accepts any of:
 | 64 hex chars | command (by sha256) |
 | 12 lowercase alnum | session id |
 | integer (e.g. `42`) | cluster id (you pick command / session / ip from suggestions) |
-| `T1059.003` / `TA0002` | MITRE technique / tactic |
 | `AS12345` | ASN |
 | 2-letter ISO country code | country |
 | anything else | free-text — searches `process.command_line`, `playbook_name`, and the multi-session campaigns index |
@@ -94,8 +93,8 @@ POST /api/ask                      # natural-language Q&A backed by the parent p
 ```
 
 Where `type` ∈ `ip session command command_hash playbook campaign
-command_cluster session_cluster ip_cluster asn country mitre_technique
-mitre_tactic`. `playbook` is the LLM-named session cluster (anchored by
+command_cluster session_cluster ip_cluster asn country`. `playbook` is
+the LLM-named session cluster (anchored by
 `playbook_id` = `sescl-<16hex>`, content-hashed over the member-session-id set); `campaign` is the multi-session
 pattern mined by `mine campaigns` (anchored by `campaign_id` =
 `cmp-bhv-…` / `cmp-inf-…`).

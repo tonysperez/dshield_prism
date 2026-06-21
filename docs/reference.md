@@ -36,7 +36,7 @@ for how to run it see [operations.md](operations.md).
 | IP / URL / hash intel | `prism.intel.{ip,url,hash}` |
 | Findings | `prism.finding` |
 | Playbook / campaign / source-IP lifecycle | `lifecycle-dshield.cowrie.{playbook,campaign,source_ip}-default` |
-| Metrics snapshots (threshold distributions, TTP rates) | `prism.metrics` |
+| Metrics snapshots (threshold distributions) | `prism.metrics` |
 | Run telemetry | `prism.ops` |
 
 Cluster indexes carry three `doc_type`s: `cluster` (per-run centroid),
@@ -88,7 +88,6 @@ Custom enrichment fields live under `dshield.<source>.enrichment.*`.
 | `event.reason` | text | LLM description |
 | `process.command_line` | text+keyword | normalized command |
 | `process.hash.sha256` | keyword | full sha256 of normalized command |
-| `threat.tactic.id` / `threat.technique.id` | keyword[] | validated against vendored ATT&CK STIX |
 | `threat.indicator` | nested[] | `{type, ip, domain, url.full, file.name, file.hash.sha256}` |
 | `dshield.cowrie.enrichment.intent` | keyword | LLM enum |
 | `dshield.cowrie.enrichment.confidence` | byte | 1–10 |
@@ -192,7 +191,7 @@ history, but the per-command cache means the cost is ES I/O, not LLM spend. See
 | Output dim | 768 native |
 
 Trained on general English, not code/shell. Functional grouping of textually
-unrelated commands is achieved by prepending intent + tactics + description
+unrelated commands is achieved by prepending intent + description
 (`llm.embed_context`) before embedding, not by a shell-tuned model. The full
 model string (incl. the `@q8_0` quant) is part of `embed_config_hash`, so
 swapping quants/checkpoints/models triggers `reembed` on the next backward
@@ -271,7 +270,7 @@ embed-text append is off. `llm.embed_context` (fields prepended to embed text);
 `daily_budget`, `refresh_minutes`.
 
 **Shape dedup:** `command_shape_dedup.enabled` (true) — same-shape commands
-inherit intent/description/tactics from a canonical sibling instead of running
+inherit intent/description from a canonical sibling instead of running
 the local LLM; `min_parent_confidence` (5); `require_known_intent` (true).
 
 **Throughput at scale:** `session.rollup_workers` / `ip.rollup_workers` (5);
@@ -424,7 +423,7 @@ escalated to the cloud LLM and never queried against CTI feeds.** Central logic:
 Read-only FastAPI + vanilla-JS app; never writes to ES. Nav:
 **Inbox · Graph · Browse · History · Hunts · Rules · Curation · Health**
 (`/findings`, `/insights`, `/compare` are 302 redirects to `/inbox`, `/browse`,
-`/graph`). The graph swim-lane is IP → Session → Command → File → MITRE; inline
+`/graph`). The graph swim-lane is IP → Session → Command → File; inline
 compare renders a verdict card for a peer cluster/playbook/campaign; the Report
 tool gathers in-view artifacts into a copy-ready writeup (IOCs defanged by
 default). Search, install, page list, API endpoints, and the deliberately-

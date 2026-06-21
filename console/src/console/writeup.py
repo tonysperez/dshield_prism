@@ -81,10 +81,10 @@ def _format_scope_summary(scope: dict, nonce: str) -> str:
     """Render the in-view artifact aggregates as the SCOPE_SUMMARY block.
 
     Carries every category the Report modal collates: IPs (with country
-    + ASN + HASSH + intel verdict), commands (text + intent + MITRE),
-    sessions, credentials, URLs, file hashes (with filename + dropping
-    command), analyst artifacts, lifecycle notes, HASSH aggregate, and
-    session sequences.
+    + ASN + HASSH + intel verdict), commands (text + intent), sessions,
+    credentials, URLs, file hashes (with filename + dropping command),
+    analyst artifacts, lifecycle notes, HASSH aggregate, and session
+    sequences.
 
     Attacker-controlled fields (command lines, URLs, filenames, session
     ids, credentials) get nonce-fenced. Counts and analyst-trusted
@@ -278,37 +278,6 @@ def _format_scope_summary(scope: dict, nonce: str) -> str:
     return "\n".join(lines) if lines else "(no in-view scope provided)"
 
 
-def _format_mitre_chain(mitre: list) -> str:
-    if not mitre:
-        return "(no MITRE techniques identified across in-view commands)"
-    # Accept either the agg-rows shape [{tactic_id, technique_id, command_count}, ...]
-    # or the raw aggregate row [id, type, count] from buildMitreAggregate.
-    by_kind: dict[str, list[tuple[str, int]]] = {"tactic": [], "technique": []}
-    for e in mitre:
-        if isinstance(e, dict):
-            tid = e.get("tactic_id") or ""
-            tech = e.get("technique_id") or ""
-            cnt = int(e.get("command_count") or 0)
-            # An entry may carry both — record each in its own bucket so
-            # neither dimension is silently dropped.
-            if tech:
-                by_kind["technique"].append((tech, cnt))
-            if tid:
-                by_kind["tactic"].append((tid, cnt))
-        elif isinstance(e, (list, tuple)) and len(e) >= 3:
-            ident, kind, cnt = e[0], e[1], int(e[2] or 0)
-            if kind in by_kind:
-                by_kind[kind].append((str(ident), cnt))
-    lines = []
-    if by_kind["tactic"]:
-        top = sorted(by_kind["tactic"], key=lambda kv: -kv[1])
-        lines.append("  tactics: " + ", ".join(f"{k}({v})" for k, v in top))
-    if by_kind["technique"]:
-        top = sorted(by_kind["technique"], key=lambda kv: -kv[1])
-        lines.append("  techniques: " + ", ".join(f"{k}({v})" for k, v in top))
-    return "\n".join(lines) if lines else "(no MITRE techniques identified across in-view commands)"
-
-
 def _format_intel_summary(intel: dict) -> str:
     if not intel:
         return "(no intel verdicts provided)"
@@ -332,7 +301,6 @@ def build_extract_prompt(
         "<<<ANCHOR_EVIDENCE>>>":  _safe_str(anchor.get("evidence"), 400),
         "<<<ANCHOR_WINDOW>>>":    _safe_str(anchor.get("window"), 100),
         "<<<SCOPE_SUMMARY>>>":    _format_scope_summary(scope, nonce),
-        "<<<MITRE_CHAIN>>>":      _format_mitre_chain(scope.get("mitre") or []),
         "<<<INTEL_SUMMARY>>>":    _format_intel_summary(scope.get("intel") or {}),
         "<<<EVIDENCE_QUALITY>>>": _safe_str(evidence_quality, 200) or "(no verdict)",
     }
@@ -556,9 +524,11 @@ _CITE_PATTERNS = (
     # URL — capture host portion so we can match it against the brief's
     # values even when the brief carries just the hostname.
     ("url",             re.compile(r"\bhttps?://([^\s<>\"',)]+)", re.IGNORECASE)),
-    # MITRE techniques (T1234 / T1234.005)
+    # MITRE technique / tactic IDs. The pipeline no longer derives MITRE
+    # IDs, so they're never in the brief's key_identifiers — meaning any
+    # MITRE ID that surfaces in the prose is an LLM hallucination and the
+    # cite-check strips the sentence citing it.
     ("mitre_technique", re.compile(r"\b(T\d{4}(?:\.\d{3})?)\b")),
-    # MITRE tactics (TA0001 …)
     ("mitre_tactic",    re.compile(r"\b(TA\d{4})\b")),
     # ASN — capture digits only
     ("asn",             re.compile(r"\bAS(\d{1,7})\b")),

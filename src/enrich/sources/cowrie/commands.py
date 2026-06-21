@@ -44,7 +44,7 @@ log = logging.getLogger(__name__)
 # ONCE per run per failure-type (the operator signal), count the rest, and log
 # them at `debug`. Each verb runs as its own process, so these module-level
 # counters are naturally per-run; `flush_degraded_fallbacks` surfaces the totals
-# once at the end of the dominant `enrich` path (mirrors the MITRE-drop aggregate).
+# once at the end of the dominant `enrich` path.
 _DEGRADED_FALLBACKS: dict[str, int] = defaultdict(int)
 _DEGRADED_WARNED: set[str] = set()
 
@@ -90,7 +90,7 @@ _REEMBED_SCRIPT = (
 )
 
 # Painless: re-enrich stale rows. Overwrites the LLM-derived fields
-# (intent/tactics/techniques/description/confidence/embedding/iocs/model)
+# (intent/description/confidence/embedding/iocs/model)
 # and the two auto-hashes; leaves event-derived fields (occurrence_count,
 # unique_sessions, etc.) and the cluster.* block untouched. ROADMAP #7.5.
 _REENRICH_SCRIPT = (
@@ -109,10 +109,6 @@ _REENRICH_SCRIPT = (
     "en.embedding = params.embedding;"
     "en.analyst_artifacts = params.analyst_artifacts;"
     "if (ctx._source.threat == null) { ctx._source.threat = [:]; }"
-    "if (ctx._source.threat.tactic == null) { ctx._source.threat.tactic = [:]; }"
-    "if (ctx._source.threat.technique == null) { ctx._source.threat.technique = [:]; }"
-    "ctx._source.threat.tactic.id = params.tactics;"
-    "ctx._source.threat.technique.id = params.techniques;"
     "ctx._source.threat.indicator = params.indicators;"
 )
 
@@ -134,10 +130,6 @@ _ESCALATE_SCRIPT = (
     "en.local_fallback = params.local_fallback;"
     "en.analyst_artifacts = params.analyst_artifacts;"
     "if (ctx._source.threat == null) { ctx._source.threat = [:]; }"
-    "if (ctx._source.threat.tactic == null) { ctx._source.threat.tactic = [:]; }"
-    "if (ctx._source.threat.technique == null) { ctx._source.threat.technique = [:]; }"
-    "ctx._source.threat.tactic.id = params.tactics;"
-    "ctx._source.threat.technique.id = params.techniques;"
     "ctx._source.threat.indicator = params.indicators;"
 )
 
@@ -213,10 +205,6 @@ _REENRICH_INHERIT_SCRIPT = (
     "en.shape.inherited_from_model = params.inherited_from_model;"
     "en.shape.confidence_at_link = params.confidence_at_link;"
     "if (ctx._source.threat == null) { ctx._source.threat = [:]; }"
-    "if (ctx._source.threat.tactic == null) { ctx._source.threat.tactic = [:]; }"
-    "if (ctx._source.threat.technique == null) { ctx._source.threat.technique = [:]; }"
-    "ctx._source.threat.tactic.id = params.tactics;"
-    "ctx._source.threat.technique.id = params.techniques;"
     "ctx._source.threat.indicator = params.indicators;"
 )
 
@@ -420,8 +408,6 @@ def _build_ecs_doc(
     embed_config_hash: str,
     intent: str,
     confidence: int,
-    tactics: list[str],
-    techniques: list[str],
     indicators: list[dict],
     embedding: list[float],
     triage_reasons: Optional[list[str]] = None,
@@ -480,9 +466,6 @@ def _build_ecs_doc(
             "vendor": "Cowrie",
         },
         "threat": {
-            "framework": "MITRE ATT&CK",
-            "tactic": {"id": tactics} if tactics else {},
-            "technique": {"id": techniques} if techniques else {},
             "indicator": indicators,
         },
         "dshield": _with_classification(
@@ -737,10 +720,6 @@ def _build_embed_text(
     if context_fields and parsed is not None:
         if "intent" in context_fields and parsed.intent:
             parts.append(f"intent: {parsed.intent}.")
-        if "tactics" in context_fields and parsed.tactics:
-            parts.append(f"tactics: {', '.join(parsed.tactics)}.")
-        if "techniques" in context_fields and parsed.techniques:
-            parts.append(f"techniques: {', '.join(parsed.techniques)}.")
         if "description" in context_fields and parsed.description:
             parts.append(parsed.description)
 
@@ -771,15 +750,12 @@ def _build_embed_text(
 
 def _build_local_fallback(parsed: Optional[CommandEnrichment], model: str) -> Optional[dict]:
     if parsed is None:
-        return {"model": model, "intent": "unknown", "confidence": 1, "description": "",
-                "tactics": [], "techniques": []}
+        return {"model": model, "intent": "unknown", "confidence": 1, "description": ""}
     return {
         "model": model,
         "intent": parsed.intent,
         "confidence": parsed.confidence,
         "description": parsed.description,
-        "tactics": parsed.tactics,
-        "techniques": parsed.techniques,
     }
 
 
@@ -824,8 +800,8 @@ def lookup_canonical_for_shape(
     Returns a compact dict of inheritable fields, or None when no parent
     qualifies. Used by the functional-duplicate gate (ROADMAP #9):
     callers skip the LLM generation step and inherit `intent`,
-    `description`, `tactics`, `techniques`, `confidence`, `model`, and
-    `notes` from the returned dict.
+    `description`, `confidence`, `model`, and `notes` from the returned
+    dict.
 
     Selection rules:
       - `shape.hash` must equal `shape_hash`.
@@ -854,8 +830,6 @@ def lookup_canonical_for_shape(
             "dshield.cowrie.enrichment.embed_config_hash",
             "dshield.cowrie.enrichment.occurrence_count",
             "dshield.cowrie.enrichment.shape",
-            "threat.tactic",
-            "threat.technique",
         ],
         "query": {
             "bool": {
@@ -884,16 +858,11 @@ def lookup_canonical_for_shape(
     h0 = hits[0]
     src = h0["_source"]
     enr = (src.get("dshield") or {}).get("cowrie", {}).get("enrichment") or {}
-    threat = src.get("threat") or {}
-    tactic = threat.get("tactic") or {}
-    technique = threat.get("technique") or {}
     return {
         "_id": h0["_id"],
         "intent": enr.get("intent") or "unknown",
         "confidence": int(enr.get("confidence") or 0),
         "description": (src.get("event") or {}).get("reason") or "",
-        "tactics": tactic.get("id") or [],
-        "techniques": technique.get("id") or [],
         "model": enr.get("model") or "",
         "notes": enr.get("notes") or "",
         "llm_config_hash": enr.get("llm_config_hash") or "",
@@ -914,8 +883,6 @@ def _synth_parsed_from_parent(parent: dict) -> CommandEnrichment:
     return CommandEnrichment(
         description=parent.get("description", "") or "",
         intent=parent.get("intent", "unknown") or "unknown",
-        tactics=list(parent.get("tactics") or []),
-        techniques=list(parent.get("techniques") or []),
         confidence=int(parent.get("confidence") or 1),
     )
 
@@ -1122,11 +1089,6 @@ def run_enrich(
     groups: dict[str, dict] = {}
     last_ts = since
 
-    # Reset the MITRE-validation drop counter so the value reported at the end
-    # of this run reflects only this run's hallucinations.
-    from enrich.llm.schemas import reset_mitre_drop_counts
-    reset_mitre_drop_counts()
-
     event_iter = (
         iter_reference_command_events(es, events_idx, cfg.worker.page_size)
         if reference_mode
@@ -1282,8 +1244,8 @@ def run_enrich(
             # If this command's shape signature matches an already-enriched
             # canonical (either from ES corpus or from a just-built
             # in-batch parent), skip the LLM generation entirely and
-            # inherit intent / description / tactics / techniques. The
-            # per-command-unique parts (regex IOCs, embedding) still run.
+            # inherit intent / description. The per-command-unique parts
+            # (regex IOCs, embedding) still run.
             sh = g.get("shape_hash") or ""
             inherit_parent: Optional[dict] = None
             if sh and dedup_cfg.enabled:
@@ -1359,8 +1321,6 @@ def run_enrich(
                     embed_config_hash=embed_config_hash,
                     intent=parent_parsed.intent,
                     confidence=parent_parsed.confidence,
-                    tactics=parent_parsed.tactics,
-                    techniques=parent_parsed.techniques,
                     indicators=indicators,
                     embedding=embedding,
                     shape=shape_block,
@@ -1415,15 +1375,12 @@ def run_enrich(
                 description = parsed.description
                 intent = parsed.intent
                 confidence = parsed.confidence
-                tactics = parsed.tactics
-                techniques = parsed.techniques
                 indicators = _build_indicators(parsed.iocs.model_dump())
                 stats["enriched_ok"] += 1
             else:
                 description = ""
                 intent = "unknown"
                 confidence = 1
-                tactics, techniques = [], []
                 indicators = []
                 stats["enriched_failed"] += 1
 
@@ -1502,8 +1459,6 @@ def run_enrich(
                             description = cloud_parsed.description
                             intent = cloud_parsed.intent
                             confidence = cloud_parsed.confidence
-                            tactics = cloud_parsed.tactics
-                            techniques = cloud_parsed.techniques
                             indicators = _build_indicators(cloud_parsed.iocs.model_dump())
                             notes = cloud_parsed.notes
                             doc_provider = "claude"
@@ -1566,8 +1521,6 @@ def run_enrich(
                 embed_config_hash=embed_config_hash,
                 intent=intent,
                 confidence=confidence,
-                tactics=tactics,
-                techniques=techniques,
                 indicators=indicators,
                 embedding=embedding,
                 triage_reasons=triage_reasons,
@@ -1597,8 +1550,6 @@ def run_enrich(
                     "intent": intent,
                     "confidence": int(confidence),
                     "description": description,
-                    "tactics": list(tactics or []),
-                    "techniques": list(techniques or []),
                     "model": doc_model,
                     "notes": notes,
                     "llm_config_hash": llm_config_hash,
@@ -1640,16 +1591,6 @@ def run_enrich(
     out = dict(stats, unique_commands=len(groups))
     if "cloud_cost_usd_x10000" in out:
         out["cloud_cost_usd"] = out.pop("cloud_cost_usd_x10000") / 10000.0
-    # Surface MITRE ID hallucination rate from this run.
-    from enrich.llm.schemas import mitre_drop_counts
-    mitre_drops = mitre_drop_counts()
-    if mitre_drops["tactics"] or mitre_drops["techniques"]:
-        log.info(
-            "MITRE ATT&CK invalid IDs dropped this run: tactics=%d techniques=%d",
-            mitre_drops["tactics"], mitre_drops["techniques"],
-        )
-    out["mitre_invalid_tactics"] = mitre_drops["tactics"]
-    out["mitre_invalid_techniques"] = mitre_drops["techniques"]
     # P4.1 — surface the per-item degradation counts once (the per-item warnings
     # were capped to one-per-run + debug above), so a degraded ES is visible at
     # its true scale without flooding the journal.
@@ -1693,8 +1634,6 @@ def iter_novel_local_docs(
             "dshield.cowrie.enrichment.intent",
             "dshield.cowrie.enrichment.confidence",
             "dshield.cowrie.enrichment.model",
-            "threat.tactic.id",
-            "threat.technique.id",
         ],
         "query": {
             "bool": {
@@ -1826,8 +1765,6 @@ def run_escalate(
             "intent": en.get("intent", "unknown"),
             "confidence": en.get("confidence", 1),
             "description": (src.get("event") or {}).get("reason", ""),
-            "tactics": ((src.get("threat") or {}).get("tactic") or {}).get("id") or [],
-            "techniques": ((src.get("threat") or {}).get("technique") or {}).get("id") or [],
         }
 
         triage_reasons = ["novel_embedding"]
@@ -1877,8 +1814,6 @@ def run_escalate(
                     "triage_reasons": triage_reasons,
                     "notes": cloud_parsed.notes,
                     "local_fallback": local_fallback,
-                    "tactics": cloud_parsed.tactics,
-                    "techniques": cloud_parsed.techniques,
                     "indicators": _build_indicators(cloud_parsed.iocs.model_dump()),
                     "analyst_artifacts": analyst_artifacts,
                 },
@@ -1937,8 +1872,6 @@ def iter_docs_for_reembed(
             "process.command_line",
             "event.reason",
             "dshield.cowrie.enrichment.intent",
-            "threat.tactic.id",
-            "threat.technique.id",
         ],
         "query": {"exists": {"field": "dshield.cowrie.enrichment.embedding"}},
         "sort": [{"@timestamp": "asc"}, {"_doc": "asc"}],
@@ -1958,8 +1891,6 @@ def iter_docs_for_reembed(
                 "doc_id": h["_id"],
                 "command": (src.get("process") or {}).get("command_line", ""),
                 "intent": en.get("intent", ""),
-                "tactics": ((src.get("threat") or {}).get("tactic") or {}).get("id") or [],
-                "techniques": ((src.get("threat") or {}).get("technique") or {}).get("id") or [],
                 "description": (src.get("event") or {}).get("reason", ""),
             }
         search_after = hits[-1]["sort"]
@@ -2027,8 +1958,6 @@ def run_reembed(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) -> dict
 
             parsed_stub = SimpleNamespace(
                 intent=doc["intent"],
-                tactics=doc["tactics"],
-                techniques=doc["techniques"],
                 description=doc["description"],
             )
             cooccurring: list[tuple[str, int]] = []
@@ -2446,8 +2375,6 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
                             "llm_config_hash": live_llm_hash,
                             "embed_config_hash": live_embed_hash,
                             "embedding": embedding,
-                            "tactics": parent_parsed.tactics,
-                            "techniques": parent_parsed.techniques,
                             "indicators": indicators,
                             "analyst_artifacts": analyst_artifacts,
                             "shape_hash": sh,
@@ -2527,8 +2454,6 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
                         "llm_config_hash": live_llm_hash,
                         "embed_config_hash": live_embed_hash,
                         "embedding": embedding,
-                        "tactics": parsed.tactics,
-                        "techniques": parsed.techniques,
                         "indicators": indicators,
                         "analyst_artifacts": analyst_artifacts,
                     },
@@ -2556,8 +2481,6 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
                     "intent": parsed.intent,
                     "confidence": int(parsed.confidence),
                     "description": parsed.description,
-                    "tactics": list(parsed.tactics or []),
-                    "techniques": list(parsed.techniques or []),
                     "model": model,
                     "llm_config_hash": live_llm_hash,
                     "embed_config_hash": live_embed_hash,
@@ -2689,8 +2612,6 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
                         "llm_config_hash": parent_hash,
                         "embed_config_hash": live_embed_hash,
                         "embedding": embedding,
-                        "tactics": parent_parsed.tactics,
-                        "techniques": parent_parsed.techniques,
                         "indicators": indicators,
                         "analyst_artifacts": analyst_artifacts,
                         "shape_hash": sh,
@@ -2924,9 +2845,6 @@ def run_retriage(
             intent=en.get("intent") or "unknown",
             confidence=int(confidence),
             description="",
-            tactics=[],
-            techniques=[],
-            notes="",
             iocs=IOCs(ips=[], domains=[], urls=[], hashes=[], files=[]),
         )
 

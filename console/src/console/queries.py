@@ -708,9 +708,6 @@ def commands_for_session(
         if row.get("sha256") and row["sha256"] in enrichment:
             full = enrichment[row["sha256"]]
             row["enrichment"] = full.get("dshield", {}).get("cowrie", {}).get("enrichment")
-            # graph.py wants threat info too (for MITRE badges); pass the
-            # narrow slice rather than the whole doc to stay lean.
-            row["threat"] = full.get("threat")
     return {"rows": rows[:size], "total": raw["hits"]["total"]["value"]}
 
 
@@ -1159,18 +1156,6 @@ def ips_for_country(es: Elasticsearch, cfg: AppConfig, cc: str, *, size: int = 5
     )
 
 
-def commands_for_mitre(
-    es: Elasticsearch, cfg: AppConfig, mitre_id: str, *, kind: str = "technique", size: int = 50,
-) -> dict:
-    idx = cfg.elasticsearch.indexes.cowrie.commands
-    field = "threat.technique.id" if kind == "technique" else "threat.tactic.id"
-    return es.search(
-        index=idx, size=size, _source=_src(),
-        query={"term": {field: mitre_id}},
-        sort=[{"dshield.cowrie.enrichment.occurrence_count": {"order": "desc", "missing": "_last"}}],
-    )
-
-
 # ----------------------------------------------------------------------------
 # Free-text search (fallback when query isn't a typed pattern)
 # ----------------------------------------------------------------------------
@@ -1454,47 +1439,6 @@ def health_freshness(es: Elasticsearch, cfg: AppConfig) -> list[dict]:
     for name, idx in intel.items():
         _probe(f"intel_{name}", idx)
     return rows
-
-
-def health_ttp_rates(es: Elasticsearch, cfg: AppConfig) -> dict:
-    """Latest top-N MITRE-technique application rates from prism.metrics
-    (brutal-review phase 2.3). Returns
-    ``{generated_at, n, rows: [{id, count, rate, warning}]}`` where
-    `warning=True` for any technique applied to >=5% of LLM-enriched
-    commands in the run — likely over-applied. Empty rows when the
-    metrics index doesn't yet have a TTP snapshot."""
-    metrics_idx = cfg.metrics.indexes.default
-    try:
-        resp = es.search(
-            index=metrics_idx, size=1,
-            query={"term": {"kind": "mitre_technique_top_n"}},
-            sort=[{"generated_at": {"order": "desc"}}],
-        )
-    except Exception:
-        return {"generated_at": None, "n": None, "rows": []}
-    hits = resp.get("hits", {}).get("hits") or []
-    if not hits:
-        return {"generated_at": None, "n": None, "rows": []}
-    src = hits[0]["_source"]
-    items = src.get("items") or []
-    rows = []
-    for it in items:
-        rate = float(it.get("rate") or 0.0)
-        rows.append({
-            "id":      it.get("id"),
-            "count":   it.get("count"),
-            "rate":    rate,
-            # 5% over-application threshold per brutal-review phase 2.3.
-            # A technique applied to >=5% of commands is almost always
-            # over-applied (real attack-technique distributions are
-            # long-tail; a flat 5%+ rate on any one TTP is a smell).
-            "warning": rate >= 0.05,
-        })
-    return {
-        "generated_at": src.get("generated_at"),
-        "n":            src.get("n"),
-        "rows":         rows,
-    }
 
 
 def health_runs(es: Elasticsearch, cfg: AppConfig) -> list[dict]:
@@ -2026,7 +1970,6 @@ def insights_summary(
                 "dshield.cowrie.enrichment.unique_sessions",
                 "dshield.cowrie.enrichment.unique_source_ips",
                 "dshield.cowrie.enrichment.occurrence_count",
-                "threat.tactic", "threat.technique",
             ],
             query={"bool": {"filter": [
                 {"range": {"dshield.cowrie.enrichment.unique_sessions": {"gte": 3}}},
@@ -2050,10 +1993,6 @@ def insights_summary(
             score = novelty * _math.log(sess + 1)
             sha = ((s.get("process") or {}).get("hash") or {}).get("sha256") or ""
             cmd_line = (s.get("process") or {}).get("command_line") or sha
-            threat = s.get("threat") or {}
-            from . import graph as _graph
-            tactics = _graph._mitre_ids(threat.get("tactic"))
-            techniques = _graph._mitre_ids(threat.get("technique"))
             novel_commands.append({
                 "sha256": sha,
                 "command_line": cmd_line,
@@ -2071,8 +2010,6 @@ def insights_summary(
                 "unique_source_ips": enr.get("unique_source_ips") or 0,
                 "occurrence_count": enr.get("occurrence_count") or 0,
                 "score": score,
-                "tactics": tactics,
-                "techniques": techniques,
             })
         # Re-sort by combined score (not just raw novelty)
         novel_commands.sort(key=lambda x: x["score"], reverse=True)

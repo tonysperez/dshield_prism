@@ -103,17 +103,12 @@ class FakeES:
 
 
 def make_doc(_id, shape_hash, role, intent, confidence, occ,
-             desc="standard description",
-             tactics=None, techniques=None, model="local"):
+             desc="standard description", model="local"):
     return {
         "_id": _id,
         "_source": {
             "process": {"command_line": f"cmd-{_id}"},
             "event": {"reason": desc},
-            "threat": {
-                "tactic": {"id": tactics or []},
-                "technique": {"id": techniques or []},
-            },
             "dshield": {"cowrie": {"enrichment": {
                 "intent": intent,
                 "confidence": confidence,
@@ -203,8 +198,6 @@ parent = {
     "intent": "credential_access",
     "confidence": 7,
     "description": "Attempts to set a new password via echo/passwd.",
-    "tactics": ["TA0006"],
-    "techniques": ["T1110"],
     "model": "llama3:8b",
 }
 parsed = _synth_parsed_from_parent(parent)
@@ -212,10 +205,6 @@ check("synth parsed: intent inherited", parsed.intent == "credential_access")
 check("synth parsed: confidence inherited", parsed.confidence == 7)
 check("synth parsed: description inherited",
       parsed.description == "Attempts to set a new password via echo/passwd.")
-check("synth parsed: tactics inherited (list copy)",
-      parsed.tactics == ["TA0006"])
-check("synth parsed: techniques inherited",
-      parsed.techniques == ["T1110"])
 check("synth parsed: iocs default empty",
       parsed.iocs.urls == [] and parsed.iocs.ips == [])
 

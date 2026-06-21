@@ -41,9 +41,6 @@ def _enrichment(confidence: int) -> CommandEnrichment:
         intent="reconnaissance",
         confidence=confidence,
         description="synthetic test enrichment",
-        tactics=[],
-        techniques=[],
-        notes="",
         iocs=IOCs(ips=[], domains=[], urls=[], hashes=[], files=[]),
     )
 

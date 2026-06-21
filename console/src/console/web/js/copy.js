@@ -81,8 +81,6 @@
           label:  n.label || "",
           intent: n.intent || null,
           specificity: typeof n.specificity === "number" ? n.specificity : null,
-          mitre_techniques: Array.isArray(n.mitre_techniques) ? n.mitre_techniques : [],
-          mitre_tactics:    Array.isArray(n.mitre_tactics)    ? n.mitre_tactics    : [],
         });
         if (sha) command_shas.add(sha);
       } else if (n.type === "file") {
@@ -199,7 +197,6 @@
     if (opts.sha256) cols.push("sha256");
     if (opts.intent) cols.push("intent");
     if (opts.specificity) cols.push("specificity");
-    if (opts.mitre)  cols.push("mitre");
     const rows = [];
     const seen = new Set();
     for (const c of pulled.commands) {
@@ -216,10 +213,6 @@
       if (opts.sha256) row.push(fullSha);
       if (opts.intent) row.push(intent || "");
       if (opts.specificity) row.push(c.specificity != null ? c.specificity.toFixed(2) : "");
-      if (opts.mitre) {
-        const ids = [...(c.mitre_tactics || []), ...(c.mitre_techniques || [])];
-        row.push(ids.join(" "));
-      }
       rows.push(row);
     }
     return { header: "Commands", columns: cols, rows };
@@ -247,26 +240,6 @@
       columns: ["hassh", "ip_count"],
       rows,
     };
-  }
-
-  // Aggregate MITRE category — unique tactic + technique IDs across all
-  // visible commands, counted. Each row: id, type, command_count.
-  function buildMitreAggregate(pulled) {
-    const tally = new Map(); // id -> {type, count}
-    for (const c of pulled.commands) {
-      for (const t of c.mitre_tactics || []) {
-        const v = tally.get(t) || { type: "tactic", count: 0 };
-        v.count += 1; tally.set(t, v);
-      }
-      for (const t of c.mitre_techniques || []) {
-        const v = tally.get(t) || { type: "technique", count: 0 };
-        v.count += 1; tally.set(t, v);
-      }
-    }
-    const rows = [...tally.entries()]
-      .map(([id, v]) => [id, v.type, v.count])
-      .sort((a, b) => b[2] - a[2] || a[0].localeCompare(b[0]));
-    return { header: "MITRE ATT&CK", columns: ["id", "type", "command_count"], rows };
   }
 
   function buildSessions(pulled) {
@@ -761,17 +734,17 @@
   //
   // The Write-up tab produces LLM-written prose, not flat tables. It calls
   // /api/writeup with the in-view scope + an anchor descriptor derived
-  // from state.currentDetail, and renders the four returned sections
-  // (anchor / evidence / MITRE / confidence) as a single Markdown
-  // document — followed by an analyst-edit recommendations stub.
+  // from state.currentDetail, and renders the returned sections
+  // (anchor / evidence / confidence) as a single Markdown document —
+  // followed by an analyst-edit recommendations stub.
 
   // For the write-up the LLM gets EVERYTHING the Report function
   // already collates — IPs (with ASN/country/HASSH/intel), commands
-  // (with text/intent/MITRE), sessions, credentials, URLs, file hashes
+  // (with text/intent), sessions, credentials, URLs, file hashes
   // (with filename + dropping command + intel), analyst-defined
-  // artifacts, lifecycle notes, MITRE aggregate, HASSH aggregate, and
-  // session sequences. The server-side prompt formatter renders the
-  // right blocks based on which keys are populated.
+  // artifacts, lifecycle notes, HASSH aggregate, and session
+  // sequences. The server-side prompt formatter renders the right
+  // blocks based on which keys are populated.
   //
   // Why everything: the extract stage is the only place the heavy
   // attacker-controlled context exists; the narrate stage sees only
@@ -785,7 +758,7 @@
       hashes: [], analyst_artifacts: [], lifecycle_notes: [],
       session_sequences: [],
       playbooks: [], campaigns: [],
-      mitre: [], intel: {},
+      intel: {},
     };
 
     // ---- IPs ----------------------------------------------------------
@@ -801,16 +774,14 @@
     }
 
     // ---- Commands -----------------------------------------------------
-    // Combine graph-node attributes (intent, MITRE tags) with bulk-fetched
-    // command_line text. The MITRE tags also feed the aggregate below.
+    // Combine graph-node attributes (intent) with bulk-fetched
+    // command_line text.
     for (const c of pulled.commands || []) {
       const det = (fetched && fetched.commands && fetched.commands[c.sha256]) || {};
       scope.commands.push({
         sha256:           c.sha256 || null,
         command_line:     det.command_line || c.text || "",
         intent:           det.intent || c.intent || null,
-        mitre_tactics:    c.mitre_tactics || [],
-        mitre_techniques: c.mitre_techniques || [],
       });
     }
 
@@ -913,17 +884,6 @@
     for (const c of pulled.campaigns || []) {
       scope.campaigns.push({id: c.campaign_id || c.id, name: c.name || c.campaign_id || c.id});
     }
-
-    // ---- MITRE aggregate (reuse Report's builder) ---------------------
-    try {
-      const agg = buildMitreAggregate(pulled);
-      scope.mitre = (agg.rows || []).map(([id, type, count]) => {
-        if (type === "tactic") {
-          return {tactic_id: id, technique_id: "", command_count: count};
-        }
-        return {tactic_id: "", technique_id: id, command_count: count};
-      });
-    } catch (_) { scope.mitre = []; }
 
     // ---- Intel verdict distribution -----------------------------------
     const ipVerdicts = {};
@@ -1039,7 +999,7 @@
   function _ensureFullScopeFetch() {
     const wanted = ["ips", "commands", "sessions", "credentials", "urls",
                     "hashes", "analyst_artifacts", "lifecycle_notes",
-                    "mitre", "hassh_agg", "session_sequences"];
+                    "hassh_agg", "session_sequences"];
     const prior = {};
     document.querySelectorAll(".copy-cat").forEach((el) => {
       const cat = el.dataset.cat;
@@ -1211,7 +1171,6 @@
       urls: null,
       analyst_artifacts: null,
       lifecycle_notes: null,
-      mitre: null,
       hassh_agg: null,
       session_sequences: null,
     };
@@ -1229,7 +1188,6 @@
       "File hashes": "hashes",
       "Analyst artifacts": "analyst_artifacts",
       "Lifecycle notes": "lifecycle_notes",
-      "MITRE ATT&CK": "mitre",
       "HASSH fingerprints": "hassh_agg",
       "Session sequences": "session_sequences",
     };
@@ -1289,7 +1247,6 @@
       sections.push(await buildAnalystArtifacts(pulled, getOpts("analyst_artifacts"), fetched));
     }
     if (cats.includes("lifecycle_notes")) sections.push(buildLifecycleNotes(pulled, fetched));
-    if (cats.includes("mitre"))           sections.push(buildMitreAggregate(pulled));
     if (cats.includes("hassh_agg"))       sections.push(buildHasshAggregate(pulled, fetched));
     if (cats.includes("session_sequences")) sections.push(buildSessionSequences(pulled, fetched));
     return sections;

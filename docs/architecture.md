@@ -14,7 +14,7 @@ flowchart TD
     subgraph S1["1 · Enrich each unique command"]
         direction TB
         LLM["Local LLM + embedding model"]
-        B["Command enrichment<br/>prism.enriched.cowrie.command<br/>intent · MITRE TTPs · IOCs · confidence<br/>768-dim embedding · shape-dedup cache"]
+        B["Command enrichment<br/>prism.enriched.cowrie.command<br/>intent · IOCs · confidence<br/>768-dim embedding · shape-dedup cache"]
         X["Cloud LLM"]
         LLM --> B
         B -.->|"hard / novel · public only · budget-capped"| X
@@ -86,9 +86,9 @@ The pipeline runs as two systemd cadences — a fast **forward** pass over new
 data and a slower **backward** pass that recomputes correlations. The stages:
 
 1. **Command enrichment** — each unique command line gets one enrichment doc:
-   LLM-generated description, intent, MITRE TTPs, extracted IOCs, a confidence
-   score, and a 768-dim embedding. Hard/novel/low-confidence commands can
-   escalate to a cloud LLM.
+   LLM-generated description, intent, extracted IOCs, a confidence score, and a
+   768-dim embedding. Hard/novel/low-confidence commands can escalate to a
+   cloud LLM.
 2. **Session rollup** — one doc per completed SSH session, aggregating its
    commands into a session embedding (IDF-weighted mean-pool) and behavioral
    stats.

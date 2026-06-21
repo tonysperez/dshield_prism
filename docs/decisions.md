@@ -52,7 +52,7 @@ alias-swap: same read-atomicity, no per-run index duplication.
 Manual `prompt_version` knobs got forgotten in ops; a hash can't be.
 
 **Functionally-identical commands inherit instead of re-running the local LLM.**
-Same-shape commands (literals → placeholders) inherit intent/description/tactics
+Same-shape commands (literals → placeholders) inherit intent/description
 from a canonical sibling. The local GPU saturated on thousands of near-identical
 commands; this is the relief valve.
 
@@ -72,15 +72,25 @@ smoothing — the smoothed form caps singletons below 1.0, which contradicts the
 analyst intuition that "appears in only this cluster" is the maximum signal.
 
 **Cost + validation guardrails are first-class, not afterthoughts.** A per-day
-cloud-LLM budget cap and schema-validation of every LLM-emitted MITRE TTP against
-the real ATT&CK corpus were built early; both caught real failures in production
-(a runaway escalation loop; invented technique IDs).
+cloud-LLM budget cap and output-side schema validation (intent clamped to a
+closed enum, IOCs filtered to their surface shapes) were built early; both
+caught real failures in production (a runaway escalation loop; hallucinated
+non-IOC strings).
 
 ## Dead-ends — measured and rejected
 
 Don't re-attempt these without new evidence; each was tried against the live
 corpus and recorded as a null result.
 
+- **LLM-derived MITRE ATT&CK tactic/technique IDs** — the local model's
+  technique mapping was unreliable best-guess work even after schema-validating
+  every emitted ID against the vendored ATT&CK corpus (the prompt itself flagged
+  it as "best-guess"). They were also measured *embedding-inert*: the E8.3
+  strip-and-measure sweep produced byte-identical clusters with and without the
+  MITRE codes in the embed input. Pulled entirely — generation, storage, embed
+  context, metrics, and console surfaces. The only MITRE labels that remain are
+  the **reference-corpus ground truth** (Atomic Red Team, `dshield.reference.*`),
+  which are authored, not inferred.
 - **Cooccurrence text appended to the embed input** — regressed clustering ARI
   (badly on short commands). LLM-side cooccurrence grounding stays on; only the
   embed-text append was dropped.

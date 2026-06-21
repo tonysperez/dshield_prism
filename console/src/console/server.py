@@ -67,8 +67,7 @@ class WriteupRequest(BaseModel):
     `scope` carries the in-view artifact aggregates the analyst
     selected in the Report modal — same payload shape `copy.js`
     already builds for the existing data-dump tab, plus optional
-    `mitre` (aggregate technique chain) and `intel`
-    ({ip,url,hash} → verdict counts).
+    `intel` ({ip,url,hash} → verdict counts).
 
     `evidence_quality` is the pre-computed one-line verdict from
     Item #5. Optional — the server falls back to the empty string
@@ -1010,20 +1009,6 @@ def build_app(config_path: str | None = None) -> FastAPI:
             return JSONResponse({"running": [], "active": False, "since": None,
                                  "error": f"{e.__class__.__name__}: {e}"}, headers=no_cache)
 
-    @app.get("/api/health/ttp-rates")
-    def health_ttp_rates_api() -> JSONResponse:
-        """Top-N MITRE-technique application rates from the latest
-        enrich-run snapshot. Drives the TTP-rates panel on /health
-        (brutal-review phase 2.3). Rows with `warning=true` are
-        applied to >=5% of LLM-enriched commands and likely over-
-        applied — a soft warning, not an error."""
-        try:
-            return JSONResponse(queries.health_ttp_rates(es, cfg))
-        except Exception as e:  # pragma: no cover -- depends on ES state
-            return JSONResponse(
-                {"rows": [], "error": f"{e.__class__.__name__}: {e}"}
-            )
-
     @app.get("/api/config/ui")
     def config_ui() -> JSONResponse:
         """UI-facing config values, fetched once at frontend boot. Distinct
@@ -1641,9 +1626,6 @@ def build_app(config_path: str | None = None) -> FastAPI:
             return IOCDetail(type="country", id=ident.upper(),
                              title=f"country {ident.upper()}",
                              summary={"country_iso_code": ident.upper()}, raw=None)
-        if ioc_type in ("mitre_technique", "mitre_tactic"):
-            return IOCDetail(type=ioc_type, id=ident.upper(),
-                             title=ident.upper(), summary={"id": ident.upper()}, raw=None)
         if ioc_type in ("file", "hash"):
             data = intel_mod.fetch_intel_hash(es, cfg, ident)
             sha = data["artifact"]["value"]
@@ -1724,9 +1706,9 @@ def build_app(config_path: str | None = None) -> FastAPI:
     # ------------------------------------------------------------------
     # Write-up (Item #2 of the analyst-first UX push). The Report modal's
     # Write-up tab calls /api/writeup to produce LLM-written prose for
-    # four sections (anchor / evidence / MITRE / confidence). Local LLM
-    # by default; cloud opt-in gated by cloud.writeup_daily_budget_usd
-    # (separate bucket from enrichment escalation).
+    # the anchor / evidence / confidence sections. Local LLM by default;
+    # cloud opt-in gated by cloud.writeup_daily_budget_usd (separate
+    # bucket from enrichment escalation).
     # ------------------------------------------------------------------
 
     def _load_pipeline_state():
@@ -1918,7 +1900,7 @@ def _attach_anchor_evidence_quality(
 
     Called by every anchor-detail builder that benefits from a confidence
     surface (playbook / campaign / *_cluster / ip). Empty for kinds where
-    a verdict doesn't apply (asn / country / mitre_* / session / command).
+    a verdict doesn't apply (asn / country / session / command).
 
     When ``es`` + ``cfg`` are supplied (playbook / campaign anchors),
     the Strong-band cutoff is fetched from `prism.metrics` so the
@@ -2042,7 +2024,6 @@ def _detail_command(sha: str, doc: dict) -> IOCDetail:
     src = doc["_source"]
     enr = src.get("dshield", {}).get("cowrie", {}).get("enrichment") or {}
     fb = enr.get("local_fallback") or {}
-    threat = src.get("threat") or {}
     shape = enr.get("shape") or {}
     summary: dict[str, Any] = {
         "sha256": sha,
@@ -2050,8 +2031,6 @@ def _detail_command(sha: str, doc: dict) -> IOCDetail:
         "intent": enr.get("intent") or fb.get("intent"),
         "confidence": enr.get("confidence") or fb.get("confidence"),
         "description": fb.get("description"),
-        "tactics": fb.get("tactics") or [t.get("id") for t in (threat.get("tactic") if isinstance(threat.get("tactic"), list) else [threat.get("tactic")]) if t],
-        "techniques": fb.get("techniques") or [t.get("id") for t in (threat.get("technique") if isinstance(threat.get("technique"), list) else [threat.get("technique")]) if t],
         "occurrence_count": enr.get("occurrence_count"),
         "unique_sessions": enr.get("unique_sessions"),
         "unique_source_ips": enr.get("unique_source_ips"),

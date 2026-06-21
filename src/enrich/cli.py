@@ -294,84 +294,6 @@ def _purge_lifecycles(cfg, secrets) -> dict:
     return out
 
 
-def _write_mitre_metrics_doc(cfg, secrets, *, top_n: int) -> None:
-    """Aggregate the top-N MITRE technique application rates from the
-    persisted enriched-command index and snapshot to prism.metrics
-    (brutal-review phase 2.3).
-
-    Why ES aggregation and not the in-memory counter: the counter only
-    bumps when `_validate_mitre_ids` runs — which is on fresh LLM
-    responses, NOT on cache hits or already-persisted command docs. In
-    steady state, most `enrich` runs are mostly cache hits, so the
-    counter is near-empty and would write a misleading snapshot. The
-    Health panel claims to show "per-corpus rate", which is a property
-    of the persistent ES state, so we read that directly.
-
-    Best-effort: failures log but never fail the enrich verb.
-    """
-    from .es_client import make_client
-    import logging
-    import uuid
-    from datetime import datetime, timezone
-    log = logging.getLogger(__name__)
-    es = make_client(cfg.elasticsearch, secrets)
-    metrics_idx = cfg.metrics.indexes.default
-    cmd_idx = cfg.elasticsearch.indexes.cowrie.commands
-    if not es.indices.exists(index=metrics_idx):
-        # Phase 0.2's `init-indexes --source metrics` hasn't been run on
-        # this deploy yet. Don't auto-create; surface the gap silently
-        # (the operator will notice when checking the Health page).
-        log.info("metrics index %s does not exist; skipping TTP snapshot",
-                 metrics_idx)
-        return
-    try:
-        resp = es.search(
-            index=cmd_idx, size=0,
-            track_total_hits=True,
-            aggs={
-                "techniques": {
-                    "terms": {
-                        "field": "threat.technique.id",
-                        "size":  top_n,
-                    },
-                },
-            },
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.warning("failed to aggregate MITRE techniques from %s: %s",
-                    cmd_idx, exc)
-        return
-    total = (resp.get("hits") or {}).get("total") or {}
-    total_n = int(total.get("value") or 0)
-    if total_n == 0:
-        return
-    buckets = (
-        (resp.get("aggregations") or {})
-        .get("techniques", {})
-        .get("buckets", [])
-    )
-    items = [
-        {
-            "id":    b["key"],
-            "count": int(b["doc_count"]),
-            "rate":  round(int(b["doc_count"]) / total_n, 4),
-        }
-        for b in buckets
-    ]
-    doc = {
-        "run_id":       str(uuid.uuid4()),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "kind":         "mitre_technique_top_n",
-        "layer":        "commands",
-        "n":            total_n,
-        "items":        items,
-    }
-    try:
-        es.index(index=metrics_idx, document=doc)
-    except Exception as exc:  # noqa: BLE001 — best-effort observability
-        log.warning("failed to write MITRE TTP metrics doc: %s", exc)
-
-
 def _run_reference_heal(cfg, secrets) -> dict:
     """Self-heal the external reference baseline (console "Tradecraft Matches")
     using LOCAL steps only — never clones GitHub.
@@ -1732,15 +1654,6 @@ def _dispatch_verb(args, cfg, secrets) -> int:
             reference_mode=getattr(args, "reference", False),
             budget=getattr(args, "budget", None),
         )
-        # Snapshot per-corpus MITRE TTP application rates after the run
-        # (phase 2.3). Aggregates from the persisted commands index so
-        # the snapshot reflects the corpus state, not this run's freshly
-        # emitted LLM responses (which would miss the steady-state
-        # cache-hit majority). Skip in reference mode — that snapshot
-        # is supposed to reflect the live corpus, not a one-shot
-        # external pull.
-        if not args.dry_run and not getattr(args, "reference", False):
-            _write_mitre_metrics_doc(cfg, secrets, top_n=20)
         print(json.dumps(stats, indent=2, default=str))
         return 0
 

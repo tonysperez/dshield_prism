@@ -59,9 +59,6 @@ def _enrichment() -> CommandEnrichment:
         intent="execution",
         confidence=7,
         description="synthetic",
-        tactics=[],
-        techniques=[],
-        notes="",
         iocs=IOCs(ips=[], domains=[], urls=[], hashes=[], files=[]),
     )
 

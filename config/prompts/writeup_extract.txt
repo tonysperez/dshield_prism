@@ -30,11 +30,6 @@ IN-VIEW ARTIFACTS — everything the analyst has visible in the graph
 <<<SCOPE_SUMMARY>>>
 
 =============================================================================
-MITRE ATT&CK aggregate across in-view commands
-=============================================================================
-<<<MITRE_CHAIN>>>
-
-=============================================================================
 Intel verdicts across in-view IPs / URLs / hashes
 =============================================================================
 <<<INTEL_SUMMARY>>>
@@ -62,12 +57,12 @@ Your job — return a single JSON object with EXACTLY these keys.
     "viability_assessment": "<one sentence on whether this attack would actually succeed against a vulnerable system. Reference specific signals: are commands syntactically valid? Right order? Right OS/path assumptions? Signs of cargo-cult copy-paste? E.g. 'Commands are valid bash with correct path assumptions; the chattr-then-crontab sequence requires root, which the attacker presumes from a successful login.' If unclear, say so.>",
 
     "key_identifiers": [
-      {"label": "<short tag, e.g. 'shared RSA key', 'dropper URL host', 'MITRE technique'>",
+      {"label": "<short tag, e.g. 'shared RSA key', 'dropper URL host'>",
        "value": "<literal string the next stage may quote — must appear verbatim in the data above>",
        "why_it_matters": "<one short sentence on why this is cite-worthy>"}
       // ZERO to FIVE entries. Pick only identifiers that would change an analyst's hunt
       // or strengthen the narrative. Common picks: a single shared sha256 across IPs,
-      // a literal URL/host appearing in multiple sessions, a distinctive MITRE technique,
+      // a literal URL/host appearing in multiple sessions,
       // a specific ASN if it's a known scanning provider, a single literal IP if it stands
       // out (e.g. only one IP did manual interactive work).
       //
@@ -108,6 +103,6 @@ Output rules:
 - Use empty string "" or empty array [] for sections you genuinely have no signal on. Do NOT invent.
 - Every "value" in key_identifiers MUST appear verbatim somewhere in the data above. If you cannot find one, omit the entry.
 - Never reproduce credentials (user:pass) in key_identifiers — credentials are sensitive output.
-- Never invent: a sha256 that's not in the data, a MITRE ID not in the chain above, a country not in the country distribution, etc.
+- Never invent: a sha256 that's not in the data, a country not in the country distribution, etc.
 
 Respond with JSON only.

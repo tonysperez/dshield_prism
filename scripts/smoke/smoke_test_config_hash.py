@@ -68,7 +68,7 @@ def _mk_cfg(
             "generation_model": "gen-m",
             "embedding_model": embedding_model,
             "embed_context": embed_context if embed_context is not None
-            else ["intent", "tactics", "description"],
+            else ["intent", "description"],
         },
         "worker": {"state_db": str(db_path)},
         "prompts": {"command_enrichment": str(pp)},
@@ -145,8 +145,8 @@ with tempfile.TemporaryDirectory() as td:
     # -------------------------------------------------------------------
     print("\n[3] embed-side edits flip only embed hash")
     # embed_context list.
-    cfg_d1 = _mk_cfg(tmp / "d1", embed_context=["intent", "description"])
-    cfg_d2 = _mk_cfg(tmp / "d2", embed_context=["intent", "tactics", "description"])
+    cfg_d1 = _mk_cfg(tmp / "d1", embed_context=["intent"])
+    cfg_d2 = _mk_cfg(tmp / "d2", embed_context=["intent", "description"])
     (tmp / "d1" / "command_enrichment.txt").write_text("SAME")
     (tmp / "d2" / "command_enrichment.txt").write_text("SAME")
     l_d1, e_d1 = hashes(cfg_d1)
@@ -178,8 +178,8 @@ with tempfile.TemporaryDirectory() as td:
           f"{l_t1!r} vs {l_t2!r}")
 
     # embed_context list order should NOT matter (sorted internally).
-    cfg_o1 = _mk_cfg(tmp / "o1", embed_context=["intent", "tactics"])
-    cfg_o2 = _mk_cfg(tmp / "o2", embed_context=["tactics", "intent"])
+    cfg_o1 = _mk_cfg(tmp / "o1", embed_context=["intent", "description"])
+    cfg_o2 = _mk_cfg(tmp / "o2", embed_context=["description", "intent"])
     (tmp / "o1" / "command_enrichment.txt").write_text("SAME")
     (tmp / "o2" / "command_enrichment.txt").write_text("SAME")
     check("embed_context order doesn't matter (sorted)",

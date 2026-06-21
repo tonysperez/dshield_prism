@@ -1,5 +1,5 @@
 {
-  "_comment": "Per-run metrics snapshots. Two kinds of payload share this index, distinguished by the `kind` discriminator: (1) percentile-distribution snapshots for threshold migrations (brutal-review phase 4) populate p50..p99 + n; (2) aggregate-list snapshots (e.g. top-N most-applied MITRE techniques, brutal-review phase 2.3) populate the nested `items` array. Strict-dynamic: new metric kinds use the `kind` discriminator and one of the two existing payload shapes; new payload shapes require a mapping migration first.",
+  "_comment": "Per-run metrics snapshots. Two kinds of payload share this index, distinguished by the `kind` discriminator: (1) percentile-distribution snapshots for threshold migrations (brutal-review phase 4) populate p50..p99 + n; (2) aggregate-list snapshots populate the nested `items` array. Strict-dynamic: new metric kinds use the `kind` discriminator and one of the two existing payload shapes; new payload shapes require a mapping migration first.",
   "settings": {
     "number_of_shards": 1,
     "number_of_replicas": 0,

@@ -8,8 +8,6 @@ Schema:
 {
   "description": "plain-language description of what the command does and why it is interesting; length scales with command complexity (see DESCRIPTION RULES below)",
   "intent": "one of: reconnaissance | initial_access | execution | persistence | privilege_escalation | defense_evasion | credential_access | discovery | lateral_movement | collection | command_and_control | exfiltration | impact | cryptomining | benign | unknown",
-  "tactics": ["MITRE ATT&CK tactic IDs like TA0001, TA0002"],
-  "techniques": ["MITRE ATT&CK technique IDs like T1059.004, T1105"],
   "iocs": {
     "urls":    ["full URLs found in the command if present"],
     "ips":     ["IPv4 or IPv6 addresses found if present"],
@@ -29,9 +27,9 @@ DESCRIPTION RULES:
 - Do NOT regurgitate the raw command — explain it.
 
 CONFIDENCE RULES (integer 1-10):
-- 10: Textbook payload you have seen many times; intent and techniques are unambiguous (e.g. classic Mirai dropper, busybox wget|sh).
-- 8-9: Clear malicious pattern, minor ambiguity in technique mapping.
-- 6-7: Obviously suspicious but novel structure; intent likely correct, MITRE mapping is best-guess.
+- 10: Textbook payload you have seen many times; intent is unambiguous (e.g. classic Mirai dropper, busybox wget|sh).
+- 8-9: Clear malicious pattern, minor ambiguity.
+- 6-7: Obviously suspicious but novel structure; intent likely correct.
 - 4-5: Recognizable command but context is unclear (could be benign admin or recon); guessing on intent.
 - 2-3: Ambiguous, partial, or truncated; classification is mostly speculation.
 - 1: Cannot meaningfully classify (gibberish, single keystroke, empty pipeline).
@@ -39,7 +37,6 @@ CONFIDENCE RULES (integer 1-10):
 
 OTHER RULES:
 - Use empty arrays [] when nothing applies. Never invent IOCs that aren't literally present in the command text.
-- Only use real MITRE ATT&CK IDs you are confident about. If unsure, leave the array empty rather than guessing.
 - "intent" must be exactly one value from the enum. Use "unknown" if you cannot tell.
 
 CO-OCCURRENCE CONTEXT:

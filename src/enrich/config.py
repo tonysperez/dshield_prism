@@ -98,7 +98,7 @@ class LLMConfig(BaseModel):
     max_retries: int = 2
     api_key: Optional[str] = None  # for openai_compat servers that require it
     embed_context: list[str] = Field(
-        default_factory=lambda: ["intent", "tactics", "description"]
+        default_factory=lambda: ["intent", "description"]
     )
     # Layout of the embed-input string (E8.1). Three layouts that
     # ``_build_embed_text`` will materialise:
@@ -957,7 +957,7 @@ class ShapeDedupConfig(BaseModel):
     When a new command's shape signature (literals replaced with type
     placeholders, see `command_shape.normalize_to_shape`) matches an
     already-enriched canonical, skip the LLM generation call and inherit
-    the canonical's intent/description/tactics/techniques. The new
+    the canonical's intent/description. The new
     command still gets its own embedding + regex-extracted IOCs because
     those are per-command-unique.
 
@@ -1273,7 +1273,7 @@ def compute_llm_config_hash(cfg: AppConfig) -> str:
         the prompt and therefore should invalidate cached enrichments.
 
     Used as one half of the auto-invalidating cache key (ROADMAP #7). A
-    change here means the cached intent/tactics/techniques/description
+    change here means the cached intent/description
     are no longer trustworthy — the next `enrich` will re-run the LLM.
     Embed-only changes (see `compute_embed_config_hash`) do NOT flip
     this; they're handled separately so `reembed` doesn't waste an LLM

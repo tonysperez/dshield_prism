@@ -11,7 +11,6 @@ inspecting `type`: e.g. `ip:1.2.3.4`, `session:abc123`, `cmd:<sha256>`,
 from __future__ import annotations
 
 import math
-from typing import Any
 
 from elasticsearch import Elasticsearch
 
@@ -29,36 +28,6 @@ def _log_size(n: int | float | None, *, base: float = 24.0, scale: float = 8.0) 
     if n <= 0:
         return base
     return base + scale * math.log10(1 + n)
-
-
-def _flatten_mitre(obj: Any) -> list[dict]:
-    """Normalize ES `threat.technique` / `threat.tactic` into a flat list of
-    `{id, name}` dicts. Tolerates None, single dict, list of dicts, and the
-    case where inner `id`/`name` fields are themselves lists (which ES does
-    when the mapping is keyword multi-value)."""
-    if obj is None:
-        return []
-    items = obj if isinstance(obj, list) else [obj]
-    out: list[dict] = []
-    for it in items:
-        if not isinstance(it, dict):
-            continue
-        ids = it.get("id")
-        names = it.get("name")
-        id_list = ids if isinstance(ids, list) else ([ids] if ids else [])
-        name_list = names if isinstance(names, list) else ([names] if names else [])
-        for i, tid in enumerate(id_list):
-            if not tid:
-                continue
-            tname = name_list[i] if i < len(name_list) else (name_list[0] if name_list else None)
-            out.append({"id": tid, "name": tname})
-    return out
-
-
-def _mitre_ids(obj: Any, *, kind: str = "id") -> list[str]:
-    """Extract just the ids (or just the names) from a MITRE field. Convenient
-    when populating badge arrays on command nodes."""
-    return [m.get(kind) for m in _flatten_mitre(obj) if m.get(kind)]
 
 
 # ----------------------------------------------------------------------------
@@ -116,7 +85,7 @@ def _emit_session_cluster_playbook(nodes: list, edges: list, sid: str, senr: dic
                                "label": "playbook_of", "kind": "playbook_of"}})
 
 
-def _emit_command_cluster_mitre(nodes: list, edges: list, sha: str, cenr: dict, threat: dict | None) -> None:
+def _emit_command_cluster(nodes: list, edges: list, sha: str, cenr: dict) -> None:
     nid_c = _nid("cmd", sha)
     ccid = (cenr.get("cluster") or {}).get("id")
     if ccid:
@@ -125,28 +94,6 @@ def _emit_command_cluster_mitre(nodes: list, edges: list, sha: str, cenr: dict, 
         edges.append({"data": {"id": f"{nid_c}->{_nid('cmdcl', ccid)}",
                                "source": nid_c, "target": _nid("cmdcl", ccid),
                                "label": "member_of", "kind": "member_of"}})
-    if not threat:
-        return
-    for tech in _flatten_mitre(threat.get("technique")):
-        tid = tech.get("id")
-        if not tid:
-            continue
-        tname = tech.get("name")
-        nodes.append({"data": {"id": _nid("tt", tid), "type": "mitre_technique",
-                               "label": tid + (f" {tname}" if tname else "")}})
-        edges.append({"data": {"id": f"{nid_c}->{_nid('tt', tid)}",
-                               "source": nid_c, "target": _nid("tt", tid),
-                               "label": "ttp", "kind": "ttp"}})
-    for tac in _flatten_mitre(threat.get("tactic")):
-        tid = tac.get("id")
-        if not tid:
-            continue
-        tname = tac.get("name")
-        nodes.append({"data": {"id": _nid("ta", tid), "type": "mitre_tactic",
-                               "label": tid + (f" {tname}" if tname else "")}})
-        edges.append({"data": {"id": f"{nid_c}->{_nid('ta', tid)}",
-                               "source": nid_c, "target": _nid("ta", tid),
-                               "label": "ttp", "kind": "ttp"}})
 
 
 # ----------------------------------------------------------------------------
@@ -437,7 +384,6 @@ def _session_anchor(es: Elasticsearch, cfg: AppConfig, session_id: str, *, limit
             continue
         seen_hashes.add(sha)
         enr = row.get("enrichment") or {}
-        threat = row.get("threat") or {}
         label = (row.get("command_line") or sha)[:80]
         nodes.append({"data": {
             "id": _nid("cmd", sha), "type": "command", "label": label,
@@ -447,13 +393,11 @@ def _session_anchor(es: Elasticsearch, cfg: AppConfig, session_id: str, *, limit
             "size": _log_size(enr.get("occurrence_count")),
             "cluster_id": (enr.get("cluster") or {}).get("id"),
             "is_outlier": (enr.get("cluster") or {}).get("is_outlier"),
-            "mitre_techniques": _mitre_ids(threat.get("technique")),
-            "mitre_tactics": _mitre_ids(threat.get("tactic")),
         }})
         edges.append({"data": {"id": f"{_nid('session',session_id)}->{_nid('cmd',sha)}",
                                "source": _nid("session", session_id), "target": _nid("cmd", sha),
                                "label": "ran", "kind": "ran"}})
-        _emit_command_cluster_mitre(nodes, edges, sha, enr, threat)
+        _emit_command_cluster(nodes, edges, sha, enr)
     # ROADMAP #4 — if the session belongs to a known playbook, attach
     # cluster-specificity to its IP + the emitted command nodes. A session
     # without playbook_id (pre-naming, or genuine outlier) leaves nodes
@@ -491,31 +435,6 @@ def _command_anchor(es: Elasticsearch, cfg: AppConfig, sha256: str, *, limit: in
             edges.append({"data": {"id": f"{_nid('cmd',sha256)}->{_nid('cmdcl',ccid)}",
                                    "source": _nid("cmd", sha256), "target": _nid("cmdcl", ccid),
                                    "label": "member_of", "kind": "member_of"}})
-        # MITRE techniques/tactics. ES stores both `technique` and `tactic` as
-        # either a single object or a list; within each object, `id` and
-        # `name` can themselves be a list (ES collapses keyword multi-values).
-        # Flatten everything into a list of plain {id, name} dicts.
-        threat = src.get("threat") or {}
-        for tech in _flatten_mitre(threat.get("technique")):
-            tid = tech.get("id")
-            if not tid:
-                continue
-            tname = tech.get("name")
-            nodes.append({"data": {"id": _nid("tt", tid), "type": "mitre_technique",
-                                   "label": tid + (f" {tname}" if tname else "")}})
-            edges.append({"data": {"id": f"{_nid('cmd',sha256)}->{_nid('tt',tid)}",
-                                   "source": _nid("cmd", sha256), "target": _nid("tt", tid),
-                                   "label": "ttp", "kind": "ttp"}})
-        for tac in _flatten_mitre(threat.get("tactic")):
-            tid = tac.get("id")
-            if not tid:
-                continue
-            tname = tac.get("name")
-            nodes.append({"data": {"id": _nid("ta", tid), "type": "mitre_tactic",
-                                   "label": tid + (f" {tname}" if tname else "")}})
-            edges.append({"data": {"id": f"{_nid('cmd',sha256)}->{_nid('ta',tid)}",
-                                   "source": _nid("cmd", sha256), "target": _nid("ta", tid),
-                                   "label": "ttp", "kind": "ttp"}})
 
     # sessions that ran this command — bulk-enrich so each session arrives
     # with cluster_id / playbook and its source-IP context, both of which
@@ -620,7 +539,6 @@ def _cluster_anchor(
             sha = ((s.get("process") or {}).get("hash") or {}).get("sha256") or h["_id"]
             cmd = ((s.get("process") or {}).get("command_line") or sha)
             enr = (s.get("dshield", {}).get("cowrie", {}).get("enrichment") or {})
-            threat = s.get("threat") or {}
             nodes.append({"data": {
                 "id": _nid("cmd", sha), "type": "command",
                 "label": cmd[:80], "sha256": sha,
@@ -629,13 +547,11 @@ def _cluster_anchor(
                 "size": _log_size(enr.get("occurrence_count")),
                 "cluster_id": (enr.get("cluster") or {}).get("id"),
                 "is_outlier": (enr.get("cluster") or {}).get("is_outlier"),
-                "mitre_techniques": _mitre_ids(threat.get("technique")),
-                "mitre_tactics": _mitre_ids(threat.get("tactic")),
             }})
             edges.append({"data": {"id": f"{_nid('cmd',sha)}->{cnid}",
                                    "source": _nid("cmd", sha), "target": cnid,
                                    "label": "member_of", "kind": "member_of"}})
-            _emit_command_cluster_mitre(nodes, edges, sha, enr, threat)
+            _emit_command_cluster(nodes, edges, sha, enr)
         elif kind == "session":
             sid = (s.get("cowrie") or {}).get("session_id") or h["_id"]
             senr = (s.get("dshield", {}).get("cowrie", {}).get("enrichment", {}).get("session") or {})
@@ -1022,37 +938,6 @@ def _country_anchor(es: Elasticsearch, cfg: AppConfig, cc: str, *, limit: int) -
     return _dedup({"nodes": nodes, "edges": edges})
 
 
-def _mitre_anchor(es: Elasticsearch, cfg: AppConfig, mitre_id: str, kind: str, *, limit: int) -> dict:
-    node_prefix = "tt" if kind == "technique" else "ta"
-    node_type = "mitre_technique" if kind == "technique" else "mitre_tactic"
-    nid = _nid(node_prefix, mitre_id)
-    nodes: list[dict] = [{"data": {"id": nid, "type": node_type, "label": mitre_id}}]
-    edges: list[dict] = []
-    r = queries.commands_for_mitre(es, cfg, mitre_id, kind=kind, size=limit)
-    for h in r["hits"]["hits"]:
-        s = h["_source"]
-        sha = ((s.get("process") or {}).get("hash") or {}).get("sha256") or h["_id"]
-        cmd = ((s.get("process") or {}).get("command_line") or sha)
-        enr = (s.get("dshield", {}).get("cowrie", {}).get("enrichment") or {})
-        threat = s.get("threat") or {}
-        nodes.append({"data": {
-            "id": _nid("cmd", sha), "type": "command",
-            "label": cmd[:80], "sha256": sha,
-            "intent": enr.get("intent"),
-            "novelty": (enr.get("cluster") or {}).get("novelty_score"),
-            "size": _log_size(enr.get("occurrence_count")),
-            "cluster_id": (enr.get("cluster") or {}).get("id"),
-            "is_outlier": (enr.get("cluster") or {}).get("is_outlier"),
-            "mitre_techniques": _mitre_ids(threat.get("technique")),
-            "mitre_tactics": _mitre_ids(threat.get("tactic")),
-        }})
-        edges.append({"data": {"id": f"{_nid('cmd',sha)}->{nid}",
-                               "source": _nid("cmd", sha), "target": nid,
-                               "label": "ttp", "kind": "ttp"}})
-        _emit_command_cluster_mitre(nodes, edges, sha, enr, threat)
-    return _dedup({"nodes": nodes, "edges": edges})
-
-
 def _file_anchor(es: Elasticsearch, cfg: AppConfig, sha256: str, *, limit: int, sf: "queries.SessionFilter | None" = None) -> dict:
     """Anchor on a dropped file: emit the file node (+ intel verdict) and its
     droppers — the sessions that dropped it and, where attributable, the
@@ -1281,10 +1166,6 @@ def neighbors(
         result = _asn_anchor(es, cfg, ident, limit=limit)
     elif ioc_type == "country":
         result = _country_anchor(es, cfg, ident.upper(), limit=limit)
-    elif ioc_type == "mitre_technique":
-        result = _mitre_anchor(es, cfg, ident.upper(), "technique", limit=limit)
-    elif ioc_type == "mitre_tactic":
-        result = _mitre_anchor(es, cfg, ident.upper(), "tactic", limit=limit)
     else:
         raise ValueError(f"unsupported ioc_type: {ioc_type}")
 

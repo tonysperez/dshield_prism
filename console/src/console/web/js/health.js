@@ -244,72 +244,10 @@ async function purgeCache() {
   }
 }
 
-async function loadTTPs() {
-  const body = document.getElementById("ttp-body");
-  if (!body) return;
-  let data;
-  try {
-    const r = await fetch("/api/health/ttp-rates");
-    data = await r.json();
-  } catch (e) {
-    body.innerHTML = "";
-    body.appendChild(el("div", {class: "h-error"}, [`fetch failed: ${e.message}`]));
-    return;
-  }
-  if (data.error) {
-    body.innerHTML = "";
-    body.appendChild(el("div", {class: "h-error"}, [data.error]));
-    return;
-  }
-  body.innerHTML = "";
-  const rows = data.rows || [];
-  if (rows.length === 0) {
-    body.appendChild(el("em", {class: "h-empty"}, [
-      "no TTP snapshot yet — `enrich` writes one to prism.metrics per run; verify `init-indexes --source metrics` has been applied",
-    ]));
-    return;
-  }
-  const meta = el("div", {style: "font-size:11px; color:#6b7494; margin-bottom:8px;"});
-  meta.appendChild(document.createTextNode(
-    `snapshot: ${data.generated_at || "—"} · n=${fmtNum(data.n)} commands`,
-  ));
-  body.appendChild(meta);
-  const table = el("table", {class: "h-table"});
-  table.appendChild(el("thead", null, [el("tr", null, [
-    el("th", null, ["Technique"]),
-    el("th", {class: "num"}, ["Count"]),
-    el("th", {class: "num"}, ["Rate"]),
-    el("th", null, ["Notes"]),
-  ])]));
-  const tbody = el("tbody");
-  for (const r of rows) {
-    const tr = el("tr");
-    tr.appendChild(el("td", {class: "name"}, [r.id || "—"]));
-    tr.appendChild(el("td", {class: "num"}, [fmtNum(r.count)]));
-    const rate = (r.rate || 0) * 100;
-    const rateCell = el("td", {class: "num"}, [`${rate.toFixed(2)}%`]);
-    if (r.warning) {
-      // Amber to match the freshness staleness highlight — same soft
-      // warning idiom across the page.
-      rateCell.style.color = "#fbbf24";
-    }
-    tr.appendChild(rateCell);
-    const note = r.warning
-      ? el("span", {style: "color:#fbbf24; font-size:11px;"},
-           ["likely over-applied"])
-      : "";
-    tr.appendChild(el("td", null, [note]));
-    tbody.appendChild(tr);
-  }
-  table.appendChild(tbody);
-  body.appendChild(table);
-}
-
 document.addEventListener("DOMContentLoaded", () => {
   loadFreshness();
   loadRuns();
   loadOpsRuns();
-  loadTTPs();
   const purgeBtn = document.getElementById("cfg-purge-cache");
   if (purgeBtn) purgeBtn.addEventListener("click", purgeCache);
 });

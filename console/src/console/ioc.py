@@ -2,9 +2,9 @@
 
 Resolves a query into one or more candidate (type, id) tuples. The server's
 /api/search uses this to short-circuit when the query unambiguously matches a
-typed pattern (IP, sha256, MITRE id, ASN, country) and falls back to an ES
-search across command_line / playbook_name / campaign `name` otherwise.
-The campaigns index uses a bare `name` field (not `campaign_name`).
+typed pattern (IP, sha256, ASN, country) and falls back to an ES search across
+command_line / playbook_name / campaign `name` otherwise. The campaigns index
+uses a bare `name` field (not `campaign_name`).
 """
 from __future__ import annotations
 
@@ -32,8 +32,6 @@ TYPES = (
     "ip_cluster",
     "file",             # cowrie-dropped file, anchored by hash (#2/#3)
     "hash",             # alias for file
-    "mitre_tactic",
-    "mitre_technique",
     "asn",
     "country",
     "freetext",         # fallback: server multi-field text search
@@ -48,8 +46,6 @@ class IOCRef:
 
 
 _SHA256 = re.compile(r"^[A-Fa-f0-9]{64}$")
-_MITRE_TECHNIQUE = re.compile(r"^T\d{4}(\.\d{3})?$")
-_MITRE_TACTIC = re.compile(r"^TA\d{4}$")
 _ASN = re.compile(r"^AS(\d+)$", re.IGNORECASE)
 # Cowrie session ids are typically 12 alphanumerics.
 _SESSION_ID = re.compile(r"^[a-z0-9]{12}$")
@@ -81,7 +77,7 @@ def _is_ip(s: str) -> bool:
 def detect(query: str) -> list[IOCRef]:
     """Return candidate IOC refs from the query string.
 
-    For unambiguous typed patterns (IP, sha256, MITRE, ASN), returns exactly
+    For unambiguous typed patterns (IP, sha256, ASN), returns exactly
     one IOCRef. For ambiguous patterns (a bare integer that could be any
     cluster kind), returns one IOCRef per candidate kind. For everything else,
     returns a single 'freetext' IOCRef so the server falls back to a multi-
@@ -103,11 +99,6 @@ def detect(query: str) -> list[IOCRef]:
             IOCRef(type="command_hash", id=h, label="command " + q[:12] + "…"),
             IOCRef(type="file", id=h, label="file " + q[:12] + "…"),
         ]
-
-    if _MITRE_TECHNIQUE.match(q):
-        return [IOCRef(type="mitre_technique", id=q.upper(), label=q.upper())]
-    if _MITRE_TACTIC.match(q):
-        return [IOCRef(type="mitre_tactic", id=q.upper(), label=q.upper())]
 
     m = _ASN.match(q)
     if m:
@@ -153,8 +144,6 @@ if __name__ == "__main__":  # pragma: no cover  -- ad-hoc sanity check
         "1.2.3.4",
         "2001:db8::1",
         "a" * 64,
-        "T1059.003",
-        "TA0002",
         "AS12345",
         "us",
         "abcdef012345",

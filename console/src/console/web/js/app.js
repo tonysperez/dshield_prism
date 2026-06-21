@@ -23,8 +23,6 @@
     hash: "file",
     asn: "asn",
     country: "cc",
-    mitre_technique: "tt",
-    mitre_tactic: "ta",
   };
   const PREFIX_TO_TYPE = {
     ip: "ip",
@@ -38,8 +36,6 @@
     camp: "campaign",
     asn: "asn",
     cc: "country",
-    tt: "mitre_technique",
-    ta: "mitre_tactic",
   };
 
   function nodeIdFor(type, id) {
@@ -57,7 +53,7 @@
   // State
   // ---------------------------------------------------------------------
   // Two-dimensional traversal:
-  //   - Pipeline (horizontal) — IP → Session → Command → MITRE. Always
+  //   - Pipeline (horizontal) — IP → Session → Command. Always
   //     auto-extended from the anchor as far as the data goes. Edges here
   //     are causal (this IP ran these sessions which ran these commands).
   //   - Siblings (vertical)  — cluster / playbook membership. These are
@@ -65,7 +61,7 @@
   //     that look like this." Controlled by state.siblings (0-3).
   //
   // The user can also hide individual lanes via state.lanesVisible (any of
-  // geo, ip, session, command, mitre). Hiding a lane removes its nodes
+  // geo, ip, session, command). Hiding a lane removes its nodes
   // from the graph; re-enabling forces a pipeline re-fetch to backfill.
   const state = {
     anchor: null,           // {type, id}
@@ -76,7 +72,7 @@
     siblingsExpanded: new Set(),  // cluster pill ids whose members we've fetched
     // Per-node directional role for pipeline auto-trace:
     //   "anchor"     = user's anchor node, fully traces in valid directions
-    //   "miniAnchor" = a cluster/geo/mitre-sibling that should trace its own
+    //   "miniAnchor" = a cluster/geo-sibling that should trace its own
     //                  full pipeline (mini-anchor)
     //   "trace"      = a session reached via the anchor's auto-trace; fetched
     //                  to extend the pipeline ONE more step
@@ -86,7 +82,7 @@
     depthOf: new Map(),     // node id -> siblings depth from anchor (0 = anchor's pipeline)
     expandToken: 0,         // cancels in-flight expansion when anchor / reset changes
     inflight: 0,            // # of /neighbors requests currently in-flight
-    lanesVisible: new Set(["geo", "ip", "session", "command", "mitre"]),
+    lanesVisible: new Set(["geo", "ip", "session", "command"]),
     // Clusters added via the "+ Add cluster to view" button. Stored as
     //   clusterNodeId -> Set<node id> introduced by that click
     // so we can undo precisely what was added (clusters that arrived via
@@ -531,11 +527,6 @@
     if (d.type === "country") {
       title = d.id;
       kindTag = "country";
-      return {title, kindTag, internalId, counts, windowPhrase: "", evidence};
-    }
-    if (d.type === "mitre_technique" || d.type === "mitre_tactic") {
-      title = d.id;
-      kindTag = d.type.replace("_", " ");
       return {title, kindTag, internalId, counts, windowPhrase: "", evidence};
     }
     // Fallback: still show title + type so the card never goes blank
@@ -1696,7 +1687,7 @@
   // Defaults — values matching these are omitted from the URL so a
   // bare /graph?ioc=… link stays short. Edit here when introducing
   // a new knob in F.1's URL state envelope.
-  const DEFAULT_LANES = ["geo", "ip", "session", "command", "mitre"];
+  const DEFAULT_LANES = ["geo", "ip", "session", "command"];
   function _lanesAreDefault(visible) {
     if (visible.size !== DEFAULT_LANES.length) return false;
     return DEFAULT_LANES.every(l => visible.has(l));
@@ -1855,7 +1846,6 @@
     ip: "ip", session: "session", command: "command",
     ip_cluster: "ip", session_cluster: "session", command_cluster: "command",
     asn: "geo", country: "geo",
-    mitre_technique: "mitre", mitre_tactic: "mitre",
   };
 
   function siblingsTarget(target) {
@@ -1944,7 +1934,6 @@
       }
       if (CLUSTER_KINDS.has(sourceType) && PIPELINE_KINDS.has(newType)) return "miniAnchor";
       if ((sourceType === "asn" || sourceType === "country") && newType === "ip") return "miniAnchor";
-      if ((sourceType === "mitre_technique" || sourceType === "mitre_tactic") && newType === "command") return "miniAnchor";
       // Both campaign-like sources expand to a full pipeline trace for each
       // session they bring in. Without the `playbook` branch, anchoring on a
       // playbook (e.g. from Insights or a search hit) leaves its sessions at
@@ -2133,7 +2122,6 @@
     const KIND_ORDER = [
       "ip_cluster", "session_cluster", "command_cluster",
       "campaign", "asn", "country",
-      "mitre_technique", "mitre_tactic",
     ];
     const KIND_LABEL = {
       ip_cluster: "IP clusters",
@@ -2142,8 +2130,6 @@
       campaign: "Campaigns",
       asn: "ASNs",
       country: "Countries",
-      mitre_technique: "MITRE techniques",
-      mitre_tactic: "MITRE tactics",
     };
     const byKind = new Map();
     for (const s of sets) {
@@ -2367,7 +2353,6 @@
     // localStorage (`prism.badge.<key>`). Defaults live in graph.js.
     const BADGE_DEFAULTS = {
       specificity: "1", pbks: "1", asn: "1", country: "1",
-      mitre_technique: "0", mitre_tactic: "0",
     };
     document.querySelectorAll(".cfg-badge").forEach((chk) => {
       const key = chk.dataset.badgeKey;
@@ -2630,10 +2615,6 @@
       {
         label: "Attack summary",
         query: "Summarize the overall attack pattern visible in this graph. Cover: which IPs are involved, what commands were run, the session flow, and any campaign or cluster groupings that suggest coordinated behaviour.",
-      },
-      {
-        label: "MITRE techniques",
-        query: "Which MITRE ATT&CK techniques and tactics are most relevant to the activity in this graph? For each technique, briefly explain which specific commands or behaviours in the data support that classification.",
       },
       {
         label: "Coordination signs",

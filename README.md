@@ -32,7 +32,7 @@ Built during my internship with the SANS Internet Storm Center to enable faster 
 
 ### Highlights
 
-- **See behavior, not individual actions.** Every unique command, session, and source IP becomes a behavioral fingerprint with a semantic vector, intent, extracted IOCs, and MITRE TTP IDs.
+- **See behavior, not individual actions.** Every unique command, session, and source IP becomes a behavioral fingerprint with a semantic vector, intent, and extracted IOCs.
 
 - **Pivot on behavior, not just artifacts.** Most honeypot tooling (most log analysis tooling really) only pivots from one exact artifact to the same artifact — this IP, that exact command. Prism groups attacks by what they actually *do*, so you can ask the question that matters: "what else behaves like this?" — even when the IPs, files, and commands are all different.
 
@@ -62,8 +62,9 @@ Prism has been running continuously against my home DShield sensor. Each analysi
 > - Built a per-day cloud LLM cost cap on day one. This saved me when a bug later
 >   caused an endless query loop that would otherwise have burned my entire
 >   Anthropic balance.
-> - Small LLMs cheerfully invent MITRE TTP IDs that don't exist. Every
->   LLM-emitted TTP is schema-validated against the real ATT&CK corpus.
+> - Small LLMs cheerfully invent MITRE TTP IDs that don't exist. Even
+>   schema-validating every emitted ID against the real ATT&CK corpus didn't
+>   make the mapping trustworthy, so I pulled LLM-derived MITRE entirely.
 > - Shipped a finding kind that produced 2,000 findings on one corpus.
 >   Retired it after one cycle. Not a bug, just a bad detection.
 
@@ -73,7 +74,7 @@ Caveat worth stating plainly: this is one home DShield sensor — a single vanta
 
 ```mermaid
 flowchart TD
-    A[Honeypot events<br/>raw commands] --> B[Enrich each command<br/>intent · MITRE · IOCs · embedding]
+    A[Honeypot events<br/>raw commands] --> B[Enrich each command<br/>intent · IOCs · embedding]
     M[Local LLM + embeddings] --> B
     B -.->|hard / novel only| X[Cloud LLM]
     B --> C[Roll up to sessions]
@@ -98,7 +99,7 @@ flowchart TD
 
 From a raw command line to a tracked behavior, in six steps:
 
-1. **Enrich every command.** A honeypot records the raw text of everything an attacker types. Prism hands each *unique* command to a local LLM that explains what it does, the intent behind it, the MITRE ATT&CK techniques it maps to, and any IOCs it carries. That output is recorded, then converted into an *embedding*: a numeric fingerprint where functionally similar commands land close together, even when the text is different. The few genuinely novel or low-confidence commands can optionally escalate to a frontier cloud model; everything else stays local, and identical commands are explained once and cached.
+1. **Enrich every command.** A honeypot records the raw text of everything an attacker types. Prism hands each *unique* command to a local LLM that explains what it does, the intent behind it, and any IOCs it carries. That output is recorded, then converted into an *embedding*: a numeric fingerprint where functionally similar commands land close together, even when the text is different. The few genuinely novel or low-confidence commands can optionally escalate to a frontier cloud model; everything else stays local, and identical commands are explained once and cached.
 
 2. **Stack it up: command → session → IP.** The fingerprints of every command in one SSH login are pooled into a single fingerprint for the whole *session* — a compact summary of what that attacker actually did, weighting rare commands over boilerplate like `cd /tmp`. The same roll-up runs one level higher, giving each *source IP* a fingerprint of its overall behavior.
 
@@ -122,7 +123,7 @@ Eight pages, one analyst workflow: **Inbox · Graph · Browse · History · Hunt
 
 <p align="center"><img src=".github/screenshots/graph.png" alt="Graph-based investigation pivot" width="900"></p>
 
-**Report tool.** Gather every in-view artifact — IPs, commands, credentials, file hashes, MITRE chain, session sequences — into a copy-ready writeup, with IOCs defanged by default and a choice of plain / markdown / CSV / JSON output.
+**Report tool.** Gather every in-view artifact — IPs, commands, credentials, file hashes, session sequences — into a copy-ready writeup, with IOCs defanged by default and a choice of plain / markdown / CSV / JSON output.
 
 <p align="center"><img src=".github/screenshots/report.png" alt="Report tool with category and format options" width="900"></p>
 
@@ -203,7 +204,7 @@ Licensed under [GPL-3.0](LICENSE).
 - Cargo-cult code within scripts exists as a result of the above. This has funnily enough resulted in some pretty good IOCs, because literally nobody else will run a non-existent command except a script whose operator copy/pasted without bothering to understand it.
 
 ### AI in Production
-- Validation, validation, validation. With a small 8B model, I had to: give it heavy context + grounding; validate its output against my schema (it cheerfully made up MITRE TTP IDs); track output against a known baseline. Even when escalating the same query to a frontier model, I found this extra grounding and validation helped get its output just the way I wanted it.
+- Validation, validation, validation. With a small 8B model, I had to: give it heavy context + grounding; validate its output against my schema; track output against a known baseline. Even when escalating the same query to a frontier model, I found this extra grounding and validation helped get its output just the way I wanted it. Some outputs resisted even that — the model invented MITRE TTP IDs faster than schema-validation could catch them, so I eventually pulled LLM-derived MITRE altogether rather than ship an unreliable signal.
 - Cloud LLM costs can balloon, fast. I built cost-tracking and a per-day budget cap from day one — which saved me later when a bug caused an endless cloud-LLM query loop. Without the cap, that bug would have burned through my entire Anthropic balance in hours.
 
 ### Operational Lessons

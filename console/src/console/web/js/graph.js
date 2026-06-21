@@ -1,7 +1,7 @@
 /* DShield Console — graph view.
  *
  * Strict layered (swim-lane) layout with bubble-set cluster regions and
- * badge-demoted attributes (ASN/Country/MITRE). Pure Canvas2D — no physics,
+ * badge-demoted attributes (ASN/Country). Pure Canvas2D — no physics,
  * no external graph library — so layout is deterministic and snappy at
  * the medium scale (200–1000 nodes) we target.
  *
@@ -12,7 +12,6 @@
  *     1 = ip
  *     2 = session
  *     3 = command
- *     4 = mitre  (technique + tactic)    — usually empty unless anchored
  *
  *   Cluster nodes (ip_cluster / session_cluster / command_cluster) live in
  *   the column of their member kind and are rendered as a header pill above
@@ -28,17 +27,16 @@
  *
  * Badges
  * ------
- *   ASN, country, and MITRE IDs are usually attributes, not nodes. When a
- *   node carries them via metadata (e.g. ip.asn, command.mitre_techniques),
- *   we draw them as small chips next to the node body. Clicking a chip
- *   pivots to the corresponding IOC. If the user anchors directly on an
- *   ASN / country / MITRE, that IOC becomes a real node in column 0 / 4
- *   and badges are not drawn for it.
+ *   ASN and country are usually attributes, not nodes. When a node
+ *   carries them via metadata (e.g. ip.asn), we draw them as small chips
+ *   next to the node body. Clicking a chip pivots to the corresponding
+ *   IOC. If the user anchors directly on an ASN / country, that IOC
+ *   becomes a real node in column 0 and badges are not drawn for it.
  *
  * Sets (for the UpSet sidecar)
  * ---------------------------
  *   The view's "sets" are: every cluster id present (3 kinds), every
- *   playbook, every campaign, every ASN, every country, every MITRE id.
+ *   playbook, every campaign, every ASN, every country.
  *   getSets() walks the current node list and produces {sets, members,
  *   intersections}.
  *
@@ -63,11 +61,11 @@
   // (LLM-named session cluster) each get their own columns; both are
   // auto-shown only when nodes of that type are present. Neither has a
   // lane checkbox.
-  const COLUMNS = ["campaign", "playbook", "geo", "ip", "session", "command", "file", "mitre"];
+  const COLUMNS = ["campaign", "playbook", "geo", "ip", "session", "command", "file"];
   const COL_LABEL = {
     campaign: "Campaign", playbook: "Playbook",
     geo: "ASN / Country", ip: "IP", session: "Session", command: "Command",
-    file: "File", mitre: "MITRE",
+    file: "File",
   };
 
   const TYPE_TO_COLUMN = {
@@ -78,7 +76,6 @@
     session: "session", session_cluster: "session",
     command: "command", command_cluster: "command",
     file: "file",               // cowrie-dropped file (hash), linked via command_hash
-    mitre_technique: "mitre", mitre_tactic: "mitre",
   };
 
   const TYPE_COLOR = {
@@ -93,8 +90,6 @@
     asn: "#94a3b8",
     country: "#cbd5e1",
     file: "#f472b6",            // benign/unknown file; malicious files flagged red at render
-    mitre_technique: "#2dd4bf",
-    mitre_tactic: "#14b8a6",
   };
   // A file flagged malicious by intel (consensus_malicious) renders in this
   // alarm color regardless of the base file hue.
@@ -159,7 +154,7 @@
   // "campaign" is intentionally omitted from laneVisibility — the campaign
   // column is auto-shown when campaign nodes exist and can't be hidden via the
   // lane checkboxes (its visibility is purely data-driven, not user-controlled).
-  let laneVisibility = new Set(["geo", "ip", "session", "command", "file", "mitre"]);
+  let laneVisibility = new Set(["geo", "ip", "session", "command", "file"]);
 
   // ROADMAP #4 — cluster specificity spotlight. `on` hides/dims commodity IP
   // and command nodes (score below the threshold or absent). `hide:false`
@@ -428,12 +423,12 @@
 
     // 1. Bucket nodes by column. Cluster nodes count as part of their
     //    member column. Campaign nodes are stored separately. Badge-kinds
-    //    (asn/country/mitre) are demoted to chips on host nodes unless
+    //    (asn/country) are demoted to chips on host nodes unless
     //    the user has anchored on one (then we render it as a real
     //    column node so the user sees what they pivoted to).
     const anchorNode = anchorId && nodesById.get(anchorId);
     const anchorIsBadgeKind = anchorNode && _isBadgeKind(anchorNode.type);
-    const buckets = { campaign: [], playbook: [], geo: [], ip: [], session: [], command: [], file: [], mitre: [] };
+    const buckets = { campaign: [], playbook: [], geo: [], ip: [], session: [], command: [], file: [] };
     for (const n of nodesById.values()) {
       // Clear any stale layout coords so a node demoted to a badge has
       // !isFinite(x) and edge-draw will skip it.
@@ -1037,7 +1032,7 @@
     // Some badges (e.g. the "N camps" multi-campaign flag) are informational
     // counters, not pivots — they describe the host node, not a separate IOC.
     if (b.nonPivot) return;
-    // Badge click = pivot to that IOC. (Reading details on an ASN/MITRE
+    // Badge click = pivot to that IOC. (Reading details on an ASN
     // without leaving the current anchor isn't useful — the badge already
     // says everything we know.)
     if (pivotHandler) pivotHandler({ type: b.type, id: b.id });
@@ -1687,7 +1682,7 @@
     const undimmed = focus ? _focusUndimmed() : null;
     const greyed = _greyedReach();
     // Skip cluster-membership and campaign-membership edges — bubbles
-    // convey both. Skip MITRE/ASN/Country edges — those become badges
+    // convey both. Skip ASN/Country edges — those become badges
     // unless one of their endpoints is the *anchored* node (in which
     // case rendering them as real edges helps the user see the pivot).
     for (const e of edges) {
@@ -1732,13 +1727,13 @@
   }
 
   function _isBadgeEdge(e) {
-    return e.kind === "asn" || e.kind === "country" || e.kind === "ttp";
+    return e.kind === "asn" || e.kind === "country";
   }
 
   function _endpointIsRealNode(e) {
     // A badge-eligible relation is rendered as a real edge when one of the
     // endpoints is the *anchored* node of that kind (i.e. the user
-    // explicitly anchored on an ASN or MITRE), or simply when the anchor
+    // explicitly anchored on an ASN), or simply when the anchor
     // is the badge-side IOC and we want to see who points at it.
     if (!anchorId) return false;
     return e.source === anchorId || e.target === anchorId;
@@ -1827,8 +1822,8 @@
         continue;
       }
       if (!isFinite(n.x)) continue;
-      // Geo / MITRE nodes are only rendered when they're the anchor (so
-      // we keep the geo/mitre columns visible) OR when the user has
+      // Geo nodes are only rendered when they're the anchor (so
+      // we keep the geo column visible) OR when the user has
       // explicitly anchored on one of them. Otherwise they live as
       // badges on the host nodes.
       if (_isBadgeKind(n.type)) {
@@ -1950,7 +1945,6 @@
       ip_cluster: "ip", session_cluster: "session", command_cluster: "command",
       playbook: "playbook", campaign: "campaign",
       file: "file", asn: "geo", country: "geo",
-      mitre_technique: "mitre", mitre_tactic: "mitre",
     };
     const col = TYPE_TO_COL[n.type];
     const colW = (meta && col && !(meta.gutters && meta.gutters.has(col)))
@@ -2036,8 +2030,6 @@
     pbks:            "1",   // 3 pbks
     asn:             "1",   // AS12345
     country:         "1",   // US
-    mitre_technique: "0",   // T1059.003 — verbose, off by default
-    mitre_tactic:    "0",   // TA0003
   };
   function _badgePrefOn(key) {
     try {
@@ -2072,18 +2064,6 @@
       }
       if (n.country && _badgePrefOn("country")) {
         out.push({ type: "country", id: String(n.country), prefix: "cc", label: String(n.country) });
-      }
-    }
-    if (n.type === "command") {
-      if (_badgePrefOn("mitre_technique")) {
-        for (const t of (n.mitre_techniques || [])) {
-          out.push({ type: "mitre_technique", id: t, prefix: "tt", label: t });
-        }
-      }
-      if (_badgePrefOn("mitre_tactic")) {
-        for (const t of (n.mitre_tactics || [])) {
-          out.push({ type: "mitre_tactic", id: t, prefix: "ta", label: t });
-        }
       }
     }
     // ROADMAP #4 — cluster-specificity chip. Surfaced for IP and command
@@ -2137,7 +2117,7 @@
   }
 
   function _isBadgeKind(t) {
-    return t === "asn" || t === "country" || t === "mitre_technique" || t === "mitre_tactic";
+    return t === "asn" || t === "country";
   }
 
   function _rightDecorationsWidth(n) {
@@ -2354,7 +2334,7 @@
   // ===================================================================
   // A "set" is an identifier the sidecar lets the user filter by.
   // Membership is derived from node metadata: cluster_id, campaign(_name),
-  // asn, country, and the (multi-valued) mitre_techniques/mitre_tactics.
+  // asn, and country.
   function getSets() {
     const sets = new Map();   // setId -> {id, kind, label, count}
     const nodeSets = new Map(); // nodeId -> Set(setId)
@@ -2382,8 +2362,6 @@
       if (pb) add(n, `playbook:${pb}`, "playbook", n.playbook_name || pb);
       if (n.asn) add(n, `asn:${n.asn}`, "asn", `AS${n.asn}`);
       if (n.country) add(n, `country:${n.country}`, "country", String(n.country));
-      for (const t of (n.mitre_techniques || [])) add(n, `mitre_technique:${t}`, "mitre_technique", t);
-      for (const t of (n.mitre_tactics || [])) add(n, `mitre_tactic:${t}`, "mitre_tactic", t);
     }
 
     // Intersections: pairwise only (matrix scales O(n^2); we keep only
@@ -2456,8 +2434,6 @@
     if (n.playbook_id) out.add(`playbook:${n.playbook_id}`);
     if (n.asn) out.add(`asn:${n.asn}`);
     if (n.country) out.add(`country:${n.country}`);
-    for (const t of (n.mitre_techniques || [])) out.add(`mitre_technique:${t}`);
-    for (const t of (n.mitre_tactics || [])) out.add(`mitre_tactic:${t}`);
     return out;
   }
 

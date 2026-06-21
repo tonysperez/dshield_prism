@@ -186,7 +186,7 @@ def _render_session(rec: dict) -> str:
         out.append(f"- **Window:** {win}")
     out.append("")
 
-    # ----- rollup (structural only, no LLM-derived intent/MITRE/etc) ------
+    # ----- rollup (structural only, no LLM-derived intent/etc) ------
     # playbook_id is also omitted: it's the clustering output, which is
     # exactly what the eval set grades. Showing it would let the analyst
     # ride the pipeline's grouping instead of forming an independent

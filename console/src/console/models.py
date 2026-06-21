@@ -41,7 +41,7 @@ class IOCDetail(BaseModel):
     # One-line "how strong is the evidence" verdict (same vocabulary the
     # inbox row carries). Populated by format_anchor_evidence_quality for
     # playbook / campaign / *_cluster / ip anchors; empty for kinds where
-    # a verdict doesn't apply (asn, country, mitre_*, session, command).
+    # a verdict doesn't apply (asn, country, session, command).
     # Consumed by the graph orientation card.
     evidence_quality: str = ""
 

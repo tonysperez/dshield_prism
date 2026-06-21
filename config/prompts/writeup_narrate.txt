@@ -55,9 +55,8 @@ Citation rules — strict:
     fine, sha256:c2c1e9557c5abc30... is fine, but never invent a new
     hash). Always include a "label" alongside the value the first time
     you cite it: "the same RSA key (sha256:c2c1...)".
-  - You MAY mention country codes, ASN numbers, MITRE technique IDs,
-    sha256 prefixes, URLs, or IP addresses if and only if they appear
-    in key_identifiers above.
+  - You MAY mention country codes, ASN numbers, sha256 prefixes, URLs,
+    or IP addresses if and only if they appear in key_identifiers above.
   - You MAY mention high-level concepts that don't require concrete
     citation — "SSH brute force", "crypto miner", "credential spray",
     "Mirai-like behaviour" — when they describe a CATEGORY of activity

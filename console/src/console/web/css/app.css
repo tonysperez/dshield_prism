@@ -20,7 +20,6 @@
   --c-camp: #fb923c;
   --c-asn: #94a3b8;
   --c-cc: #cbd5e1;
-  --c-mitre: #2dd4bf;
 }
 
 * { box-sizing: border-box; }
@@ -345,7 +344,6 @@ body.hide-detail #detail-pane { display: none; }
 .lg-camp { background: var(--c-camp); color: #fff; }
 .lg-asn { background: var(--c-asn); }
 .lg-cc { background: var(--c-cc); }
-.lg-mitre { background: var(--c-mitre); color: #000; }
 
 /* ----------------------------------------------------------------------
  * Orientation card — top-left canvas overlay. Mirrors the #legend
@@ -514,8 +512,6 @@ body.hide-detail #detail-pane { display: none; }
 .set-row.kind-command_cluster .swatch { background: var(--c-cmdcl); }
 .set-row.kind-asn .swatch { background: var(--c-asn); }
 .set-row.kind-country .swatch { background: var(--c-cc); }
-.set-row.kind-mitre_technique .swatch,
-.set-row.kind-mitre_tactic .swatch { background: var(--c-mitre); }
 .set-row .label {
   white-space: nowrap;
   overflow: hidden;

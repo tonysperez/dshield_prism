@@ -60,7 +60,6 @@
         <span class="lg lg-camp">campaign</span>
         <span class="lg lg-asn">ASN</span>
         <span class="lg lg-cc">CC</span>
-        <span class="lg lg-mitre">MITRE</span>
       </div>
 
       <!-- Orientation card — top-left corner of the canvas. Stays put
@@ -164,7 +163,6 @@
             <label class="lane-chk"><input type="checkbox" data-lane="session" checked /><span>session</span></label>
             <label class="lane-chk"><input type="checkbox" data-lane="command" checked /><span>command</span></label>
             <label class="lane-chk"><input type="checkbox" data-lane="file" checked /><span>file</span></label>
-            <label class="lane-chk"><input type="checkbox" data-lane="mitre" checked /><span>mitre</span></label>
           </div>
           <div class="setting-row">
             <span class="setting-label">Spotlight threshold:</span>
@@ -195,14 +193,6 @@
           <label class="setting-row">
             <input type="checkbox" class="cfg-badge" data-badge-key="country" />
             <span>Country <span class="setting-eg">US</span></span>
-          </label>
-          <label class="setting-row">
-            <input type="checkbox" class="cfg-badge" data-badge-key="mitre_technique" />
-            <span>MITRE technique <span class="setting-eg">T1059.003</span> (off — busy on commands)</span>
-          </label>
-          <label class="setting-row">
-            <input type="checkbox" class="cfg-badge" data-badge-key="mitre_tactic" />
-            <span>MITRE tactic <span class="setting-eg">TA0003</span> (off — usually redundant with techniques)</span>
           </label>
         </fieldset>
 
@@ -292,7 +282,6 @@
               <label class="sub-chk"><input type="checkbox" class="copy-opt" data-cat="commands" data-opt="sha256" checked /><span>sha256</span></label>
               <label class="sub-chk"><input type="checkbox" class="copy-opt" data-cat="commands" data-opt="intent" /><span>intent</span></label>
               <label class="sub-chk"><input type="checkbox" class="copy-opt" data-cat="commands" data-opt="specificity" checked /><span>+ specificity</span></label>
-              <label class="sub-chk"><input type="checkbox" class="copy-opt" data-cat="commands" data-opt="mitre" /><span>+ MITRE on row</span></label>
             </span>
           </label>
           <label class="setting-row copy-cat-row">
@@ -331,11 +320,6 @@
             <input type="checkbox" class="copy-cat" data-cat="lifecycle_notes" checked />
             <span class="copy-cat-label">Lifecycle notes <span class="copy-cat-count" data-count-cat="lifecycle_notes"></span></span>
             <span class="copy-cat-fetch-hint">(analyst-authored, bulk-fetched on demand)</span>
-          </label>
-          <label class="setting-row copy-cat-row">
-            <input type="checkbox" class="copy-cat" data-cat="mitre" checked />
-            <span class="copy-cat-label">MITRE ATT&amp;CK (aggregate) <span class="copy-cat-count" data-count-cat="mitre"></span></span>
-            <span class="copy-cat-fetch-hint">(unique TTPs across visible commands)</span>
           </label>
           <label class="setting-row copy-cat-row">
             <input type="checkbox" class="copy-cat" data-cat="hassh_agg" checked />

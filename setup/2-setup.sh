@@ -553,10 +553,10 @@ if (( RUN_INIT_INDEX )); then
     # here; the writer skips silently until this exists.
     log "Initializing ops index (prism.ops — run telemetry)"
     ( cd "${INSTALL_DIR}" && run_cli init-indexes --update-mapping --source ops )
-    # MITRE TTP application-rate snapshot (phase 2.3) — `enrich` writes a
-    # per-corpus snapshot here, but skips silently until this exists, so a
-    # fresh install never populates the Health page's TTP-rate panel without it.
-    log "Initializing metrics index (prism.metrics — MITRE TTP application rates)"
+    # Per-run metrics snapshots (prism.metrics) — the pipeline writes
+    # percentile-distribution snapshots here for threshold migrations, but
+    # skips silently until this exists.
+    log "Initializing metrics index (prism.metrics — per-run distribution snapshots)"
     ( cd "${INSTALL_DIR}" && run_cli init-indexes --update-mapping --source metrics )
 else
     warn "Skipping init-indexes (--skip-init-index)"

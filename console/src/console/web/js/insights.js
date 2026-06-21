@@ -442,7 +442,7 @@
                                     && r.novelty_score_external !== undefined);
     const headers = ["Command", "Intent", "Novel (corpus)"];
     if (showExt) headers.push("Novel (catalog)");
-    headers.push("Sessions", "Source IPs", "MITRE", "");
+    headers.push("Sessions", "Source IPs", "");
     const table = el("table", "ins-table");
     const thead = el("thead");
     const hrow = el("tr");
@@ -498,14 +498,6 @@
       }
       tr.appendChild(td("size-badge", fmt(row.unique_sessions)));
       tr.appendChild(td("", fmt(row.unique_source_ips)));
-      // MITRE
-      const mitreCell = document.createElement("td");
-      const tags = [...(row.techniques || []), ...(row.tactics || [])];
-      for (const t of tags.slice(0, 3)) {
-        mitreCell.appendChild(el("span", "mitre-tag", t));
-        mitreCell.appendChild(document.createTextNode(" "));
-      }
-      tr.appendChild(mitreCell);
       tr.appendChild(row.sha256 ? actionCell("command", row.sha256) : td(""));
       tbody.appendChild(tr);
     }
