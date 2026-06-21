@@ -7,6 +7,23 @@ elasticsearch:
   ca_certs: null
   request_timeout: 60
 
+  # Heap / circuit-breaker-aware backpressure. On a small ES node a heavy
+  # aggregation / scan / bulk can trip the parent circuit breaker (HTTP 429
+  # circuit_breaking_exception); the transport retries within milliseconds —
+  # too fast for the breaker to drain — then fails the step. When enabled,
+  # every ES call retries breaker rejections after polling the node's heap
+  # and waiting for it to drain. max_wait_s is a shared wall-clock budget per
+  # operation — the pipeline prefers waiting a long time over failing a step.
+  backpressure:
+    enabled: true
+    heap_high_watermark: 0.85    # pause new work at/above this parent-breaker ratio
+    heap_resume_watermark: 0.70  # resume below this (hysteresis)
+    poll_interval_s: 2.0         # breaker re-probe cadence while paused
+    max_wait_s: 3600.0           # overall patience budget per operation (~1h)
+    retry_max_attempts: 200      # secondary ceiling; max_wait_s is the real limit
+    retry_base_delay_s: 2.0      # exponential backoff base, clamped to remaining budget
+    retry_max_delay_s: 30.0      # per-retry backoff cap
+
   # All index names are nested per source so adding a new sensor
   # (webhoneypot, dionaea, etc.) is a sibling block, not a flat rename.
   # Naming layout (post-2026-05-17): prism.<function>.<source>.<layer>

@@ -749,10 +749,28 @@ def _run_pipeline(cfg, secrets, args) -> int:
         # is exposed (most do).
     print_args(f"[pipeline] running {len(steps)} step(s){' (dry-run)' if dry else ''}")
 
+    # Inter-step ES capacity gate (backpressure): a heap-spiking step (e.g. the
+    # cluster-assignment write+refresh) can leave the node's parent circuit
+    # breaker near its limit. Before each step, pause until heap drains so the
+    # next step doesn't pile on and trip the breaker. Best-effort and skipped
+    # when disabled or unreachable; the per-call client wrapper handles the rest.
+    from .es_client import make_client
+    from .es_health import wait_for_capacity
+    _bp = getattr(cfg.elasticsearch, "backpressure", None)
+    try:
+        _gate_es = make_client(cfg.elasticsearch, secrets) if (_bp and not dry) else None
+    except Exception:  # noqa: BLE001 — the gate is a nicety, never fatal
+        _gate_es = None
+
     summary: dict = {"force_wipe": bool(args.force), "dry_run": dry, "steps": []}
     failed_hard = False
     for i, (name, fn, optional) in enumerate(steps, 1):
         print_args(f"\n=== [{i}/{len(steps)}] {name}" + (" (optional)" if optional else "") + " ===")
+        if _gate_es is not None:
+            try:
+                wait_for_capacity(_gate_es, _bp, label=f"pipeline step '{name}'")
+            except Exception as exc:  # noqa: BLE001 — never let the gate fail a run
+                log.debug("[pipeline] capacity gate skipped for %s: %s", name, exc)
         try:
             stats = fn()
             summary["steps"].append({"name": name, "ok": True, "stats": stats})

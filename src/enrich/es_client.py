@@ -1,6 +1,7 @@
 """Elasticsearch client + queries + bulk writer."""
 from __future__ import annotations
 
+import functools
 import json
 import logging
 from pathlib import Path
@@ -9,8 +10,96 @@ from typing import Any, Optional
 from elasticsearch import Elasticsearch, helpers
 
 from .config import ESConfig, Secrets
+from .es_health import run_resilient
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Backpressure-aware client wrapper
+# ---------------------------------------------------------------------------
+# Every ES read/write in the pipeline goes through the client `make_client`
+# returns. Wrapping that one object routes *all* requests — direct `es.*`
+# calls, namespaced calls (`es.indices.*`), and the `elasticsearch.helpers`
+# bulk/scan loops (which call methods on whatever client they're handed) —
+# through `run_resilient`: on a 429/circuit-breaker rejection, wait for heap to
+# drain then retry. No per-call-site changes, full coverage on small nodes.
+#
+# Happy path adds only a try/except per call; the heap probe inside
+# `run_resilient` fires only after an overload error, never on every request.
+
+
+def _is_namespace(attr: Any) -> bool:
+    """True for an elasticsearch-py namespace client (`IndicesClient`,
+    `NodesClient`, …) — non-callable objects whose type name ends in `Client`.
+    The root `Elasticsearch` / `Transport` don't match, so they pass through."""
+    return (not callable(attr)) and type(attr).__name__.endswith("Client")
+
+
+def _wrap_call(method: Any, label: str, root: Any, bp: Any) -> Any:
+    """Wrap a bound ES API method so each invocation retries on overload."""
+    @functools.wraps(method)
+    def _wrapped(*args: Any, **kwargs: Any) -> Any:
+        return run_resilient(lambda: method(*args, **kwargs), root, bp, label=label)
+    return _wrapped
+
+
+class _ResilientNamespace:
+    """Proxy for a namespace client (`es.indices`, `es.cluster`, …). Wraps its
+    API methods in `run_resilient`, probing pressure via the root client."""
+
+    __slots__ = ("_ns", "_bp", "_root")
+
+    def __init__(self, ns: Any, bp: Any, root: Any) -> None:
+        object.__setattr__(self, "_ns", ns)
+        object.__setattr__(self, "_bp", bp)
+        object.__setattr__(self, "_root", root)
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._ns, name)
+        if _is_namespace(attr):
+            return _ResilientNamespace(attr, self._bp, self._root)
+        if callable(attr):
+            return _wrap_call(attr, name, self._root, self._bp)
+        return attr
+
+
+class ResilientClient:
+    """Transparent proxy over an `Elasticsearch` client that routes every API
+    call through `run_resilient` (heap/circuit-breaker backpressure).
+
+    `._raw` exposes the unwrapped client (used to probe breaker stats without
+    recursive retry); `._bp` is the backpressure config."""
+
+    __slots__ = ("_raw", "_bp")
+
+    def __init__(self, raw: Elasticsearch, bp: Any) -> None:
+        object.__setattr__(self, "_raw", raw)
+        object.__setattr__(self, "_bp", bp)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        # `elasticsearch.helpers` mutates the client it's handed (e.g.
+        # `client._client_meta = ...`). Forward such sets to the underlying
+        # client so the helper's behaviour — and the meta header — are preserved.
+        if name in ("_raw", "_bp"):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._raw, name, value)
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._raw, name)
+        # `options()` returns a *new* client — re-wrap it so helpers that do
+        # `client.options(...).bulk(...)` stay covered end to end.
+        if name == "options":
+            bp = self._bp
+            def _options(*args: Any, **kwargs: Any) -> "ResilientClient":
+                return ResilientClient(attr(*args, **kwargs), bp)
+            return _options
+        if _is_namespace(attr):
+            return _ResilientNamespace(attr, self._bp, self)
+        if callable(attr):
+            return _wrap_call(attr, name, self, self._bp)
+        return attr
 
 
 def _load_mapping(mapping_path: str) -> dict:
@@ -85,7 +174,13 @@ def make_client(cfg: ESConfig, secrets: Secrets) -> Elasticsearch:
             "(or export them in the environment). The .env file is searched in this order: "
             "$PRISM_ENV, alongside-config-file's parent, alongside-config-file, CWD."
         )
-    return Elasticsearch(**kwargs)
+    raw = Elasticsearch(**kwargs)
+    bp = getattr(cfg, "backpressure", None)
+    # Wrap so every read/write inherits heap/circuit-breaker backpressure.
+    # `helpers.bulk`/`helpers.scan` operate on this client, so their per-chunk
+    # `.bulk()`/`.search()`/`.scroll()` calls are covered too. When disabled,
+    # the wrapper still forwards transparently (run_resilient is a no-op).
+    return ResilientClient(raw, bp)
 
 
 def bulk_write(es: Elasticsearch, index: str, actions: list[dict]) -> tuple[int, list]:

@@ -26,6 +26,7 @@ from ...cache import StateDB
 from ...classification import aggregate as _aggregate_classification
 from ...config import AppConfig, Secrets, SessionConfig
 from ...es_client import bulk_write, deep_get, fetch_source_subset, make_client
+from ...es_health import wait_for_capacity
 from ...llm.schemas import (
     PLAYBOOK_DISAMBIGUATE_JSON_SCHEMA,
     PLAYBOOK_NAME_JSON_SCHEMA,
@@ -302,6 +303,12 @@ def _persist_cluster_specificity(
         "must": [{"exists": {"field": _SESSION_CLUSTER_ID_FIELD}}],
         "must_not": [{"term": {_SESSION_CLUSTER_ID_FIELD: "outlier"}}],
     }}
+    # This is the heaviest read in the pipeline (two `size:100000` terms aggs +
+    # cardinality sub-aggs). On a small node it's the most likely to trip the
+    # parent circuit breaker, so wait for heap headroom before firing it; the
+    # client wrapper still retries on overload, and the `except` below still
+    # degrades to "skip" if it ultimately can't run.
+    wait_for_capacity(es, getattr(es, "_bp", None), label="cluster-specificity aggregation")
     try:
         resp = es.search(
             index=sessions_idx, size=0, query=base,

@@ -81,12 +81,38 @@ class SourceIndexes(BaseModel):
     dshield: DshieldIndexes = Field(default_factory=DshieldIndexes)
 
 
+class ESBackpressureConfig(BaseModel):
+    """Heap/circuit-breaker-aware backpressure for ES requests.
+
+    The pipeline runs against ES nodes of very different sizes. On a small,
+    heap-constrained node a heavy aggregation / scan / bulk can trip the
+    parent circuit breaker (HTTP 429 `circuit_breaking_exception`). The
+    client transport retries those within milliseconds — far too fast for
+    the breaker to drain — and then raises, hard-failing a pipeline step.
+
+    When enabled, every ES call is routed through an overload-retry path
+    (see `enrich.es_health`): on a 429/breaker rejection it polls the node's
+    parent-breaker ratio, waits for heap to drain, then retries with
+    exponential backoff. `max_wait_s` is a single shared wall-clock budget
+    per operation — we'd rather wait a long time than fail a step.
+    """
+    enabled: bool = True
+    heap_high_watermark: float = 0.85   # pause new work at/above this parent-breaker ratio
+    heap_resume_watermark: float = 0.70  # resume below this (hysteresis)
+    poll_interval_s: float = 2.0        # breaker re-probe cadence while paused
+    max_wait_s: float = 3600.0          # overall patience budget per operation (~1h)
+    retry_max_attempts: int = 200       # secondary ceiling; max_wait_s is the real limit
+    retry_base_delay_s: float = 2.0     # exponential backoff base, clamped to remaining budget
+    retry_max_delay_s: float = 30.0     # per-retry backoff cap
+
+
 class ESConfig(BaseModel):
     hosts: list[str]
     verify_certs: bool = False
     ca_certs: Optional[str] = None
     request_timeout: int = 60
     indexes: SourceIndexes
+    backpressure: ESBackpressureConfig = Field(default_factory=ESBackpressureConfig)
 
 
 class LLMConfig(BaseModel):
