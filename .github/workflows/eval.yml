@@ -1,4 +1,4 @@
-name: Clustering Quality
+name: Quality Gates
 
 on:
   push:

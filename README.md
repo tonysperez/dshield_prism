@@ -9,7 +9,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue.svg" alt="License: GPL-3.0"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+"></a>
-  <a href="https://github.com/tonysperez/dshield_prism/actions/workflows/eval.yml"><img src="https://github.com/tonysperez/dshield_prism/actions/workflows/eval.yml/badge.svg" alt="Clustering Quality"></a>
+  <a href="https://github.com/tonysperez/dshield_prism/actions/workflows/eval.yml"><img src="https://github.com/tonysperez/dshield_prism/actions/workflows/eval.yml/badge.svg" alt="Quality Gates"></a>
   <a href="https://github.com/tonysperez/dshield_prism/actions/workflows/ci.yml"><img src="https://github.com/tonysperez/dshield_prism/actions/workflows/ci.yml/badge.svg" alt="Lint"></a>
 
 </p>
@@ -22,53 +22,65 @@
 
 ---
 
-Internet-facing honeypots are a firehose of mostly identical attacks. Buried in that deluge is the actually interesting stuff — novel tactics, quietly drifting campaigns, a new cargo-cult IOC. Like many other data streams, the common way to make this immense volume digestible is a dashboard. But a dashboard is only as useful as the data behind it, and honeypot data is very raw: IPs, commands, files, and timing. There are only so many ways to visualize that, and honestly, none of them are very useful.
+Internet-facing honeypots observe a firehose of mostly identical attacks. Buried in that deluge is the stuff that is actually interesting; novel tactics, quiet drift on known campaigns, a new cargo-cult IOC. The usual answer to making this data digestible is a dashboard, but a dashboard is only as good as the data underneath it. Honeypot data is *accurate*, but raw: IPs, commands, files, timing. There are only so many ways to chart this raw data, and honestly, none of them are very useful.
 
-What this raw data cannot show is exactly what I want to find: it can't tell me what any of those attackers were actually *doing*, which ones were doing the same thing, and which ones were doing something different. Anything actually worth your time and attention stays buried under the roar of commodity internet scanning.
+Prism is an enrichment, correlation, and clustering pipeline which processes this blinding light, resolving behavior: What is this attacker actually *doing*? What is the full scope of their (observed) attack, of their infrastructure? Which other attackers are doing the same thing? Which attackers are not behaving like all the others?
 
-Prism is the enrichment and correlation layer that resolves behavior; it turns this flood of raw log events into a handful of named, tracked behaviors you can pivot on by *similarity* — not just by exact artifact — ground against threat intel, and watch change over time.
+I built Prism during my internship with the SANS Internet Storm Center (ISC). The brief was to look through DShield (Cowrie, Webhoneypot) logs to find and then analyze attacks. This is often done by hand, building lengthy commands to pull data as you pivot from artifact to artifact to artifact. Or sometimes by employing extra tooling to programmatically parse (not process) and visualize the logs.
 
-Built during my internship with the SANS Internet Storm Center to enable faster and more impactful analysis of the activity observed by my DShield sensor.
+I was not content with these modest abstractions though. I care about what the attacker is *doing*, not figuring out how to pull the data to assemble an inherently incomplete picture. I wanted a tool which would just show me what the attackers are doing so I can spend my time dissecting the attack rather than searching for it.
+
+Here's the tool I built to achieve this.
 
 ### Highlights
 
-- **See behavior, not individual actions.** Every unique command, session, and source IP becomes a behavioral fingerprint with a semantic vector, intent, and extracted IOCs.
+- **See behavior, not artifacts.** Every command, session, and source IP becomes a behavioral fingerprint — what it actually *does*, its intent, and the IOCs it carries (includes both operator-defined IOCs and IOCs automatically extracted from commands). Most honeypot tooling only lets you pivot on concrete artifacts: this IP, that exact command. Prism matches each new attack against a library of named behaviors, so you can ask the question that matters — "what else behaves like this?" — even as the individual artifacts change.
 
-- **Pivot on behavior, not just artifacts.** Most honeypot tooling (most log analysis tooling really) only pivots from one exact artifact to the same artifact — this IP, that exact command. Prism groups attacks by what they actually *do*, so you can ask the question that matters: "what else behaves like this?" — even when the IPs, files, and commands are all different.
+- **Track behavior as it drifts.** A recurring command sequence becomes a named playbook; coordinated IPs become a campaign — and when behavior and infrastructure independently converge on the same group, a high-confidence Operation. Each keeps a stable identity across re-runs, so when one drifts — a new command, a new source country, a sudden spike — the *change* itself surfaces as a finding instead of vanishing into the noise.
 
-- **Watch behavior change over time.** Recurring activity gets named as a playbook; coordinated multi-session activity gets grouped as a campaign — by shared behavior, by shared infrastructure, or (when those two overlap) as an Operation. All keep stable identities across re-analysis runs, so when one drifts — a new command, a new target country, a sudden spike — that *change* surfaces as a finding instead of disappearing into the noise, landing in a curated inbox whose confirm/reject workflow turns analyst decisions into a growing knowledge base.
+- **Weigh artifacts against CTI.** Extracted artifacts (IP, URL, files) are checked against free CTI feeds, then a consensus engine reconciles them — known-good scanners get quieted so the activity worth your attention stops drowning in noise. Novelty is scored on two axes: against the sensor's own corpus (how similar is this to behavior already observed?) *and* against an external corpus of documented adversary tradecraft (Atomic Red Team).
 
-- **Private by default.** The AI analysis runs locally, on your own hardware — nothing about your honeypot traffic leaves the box unless you say so. Escalating a hard case to a frontier model is budget-capped and opt-in, and the external CTI feeds are disabled by default. Sensor data is classified at ingest, and a sensor can be marked *confidential* so its data is never sent off-box at all — regardless of whether the cloud LLM or CTI queries are enabled.
+- **Measured, not assumed.** Clustering quality is graded automatically against a hand-labeled answer key on every change. When my measurements showed my central assumption was wrong, I recentered on and rebuilt around the evidence. ([the gates, the numbers, the methodology](docs/evaluation.md))
 
-- **Grounded in threat intel.** Artifacts (IP, URL, and file hash today; domain planned) are checked against freely available CTI feeds. A consensus engine collates verdicts and feeds them back into the pipeline: known-good scanners get quieted, commodity-malicious IPs get cheaper triage. Novelty is scored twice: against the sensor's own corpus *and* against an external reference corpus of documented adversary tradecraft (Atomic Red Team).
+- **Private by default.** The AI runs locally, on your own hardware — nothing about your honeypot traffic leaves the box unless you say so. Cloud escalation is opt-in and budget-capped. Data from a sensor classified as non-public is never sent off-platform unless explicitly and deliberately requested by the operator.
 
-- **Hardened by real-world operation.** It has run continuously against a live sensor, and the safety rails earned their place: a daily cloud-spend cap, validation that catches the local model inventing data that doesn't exist, and hash-based cache invalidation that can't be forgotten. Each fixed a real production failure, not a hypothetical one.
-
-- **Measured and proven, not assumed.** Clustering quality is graded automatically against a hand-labeled answer key on every change. When my own measurements showed a central assumption was wrong, I rebuilt around the evidence. ([the gates, the numbers, the methodology](docs/evaluation.md))
+- **Hardened by real-world operation.** Prism has run continuously against live DShield sensors, and the safety rails earned their place: a daily cloud-spend cap, validation that catches the local model hallucinating data, and hash-based cache invalidation that can't be forgotten. Each one fixed a real production failure, not a hypothetical one.
 
 ## Live deployment
 
-Prism has been running continuously against my home DShield sensor. Each analysis layer collapses a flood of raw activity into a handful of behaviors:
+Prism runs continuously on one live DShield sensor and has ingested 4+ years of history from a second — roughly 57 million raw events across 9.6 million sessions. Each analysis layer collapses that flood into a handful of behaviors:
 
 | Layer | Volume | Behaviors surfaced | Outliers |
 |---|---:|---:|---:|
-| Commands | ~3,000 distinct | 8 clusters | 39 |
-| Sessions | 200,000 processed | 27 playbooks | 30 |
-| Source IPs | 10,000 distinct | 171 clusters | 260 |
+| Commands | 336,723 distinct | 215 clusters | 1,284 (0.4%) |
+| Sessions | 247,282 with commands | 150 playbooks | 253 (0.1%) |
+| Source IPs | 82,271 command-bearing | 3,081 clusters | 4,770 (5.8%) |
 
-*Most of those 200,000 sessions are credential brute-force that never reach a shell. The ones that do dedup to ~3,000 distinct command forms, which in turn cluster into 8 behaviors. That reduction — a flood of raw activity down to a couple dozen named behaviors an analyst can actually reason about — is exactly the point of this pipeline.*
+*Most of the ~9.6M sessions are credential brute-force that never reach a shell. The ~247K that do carry 336,723 distinct command forms between them — and those collapse to 215 command behaviors and 150 named session playbooks, plus 12 campaigns where infrastructure and behavior converge. (Source IPs cluster on a separate axis — 82K into ~3,000 behavioral groups.) That reduction — tens of millions of raw events down to a few hundred named behaviors an analyst can actually reason about — is exactly the point of this pipeline.*
+
+**But are those groupings any good?** Reduction means nothing if the buckets are wrong. Quality is graded against ~100 analyst labeled sessions — spread across attack types, not just easy commodity traffic — and re-checked in CI on every change so clustering quality does not regress:
+
+- **It agrees with the analyst 84% of the time.** Tested on sessions it wasn't allowed to learn from, Prism assigns the same playbook an analyst would — and it's just as reliable on rare behaviors as common ones (0.84 accuracy, 0.83 macro-F1).
+- **It catches behavior it has never seen.** Hand it activity that isn't in its reference set and it flags the new behavior ahead of a known one about three times in four (0.74 AUC).
+- **The groups it forms are clean.** When Prism buckets activity, 92–97% of each group shares the same behavior rather than being a mixed bag (0.97 command-intent / 0.92 label purity).
+
+[Full methodology, the weak spots, and the measured dead-ends](docs/evaluation.md).
+
+**Scope, stated plainly.** This is one operator's tool, validated on a single live sensor plus a 4-year backfill from a second, not a fleet. The quality gates run against ~100 hand-labeled sessions: enough to catch regressions on every change, not a published benchmark. Ingestion is Cowrie (SSH/Telnet) today; webhoneypot and firewall sources are on the roadmap. Read the cluster and campaign counts as evidence the method works on real adversarial traffic — not as a claim about how it behaves at fleet scale.
+
+<!--
+TODO — replace this comment with one real finding.
+
+> **A find worth the build.** Prism flagged a novel persistence playbook that recurred
+> across N source IPs sharing one staging URL. Each IP looked like commodity scanning on
+> its own — the shared *behavior* plus shared *infrastructure* promoted them to a single
+> tracked Operation that artifact-by-artifact pivoting would never have linked.
+-->
 
 > **A few things running this in production taught me** ([more below](#lessons-learned)):
-> - Built a per-day cloud LLM cost cap on day one. This saved me when a bug later
->   caused an endless query loop that would otherwise have burned my entire
->   Anthropic balance.
-> - Small LLMs cheerfully invent MITRE TTP IDs that don't exist. Even
->   schema-validating every emitted ID against the real ATT&CK corpus didn't
->   make the mapping trustworthy, so I pulled LLM-derived MITRE entirely.
-> - Shipped a finding kind that produced 2,000 findings on one corpus.
->   Retired it after one cycle. Not a bug, just a bad detection.
-
-Caveat worth stating plainly: this is one home DShield sensor — a single vantage point and a single corpus. The pipeline is built to be sensor-agnostic, but I haven't yet validated it against a second deployment. So read the cluster and campaign counts as evidence the method works on real adversarial traffic, not as a claim about how it behaves at fleet scale.
+> - A per-day cloud-LLM cost cap, built day one, later saved me when a bug caused an endless query loop.
+> - Small LLMs invent MITRE TTP IDs that don't exist — schema-validation fixed this, but couldn't make the mapping trustworthy, so I pulled it.
+> - A finding kind that produced 2,000 findings on one corpus, retired after one cycle. Not a bug, just a bad detection.
 
 ## Pipeline
 
@@ -99,15 +111,15 @@ flowchart TD
 
 From a raw command line to a tracked behavior, in six steps:
 
-1. **Enrich every command.** A honeypot records the raw text of everything an attacker types. Prism hands each *unique* command to a local LLM that explains what it does, the intent behind it, and any IOCs it carries. That output is recorded, then converted into an *embedding*: a numeric fingerprint where functionally similar commands land close together, even when the text is different. The few genuinely novel or low-confidence commands can optionally escalate to a frontier cloud model; everything else stays local, and identical commands are explained once and cached.
+1. **Enrich every command.** Prism hands each *unique* command to a local LLM that explains what it does, its intent, and any IOCs it carries, then converts that into an *embedding* — a numeric fingerprint that places commands with similar behavior near one another. The few genuinely novel or low-confidence commands can optionally escalate to a frontier cloud model; everything else stays local, and identical commands are explained once and cached.
 
 2. **Stack it up: command → session → IP.** The fingerprints of every command in one SSH login are pooled into a single fingerprint for the whole *session* — a compact summary of what that attacker actually did, weighting rare commands over boilerplate like `cd /tmp`. The same roll-up runs one level higher, giving each *source IP* a fingerprint of its overall behavior.
 
-3. **Name the behavior.** Prism keeps a library of named attacker *playbooks* (e.g. *SSH Key Injection with chattr Locking*). Each new session is matched to its nearest playbook by fingerprint similarity; anything that matches nothing is flagged **novel**, and recurring novel behavior becomes a brand-new playbook the local LLM names itself. Those names are stable across re-runs, so a single behavior can be followed for weeks.
+3. **Name the behavior.** Prism keeps a library of named attacker *playbooks*. Each new session is matched to its nearest playbook by fingerprint similarity — with a text-similarity check resolving borderline matches — and anything that matches nothing is flagged **novel**, with recurring novel behavior becoming a brand-new playbook. These names are stable across re-runs, so a single behavior can be followed over time.
 
-4. **Find the coordination.** With every IP labeled by the playbooks it runs, Prism mines for campaigns two independent ways — IPs running the same *combination* of playbooks, and IPs linked by shared *infrastructure* (a reused SSH key, a common payload URL). When both views land on the same group of IPs, that overlap is promoted to a high-confidence **Operation**.
+4. **Find the coordination.** With every IP labeled by the playbooks it runs, Prism mines for campaigns two independent ways — IPs running the same *combination* of playbooks, and IPs linked by shared *infrastructure* (a reused SSH key, a common payload URL, etc). When both views land on the same group of IPs, that overlap is promoted to a high-confidence **Operation**.
 
-5. **Ground it in the real world.** In parallel, the IOCs Prism extracted (IPs, URLs, file hashes) are checked against free threat-intel feeds, and a consensus engine reconciles sources that disagree. Crucially, it leans on *known-good* signals (like GreyNoise's researcher list) to quiet benign scanners, so the activity worth your attention stops drowning in noise.
+5. **Ground it in the real world.** In parallel, the IOCs Prism extracted (IPs, URLs, file hashes) are checked against free threat-intel feeds, and a consensus engine reconciles sources that disagree. Crucially, it uses *known-good* signals (like GreyNoise's researcher list) to quiet benign scanners.
 
 6. **Surface what changed.** All of the above runs on a schedule, and two watchers turn it into the analyst's queue: one fires when a tracked behavior *drifts* (a playbook picks up a new command, a campaign adds IPs, a dormant actor returns), the other catches point-in-time surprises (a never-before-seen behavior, an IP whose intel verdict just flipped). Findings land in the inbox, where the analyst confirms or rejects each one — and every decision feeds back as fresh ground truth.
 
@@ -131,20 +143,42 @@ Eight pages, one analyst workflow: **Inbox · Graph · Browse · History · Hunt
 
 <p align="center"><img src=".github/screenshots/hunt.png" alt="Hypothesis-driven hunts" width="900"></p>
 
-## Why I built DShield Prism
+**Curation.** The console is also where the operator teaches Prism — define what an unusual command does, pin a meaning to an attributed IOC (say, an RSA key), or leave a note on a specific attack. That knowledge folds straight back into clustering and labeling, so corrections made once sharpen every run that follows.
 
-My internship brief was simple: identify and analyze the attacks my DShield honeypot saw. I was not content with just any attack though, I wanted the *novel*, the *interesting*. Not the commodity internet scanning that dominates the logs.
+## Data governance & egress control
 
-Like most people, I started by ingesting the logs into Elastic and building dashboards. They work as a map: where attacks come from, the loudest and quietest attackers and commands, dropped files, user agents. But when I found something interesting, it was very time consuming to just put together that session and impossible to put together the complete picture. I had a command and the IP that ran it. I could pivot to every other IP that ran that exact command, and every other command that IP ran, but I was limited to pivoting by concrete, pre-existing artifacts. This means I could never pivot on behavior like 'What other IPs behave like this one?'.
+Honeypot capture can be sensitive. A single session can hold real credentials, a victim's data, or detail that identifies the sensor. Prism treats leaving the box as a default-deny boundary enforced in code:
 
-Existing tooling either treats DShield logs as terminal output (parsers, dashboards) or analyzes individual artifacts (sandboxes). I didn't find a layer that does cross-session behavioral clustering on commodity honeypot input, so I built one: pipelines that turn raw events into meaningful behavioral signals, rather than another way to view them.
+- **Classified at ingest.** Every record carries a per-sensor `dshield.classification` (`public` | `confidential`). Mark a sensor confidential and nothing it sees ever leaves the box — independent of whether cloud escalation or CTI lookups are enabled.
+- **Fail-safe, not fail-open.** The releasable filter matches *only* explicitly-`public` records; untagged data is treated as confidential, so a missing tag can't leak.
+- **Egress is opt-in and budget capped.** The local pipeline is fully self-contained. Cloud-LLM escalation and external CTI feeds are both off by default; when enabled, all egress is hard-capped per day (LLM by token cost, CTI by query count).
+- **One enforced boundary.** Every egress path — the intel queue, command escalation, finding narratives — routes through a single, centralized check ([`is_releasable` / `releasable_filter`](src/enrich/classification.py)), minimizing the risk of sprawl-induced drift.
 
-Prism is built to answer:
-- Which commands are functionally similar to this one?
-- What commands are typically run alongside this one, and what's the intent of the sequence?
-- How does this IP behave, and what other IPs behave like it?
-- What IPs don't behave like anything else in the corpus?
-- Is this activity novel relative to my own corpus *and* relative to documented adversary tradecraft? Novelty is scored against both the sensor's own clusters and an external reference corpus (Atomic Red Team's per-MITRE-technique adversary emulation manifests); CTI feeds layer on top as a separate verdict signal.
+## Lessons Learned
+
+### Production Lessons
+- I had unintentionally used an ES-owned index which was managed by Elastic Fleet. This was fine, until Fleet wiped all the indices it controls. I now have the setup script manually create the indices to ensure Fleet does not manage them and cannot wipe them.
+- Originally, I had manually set LLM and embed config versioning to ensure clustering is always apples-to-apples. Like all manual things, this sounds fine until it hits ops and gets forgotten. Moved to a hash-based auto-invalidation system, so now I can't forget.
+- Initially, every command's LLM enrichment was independent. This worked fine until my sensor started getting hammered with tens of thousands of mostly but not quite identical commands, which started eating up all my local LLM cycles. I extended the command parsing system to run pre-enrichment, and skip local LLM enrichment for commands which are functionally identical to commands which have already been LLM enriched.
+- My first version dropped any campaign artifact that appeared in >50% of sessions as 'too generic.' That killed real campaigns in small corpora. Replaced with IDF weighting. Common artifacts still contribute, just less.
+- I shipped a finding kind that produced 2,000 findings on one corpus and retired it after one cycle. There wasn't a bug in the code, the finding kind itself was just too noisy to be useful.
+
+### Internet Observations
+- Quite a significant piece of the general internet scanning is just a handful of the same copy/paste scripts.
+- Cargo-cult code within scripts exists as a result of the above. This has funnily enough resulted in some pretty good IOCs, because nobody else will run a non-existent command except a script whose operator copy/pasted without bothering to understand it.
+
+### AI in Production
+- Validation, validation, validation. To ensure valid output the best I can from both the small local model as well as the frontier model, I had to: give it heavy context + grounding; validate its output against my schema; track output against a known baseline. Some outputs resisted even that — the model invented MITRE TTP IDs faster than schema-validation could catch them, so I eventually pulled LLM-derived MITRE TTP IDs altogether rather than ship an unreliable signal.
+- Cloud LLM costs can balloon, fast. I built cost-tracking and a per-day budget cap from day one — which saved me later when a bug caused an endless cloud-LLM query loop. Without the cap, that bug would have made quick work of my entire Anthropic balance.
+
+### Operational Lessons
+- Dashboards seem a lot more useful than they are. I've found that they can make you feel like you have a handle on things, but don't survive 'What was this attacker actually doing?'.
+- Known good is often more valuable than known bad. GreyNoise, while very limited on its free / Community plan, was one of the most important CTI feeds because they maintain a list of known researcher IPs, their RIOT list. This is an invaluable signal since I found very quickly that I need to try as best I can to quiet the noise for the valuable activity to shine through.
+- If you know behavior, you can keep up with rotating artifacts. One of my main drivers for this project was to be able to get a sense of how widely a particular attack is being used. Are we seeing one threat actor cycling through 100 IPs, or 100 threat actors each using 1 IP? If you can determine a threat actor's behavior, you can see through any particular attribute.
+
+---
+
+**How this was built.** DShield Prism was built with the assistance of generative AI — directed, reviewed, and validated by me, the same discipline Prism applies to its own models. The decisions, the measurements, the dead-ends above, and the calls on what *not* to ship are mine; the AI was a tool I held to the project's own bar for evidence and validation.
 
 ## Status & roadmap
 
@@ -156,22 +190,16 @@ Everything else lives in [docs/roadmap.md](docs/roadmap.md).
 
 ## Install
 
-```bash
-sudo bash setup/2-setup.sh
-```
+Step-by-step setup, configuration, and operational workflows are in [docs/operations.md](docs/operations.md).
 
-Idempotent. Requires `.env` + `config/local.yaml` filled in, and a reachable LLM server. See [docs/operations.md](docs/operations.md) for setup details, configuration, and operational workflows.
+### Prereqs
 
-## Run
+Prism has three components — ElasticStack + Fleet, local AI hosting, and the Prism pipeline + console — which can run on the same box or separate hosts. You'll need:
 
-```bash
-sudo -u dshield_prism .venv/bin/python -m enrich.cli healthcheck
-sudo -u dshield_prism .venv/bin/python -m enrich.cli enrich
-```
-
-The systemd timers (`dshield_prism-forward.timer` every 30 min;
-`dshield_prism-backward.timer` every 6 h) handle steady-state. See
-[docs/operations.md](docs/operations.md#systemd-cadence).
+- **ElasticStack + Fleet** — tested against SecurityOnion's managed ES (an easy way to get both). 16 GB RAM / 4 CPU.
+- **Elastic Agent** on whatever device houses the DShield logs (could be the DShield sensor itself, or another device if the logs are being shipped off the sensor before ingestion).
+- **Local AI hosting** for the Nomic embedding model + a small LLM — 8 GB VRAM (ideal) or 12 GB RAM hosts the default Qwen3:8B. Smaller models can be used, but keep in mind that smaller models will generally produce worse output.
+- **A host for the Prism pipeline + console** — tested on Ubuntu 24.04 LTS; ~2 GB RAM / 2 CPU for a small deployment, up to ~8 GB / 4 CPU for larger ones with frequent backfilling.
 
 ## Documentation
 
@@ -186,28 +214,30 @@ Start at [docs/](docs/) — the index routes you to the right doc.
 | [docs/decisions.md](docs/decisions.md) | Why it's built this way + the dead-ends that were measured and rejected |
 | [docs/roadmap.md](docs/roadmap.md) | Open work |
 
+## Standing on the Shoulders of Giants
+
+Prism is made possible by a lot of excellent open-source projects and free-tier services:
+
+- **Honeypot & data** — [Cowrie](https://github.com/cowrie/cowrie) captures the raw attacker activity; [DShield](https://www.dshield.org/) is the sensor program and log source; the [Elastic Stack](https://www.elastic.co/elastic-stack) (with Fleet + Elastic Agent) stores and ships it — easiest to stand up via [Security Onion](https://securityonionsolutions.com/).
+- **Local AI** — [Ollama](https://ollama.com/) hosts the models on-box: [Qwen3](https://huggingface.co/lmstudio-community/Qwen3-8B-GGUF) for generation and [Nomic Embed Text](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5) for embeddings.
+- **Threat intel** — verdicts draw on [AbuseIPDB](https://www.abuseipdb.com/), [abuse.ch](https://abuse.ch/) (Feodo Tracker, MalwareBazaar, ThreatFox, URLhaus), [FireHOL](https://iplists.firehol.org/), [GreyNoise](https://www.greynoise.io/), the [Tor Project](https://www.torproject.org/) exit list, and [VirusTotal](https://www.virustotal.com/).
+- **Command Grounding** — [TLDR](https://github.com/tldr-pages/tldr) provides detailed descriptions for Linux, Cisco, and Windows commands.
+- **Reference corpora** — external novelty and tradecraft matching lean on [Atomic Red Team](https://github.com/redcanaryco/atomic-red-team).
+
+And of course, the Python ecosystem underneath it all — [scikit-learn](https://scikit-learn.org/) (HDBSCAN), [FastAPI](https://fastapi.tiangolo.com/), [Pydantic](https://docs.pydantic.dev/), and friends.
+
+## About
+
+Built by **Tony S. Perez**. Questions, feedback, or want to talk shop? Find me here:
+
+<p align="center">
+
+  <a href="https://github.com/tonysperez"><img src="https://img.shields.io/badge/GitHub-tonysperez-181717?style=for-the-badge&logo=github&logoColor=white" alt="GitHub profile"></a>&nbsp;
+
+  <a href="https://www.linkedin.com/in/tonysperez"><img src="https://img.shields.io/badge/LinkedIn-Connect-0A66C2?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0yMC40NDcgMjAuNDUyaC0zLjU1NHYtNS41NjljMC0xLjMyOC0uMDI3LTMuMDM3LTEuODUyLTMuMDM3LTEuODUzIDAtMi4xMzYgMS40NDUtMi4xMzYgMi45Mzl2NS42NjdIOS4zNTFWOWgzLjQxNHYxLjU2MWguMDQ2Yy40NzctLjkgMS42MzctMS44NSAzLjM3LTEuODUgMy42MDEgMCA0LjI2NyAyLjM3IDQuMjY3IDUuNDU1djYuMjg2ek01LjMzNyA3LjQzM2EyLjA2MiAyLjA2MiAwIDAxLTIuMDYzLTIuMDY1IDIuMDY0IDIuMDY0IDAgMTEyLjA2MyAyLjA2NXptMS43ODIgMTMuMDE5SDMuNTU1VjloMy41NjR2MTEuNDUyek0yMi4yMjUgMEgxLjc3MUMuNzkyIDAgMCAuNzc0IDAgMS43Mjl2MjAuNTQyQzAgMjMuMjI3Ljc5MiAyNCAxLjc3MSAyNGgyMC40NTFDMjMuMiAyNCAyNCAyMy4yMjcgMjQgMjIuMjcxVjEuNzI5QzI0IC43NzQgMjMuMiAwIDIyLjIyMiAwaC4wMDN6Ii8%2BPC9zdmc%2B" alt="LinkedIn"></a>&nbsp;
+
+  <a href="https://tonystech.net"><img src="https://img.shields.io/badge/Website-Visit-4338CA?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Personal website"></a>
+</p>
+
 ## License
-
 Licensed under [GPL-3.0](LICENSE).
-
-## Lessons Learned
-
-### Production Lessons
-- I had unintentionally used an ES index which was owned and managed by Elastic Fleet. This was fine, until Fleet decided to wipe all the indices it controls. I now have the setup script manually create the index to ensure Fleet does not manage it and cannot wipe it.
-- Originally, I had manually set LLM and embed config versioning. Like all manual things, this sounds fine until it hits ops and gets forgotten. Moved to a hash-based auto-invalidation system, so now I can't forget.
-- Initially, every command's LLM enrichment was independent. This worked fine until my sensor started getting hammered with 1,000s of mostly identical commands, which started eating up all my local LLM cycles. I extended the command parsing system to run pre-enrichment, and skip local LLM enrichment for commands which are functionally identical to commands which have already been LLM enriched.
-- My first version dropped any campaign artifact that appeared in >50% of sessions as 'too generic.' That killed real campaigns where everyone shared the same staging URL. Replaced with IDF weighting. Common artifacts still contribute, just less.
-- I shipped a finding kind that produced 2,000 findings on one corpus and retired it after one cycle. There wasn't a bug in the code, the finding kind itself was just too noisy to be useful.
-
-### Internet Observations
-- Quite a significant piece of the general internet scanning is just a handful of the same copy/paste scripts.
-- Cargo-cult code within scripts exists as a result of the above. This has funnily enough resulted in some pretty good IOCs, because literally nobody else will run a non-existent command except a script whose operator copy/pasted without bothering to understand it.
-
-### AI in Production
-- Validation, validation, validation. With a small 8B model, I had to: give it heavy context + grounding; validate its output against my schema; track output against a known baseline. Even when escalating the same query to a frontier model, I found this extra grounding and validation helped get its output just the way I wanted it. Some outputs resisted even that — the model invented MITRE TTP IDs faster than schema-validation could catch them, so I eventually pulled LLM-derived MITRE altogether rather than ship an unreliable signal.
-- Cloud LLM costs can balloon, fast. I built cost-tracking and a per-day budget cap from day one — which saved me later when a bug caused an endless cloud-LLM query loop. Without the cap, that bug would have burned through my entire Anthropic balance in hours.
-
-### Operational Lessons
-- Dashboards seem a lot more useful than they are. I've found that they can make you feel like you have a handle on things, but don't survive 'What was this attacker actually doing?'. This project's goal is to close that gap.
-- Known good is often more valuable than known bad. GreyNoise, while very limited on its free / Community plan, was one of the most important CTI feeds because they maintain a list of known researcher IPs, known as RIOT. This is an invaluable signal, since I found very quickly that I need to try as best I can to quiet the noise for the valuable activity to shine through.
-- If you know behavior, you can keep up with rotating artifacts. One of my main drivers for this project was to be able to get a sense of how widely a particular attack is being used. Are we seeing one threat actor cycling through 100 IPs, or 100 threat actors each using 1 IP? If you can determine a threat actor's behavior, you can see through any particular attribute.
