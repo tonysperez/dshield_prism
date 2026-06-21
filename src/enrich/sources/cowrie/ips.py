@@ -1446,6 +1446,9 @@ def run_cluster(
         dry_run=dry_run,
         layer_label="cowrie.ips",
         n_jobs=cfg.worker.cluster_n_jobs,
+        # Augmented-space noise rescue (leave rescue_threshold unset → IPs use the
+        # euclidean/percentile path, not the command/session pure-cosine one).
+        rescue_spread_percentile=ipcfg.rescue_spread_percentile,
         refresh_reference=refresh_reference,
         use_reference=use_reference,
         reference_max_age_days=ipcfg.reference_max_age_days,

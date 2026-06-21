@@ -425,6 +425,18 @@ class IPConfig(BaseModel):
     cluster_min_cluster_size: int = 3
     # See SessionConfig.cluster_min_samples for rationale. ROADMAP issue #5.
     cluster_min_samples: int = 2
+    # Noise rescue (augmented-space euclidean). HDBSCAN's density rule flags ~70%
+    # of command-bearing IPs as noise even when they sit a normal-cluster's-radius
+    # from a centroid; this reassigns an outlier to its nearest centroid when it
+    # falls within the Pth percentile of the intra-cluster spread, in the SAME
+    # augmented `[embedding ⊕ scalars]` euclidean space HDBSCAN fit on (NOT the
+    # pure-embedding cosine the command/session `rescue_threshold` uses — the IP
+    # geometry is scalar-driven and pure-cosine over-rescues ~38%; see
+    # docs/decisions.md). 0 disables. 99 ≈ 92% of outliers rescued (70% → ~6%),
+    # at ~94% playbook / ~99.7% intent purity — which held flat p90→p99, so the
+    # aggressive default reclaims the most without quality loss
+    # (validated by scripts/diagnose_ip_rescue.py).
+    rescue_spread_percentile: int = 99
     # Weight on the behavior-scalar sub-block (total_sessions,
     # login_success_rate, mean_novelty, mean_session_duration_s). These
     # break ties on the embedding axis and should stay subdued — 0.05 is

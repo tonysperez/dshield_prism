@@ -365,6 +365,14 @@ ip:
   cluster_min_cluster_size: 3
   # See session.cluster_min_samples for rationale. ROADMAP issue #5.
   cluster_min_samples: 2
+  # Noise rescue: reassign an HDBSCAN outlier to its nearest centroid when it is
+  # within the Pth percentile of the intra-cluster spread, in the augmented
+  # [embedding + scalars] euclidean space HDBSCAN fit on (NOT pure-embedding
+  # cosine like command/session rescue_threshold — the IP geometry is
+  # scalar-driven; see docs/decisions.md). 0 disables. 99 ≈ 92% of outliers
+  # rescued, taking the IP outlier rate ~70% -> ~6% at ~94% playbook purity
+  # (purity held flat p90->p99; see scripts/diagnose_ip_rescue.py).
+  rescue_spread_percentile: 99
   # Weight on the BEHAVIOR sub-block (total_sessions, login_success_rate,
   # mean_novelty_score, mean_session_duration_s). Subdued because these
   # break ties on the embedding axis.

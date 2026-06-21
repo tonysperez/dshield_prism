@@ -268,6 +268,14 @@ parentheses.
   distinctive-vs-commodity cutoff (`df ≤ √C`).
 - `ip.cluster_{min_cluster_size,min_samples}` (3, 2); `cluster_scalar_weight`
   (0.05); `cluster_attribution_weight` (0.10).
+- `ip.rescue_spread_percentile` (99; 0 = off) — noise rescue: reassign an HDBSCAN
+  outlier to its nearest centroid when within the Pth percentile of the
+  intra-cluster spread, **in the augmented `[embedding ⊕ scalars]` euclidean space**
+  (the geometry HDBSCAN fit on — *not* the pure-embedding cosine that
+  `command_cluster.rescue_threshold` / `session.playbook_merge_threshold` use,
+  because the IP geometry is scalar-driven and pure-cosine over-rescues ~38%; see
+  [decisions.md](decisions.md)). Takes IP outliers ~70% → ~6% at p99 (~94% playbook
+  purity; purity held flat p90→p99). Tune with `scripts/diagnose_ip_rescue.py`.
 - **Behavior-driven IP geometry** (adopted defaults):
   `ip.cluster_attribution_provenance_enabled` (false) — drops country + ASN +
   HASSH from the geometry (queryable post-hoc; they over-fragment behavior);

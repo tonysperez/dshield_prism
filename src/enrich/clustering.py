@@ -235,6 +235,79 @@ def rescue_noise_points(
     return new_labels, rescued
 
 
+def rescue_noise_points_augmented(
+    cluster_matrix: "np.ndarray",
+    labels: "np.ndarray",
+    spread_percentile: float,
+) -> tuple["np.ndarray", int, float]:
+    """Reassign HDBSCAN noise points to their nearest cluster centroid in the
+    **augmented** clustering space (euclidean), when within a data-driven radius.
+    Returns (new_labels, n_rescued, radius). Pure — no I/O.
+
+    Unlike `rescue_noise_points` (pure-embedding *cosine*, used by the
+    embedding-dominated command/session layers), this rescues in the same
+    `[embedding ⊕ scalar_block]` euclidean geometry HDBSCAN actually fit on —
+    which is the load-bearing space for the IP layer, whose thin pooled embedding
+    can't separate IPs without the Tier-1/Tier-2/attribution scalars. A
+    pure-embedding cosine rescue here would re-merge behaviourally/infra-distinct
+    IPs the scalars correctly split (measured ~38% over-rescue; see
+    docs/decisions.md).
+
+    `radius` is the `spread_percentile`-th percentile of the clustered
+    members' distance to their own centroid — i.e. "as close as a typical-ish
+    cluster member." Scale-free: it adapts to the scalar weights / dims rather
+    than hard-coding a euclidean distance. Noise points whose nearest centroid is
+    within `radius` join that cluster; the rest stay noise.
+
+    `cluster_matrix` must be the full-dim augmented matrix HDBSCAN fit on (NOT an
+    SVD-reduced fit matrix), so the geometry matches the persisted centroids.
+    """
+    new_labels = labels.copy()
+    noise_idx = np.where(labels == -1)[0]
+    if len(noise_idx) == 0 or spread_percentile <= 0:
+        return new_labels, 0, 0.0
+    centroids = compute_centroids(cluster_matrix, labels)
+    if not centroids:
+        return new_labels, 0, 0.0
+    cluster_lbls = sorted(centroids)
+    C = np.array([centroids[l] for l in cluster_lbls], dtype=np.float32)
+
+    # Radius from the intra-cluster spread: each clustered member's euclidean
+    # distance to its own centroid, then the requested percentile.
+    label_to_row = {l: i for i, l in enumerate(cluster_lbls)}
+    clustered_idx = np.where(labels != -1)[0]
+    own = C[[label_to_row[int(labels[i])] for i in clustered_idx]]
+    intra = np.linalg.norm(cluster_matrix[clustered_idx] - own, axis=1)
+    if intra.size == 0:
+        return new_labels, 0, 0.0
+    radius = float(np.percentile(intra, spread_percentile))
+
+    # Nearest-centroid euclidean distance for each noise point. Use the
+    # ‖a-b‖² = ‖a‖² + ‖b‖² - 2·a·bᵀ identity (a flat m×k matmul, not an
+    # m×k×d broadcast) and batch over noise *rows* so the working set stays a
+    # (batch × k) matrix — at IP scale (58K noise × 3K centroids × 839-d) the
+    # naive 3-D broadcast would need tens of GiB.
+    noise = cluster_matrix[noise_idx]
+    c2 = np.einsum("ij,ij->i", C, C)              # ‖centroid‖²  (k,)
+    best_d = np.full(len(noise_idx), np.inf, dtype=np.float32)
+    best_c = np.zeros(len(noise_idx), dtype=np.int64)
+    for s in range(0, len(noise), 4096):
+        nb = noise[s:s + 4096]
+        n2 = np.einsum("ij,ij->i", nb, nb)        # ‖noise‖²  (b,)
+        d2 = n2[:, None] + c2[None, :] - 2.0 * (nb @ C.T)
+        np.maximum(d2, 0.0, out=d2)               # clamp tiny negatives from fp error
+        a = d2.argmin(axis=1)
+        best_c[s:s + len(nb)] = a
+        best_d[s:s + len(nb)] = np.sqrt(d2[np.arange(len(nb)), a])
+
+    rescued = 0
+    for r, i in enumerate(noise_idx):
+        if best_d[r] <= radius:
+            new_labels[i] = cluster_lbls[best_c[r]]
+            rescued += 1
+    return new_labels, rescued, radius
+
+
 def novelty_score(vec: "np.ndarray", centroids: dict[int, "np.ndarray"]) -> float:
     """1 - max cosine_sim to any centroid. Vec need not be unit-norm.
 
@@ -1025,6 +1098,7 @@ def run_layer_clustering(
     use_reference: bool = True,
     reference_max_age_days: int = 45,
     rescue_threshold: float | None = None,
+    rescue_spread_percentile: int | None = None,
     reference_source: Optional[str] = None,
     bootstrap_reference_now: bool = False,
     cluster_fn: Optional[Callable[..., tuple["np.ndarray", Optional["np.ndarray"]]]] = None,
@@ -1216,11 +1290,17 @@ def run_layer_clustering(
             min_samples=min_samples,
         )
 
-    # Optional noise rescue (session layer): reassign outliers within
-    # `rescue_threshold` pure-embedding cosine of a cluster centroid. Closes the
-    # blind spot in the centroid-level merge, which never sees noise points.
-    # Runs before centroid/size/novelty computation so all downstream data
-    # reflects the rescued membership. Default off → command/IP layers unchanged.
+    # Optional noise rescue: reassign HDBSCAN outliers to their nearest cluster
+    # centroid. Closes the blind spot in the centroid-level merge, which never
+    # sees noise points. Runs before centroid/size/novelty computation so all
+    # downstream data reflects the rescued membership. Two modes:
+    #   * `rescue_threshold` — pure-embedding COSINE (command/session layers,
+    #     which are embedding-dominated; scalar_weight is tiny there).
+    #   * `rescue_spread_percentile` — augmented-space EUCLIDEAN within the Pth
+    #     percentile of the intra-cluster spread (IP layer, whose geometry is
+    #     scalar-driven; a pure-embedding rescue would re-merge IPs the scalar
+    #     blocks correctly split — see docs/decisions.md).
+    # Default off for any layer that passes neither.
     #
     # Rescue is skipped in cluster_fn mode (e.g. fusion) — the override
     # already encodes which sessions count as outliers, and reassigning
@@ -1228,7 +1308,15 @@ def run_layer_clustering(
     # contract. Fusion mode's "every session gets a cluster_id"
     # property makes the rescue irrelevant by construction.
     n_rescued = 0
-    if rescue_threshold is not None and rescue_threshold > 0.0 and cluster_fn is None:
+    if cluster_fn is not None and (
+        (rescue_threshold and rescue_threshold > 0.0)
+        or (rescue_spread_percentile and rescue_spread_percentile > 0)
+    ):
+        log.info(
+            "[%s] noise rescue: skipped (cluster_fn override present)",
+            layer_label,
+        )
+    elif rescue_threshold is not None and rescue_threshold > 0.0:
         cluster_labels_arr, n_rescued = rescue_noise_points(
             normalized, cluster_labels_arr, rescue_threshold,
         )
@@ -1237,11 +1325,16 @@ def run_layer_clustering(
                 "[%s] noise rescue: reassigned %d outlier(s) to nearest centroid "
                 "(cosine >= %.3f)", layer_label, n_rescued, rescue_threshold,
             )
-    elif rescue_threshold is not None and rescue_threshold > 0.0:
-        log.info(
-            "[%s] noise rescue: skipped (cluster_fn override present)",
-            layer_label,
+    elif rescue_spread_percentile is not None and rescue_spread_percentile > 0:
+        cluster_labels_arr, n_rescued, rescue_radius = rescue_noise_points_augmented(
+            cluster_matrix, cluster_labels_arr, rescue_spread_percentile,
         )
+        if n_rescued:
+            log.info(
+                "[%s] noise rescue: reassigned %d outlier(s) to nearest centroid "
+                "(augmented euclidean <= p%d intra-cluster spread = %.4f)",
+                layer_label, n_rescued, rescue_spread_percentile, rescue_radius,
+            )
 
     unique_labels = [int(l) for l in np.unique(cluster_labels_arr)]
     valid_cluster_ids = [l for l in unique_labels if l >= 0]

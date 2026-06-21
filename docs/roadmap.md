@@ -98,6 +98,8 @@ incrementally; none blocks the core workflow.
 ## Open audit items
 
 Smaller correctness/quality follow-ups surfaced by code review and the eval
-diagnostics — e.g. per-centroid cohesion stats, command/IP-layer noise-rescue
-tuning, `_URL_RE` query-string normalization. These live next to the code they
-touch; `scripts/diagnose_*.py` track several of them against the live corpus.
+diagnostics — e.g. per-centroid cohesion stats, `_URL_RE` query-string
+normalization. These live next to the code they touch; `scripts/diagnose_*.py`
+track several of them against the live corpus. (The IP-layer noise-rescue gap —
+70% of command-bearing IPs flagged as noise with no rescue — shipped: augmented-
+space rescue, `scripts/diagnose_ip_rescue.py` tunes the percentile.)

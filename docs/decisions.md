@@ -104,6 +104,26 @@ step. Chosen over transport/node subclassing (brittle across elasticsearch-py
 versions) and over per-site try/except (doesn't scale to new sites or smaller
 nodes).
 
+**IP noise rescue is augmented-space euclidean, not pure-embedding cosine.** The
+IP layer flagged ~70% of command-bearing IPs as HDBSCAN noise (every run,
+`rescued=0`) while commands/sessions sit at 0.1–0.4%. The obvious fix — reuse the
+command `rescue_threshold` (`rescue_noise_points`, pure-embedding cosine) — was
+**measured wrong before shipping**: the IP pooled embedding is thin, so the IP
+layer clusters on the *augmented* `[embedding ⊕ Tier1/Tier2/attribution]` euclidean
+vector. Validation (`scripts/diagnose_ip_rescue.py`, production labels, no
+re-cluster): outliers sit at pure-cosine 0.997 to nearest centroid but only 0.73 to
+a random one (so the embedding *is* discriminative — rescue is warranted), yet a
+pure-cosine rescue would reclaim ~99.5% vs only ~62% that are actually close in the
+augmented space — the 38% gap being IPs the scalar blocks *correctly* separated.
+So rescue runs in the augmented space HDBSCAN fit on, within a percentile of the
+intra-cluster spread (`rescue_noise_points_augmented`). The default is the
+**aggressive p99** because purity held flat across thresholds — rescued IPs match
+their cluster's modal playbook ~94% and modal intent ~99.7% at p90 *through* p99 —
+so p99 reclaims the most (70% → ~6% outliers) without quality loss. (Implementation
+note: nearest-centroid distance uses the `‖a-b‖²` matmul identity batched over rows
+— the naive 3-D broadcast needed 46 GiB at IP scale and would have OOM'd the live
+run.)
+
 ## Dead-ends — measured and rejected
 
 Don't re-attempt these without new evidence; each was tried against the live
