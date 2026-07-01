@@ -544,7 +544,7 @@ def _run_pipeline(cfg, secrets, args) -> int:
                     "NOTE: this includes reference_session (the imported "
                     "Atomic Red Team / Tradecraft corpus) and playbook_anchors "
                     "— the reference corpus must be re-bootstrapped afterward "
-                    "(setup/3-bootstrap-reference-corpus.sh; reference-heal does "
+                    "(setup/scripts/bootstrap-reference-corpus.sh; reference-heal does "
                     "NOT re-clone it).\n"
                     "Proceed? [y/N] "
                 ).strip().lower()
@@ -997,7 +997,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # `prism.raw.cowrie.session`.
     p_boot = sub.add_parser(
         "bootstrap-es",
-        help="Apply setup/*.yaml + setup/es-pipelines/*.yml to ES (templates + ingest pipelines)",
+        help="Apply setup/es-templates/*.yaml + setup/es-pipelines/*.yml to ES (templates + ingest pipelines)",
     )
     p_boot.add_argument(
         "--dry-run", action="store_true",

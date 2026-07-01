@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 3-bootstrap-reference-corpus.sh — (re)build the external reference baseline that
+# bootstrap-reference-corpus.sh — (re)build the external reference baseline that
 # drives the console "Tradecraft Matches" panel + the external-novelty surface.
 #
 # Three steps:
@@ -20,7 +20,7 @@
 # Needs GitHub egress (the ATR clone) + the embedding model reachable. Safe to
 # re-run (idempotent: re-imports, and enrich/cluster are cache-gated).
 #
-# Usage:  [sudo] bash setup/3-bootstrap-reference-corpus.sh
+# Usage:  [sudo] bash setup/scripts/bootstrap-reference-corpus.sh
 # Env overrides (same names/defaults as setup.sh):
 #   SERVICE_USER   default: dshield_prism
 #   INSTALL_DIR    default: /opt/dshield_prism

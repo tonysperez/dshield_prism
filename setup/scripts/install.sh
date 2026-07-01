@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 2-setup.sh — one-shot Security Onion-side installer for enrich.
+# install.sh — one-shot Security Onion-side installer for enrich.
 #
 # Idempotent. Safe to re-run on a fresh node OR an existing deploy to upgrade.
 # Requires root (or sudo).
@@ -80,7 +80,7 @@
 #         -m enrich.cli enrich
 #
 # Usage:
-#   sudo bash setup/2-setup.sh [--no-systemd] [--skip-healthcheck] [--skip-init-index]
+#   sudo bash setup/scripts/install.sh [--no-systemd] [--skip-healthcheck] [--skip-init-index]
 #                            [--no-console] [--ufw] [--ufw-console]
 #
 # Environment overrides:
@@ -155,7 +155,8 @@ die()  { echo -e "${RED}ERROR:${RESET} $*" >&2; exit 1; }
 trap 'die "command failed at line ${LINENO}: ${BASH_COMMAND}"' ERR
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-SRC_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+# This script lives at setup/scripts/install.sh, so the repo root is two levels up.
+SRC_DIR="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
 # ---- A. sanity checks -------------------------------------------------------
 
@@ -169,7 +170,7 @@ fi
 # possible (right after the root check, before any heavier work). The
 # tee lives via a file-redirection process-substitution so all
 # subsequent log/warn/die output is captured. Use --append so re-running
-# 2-setup.sh appends to a single audit-trail log file rather than
+# install.sh appends to a single audit-trail log file rather than
 # truncating each invocation.
 mkdir -p "${LOG_DIR}"
 chmod 750 "${LOG_DIR}"
@@ -207,7 +208,7 @@ REQUIRED_FILES=(
     "${SRC_DIR}/setup/es-mappings/intel/ip.json"
     "${SRC_DIR}/setup/es-mappings/intel/url.json"
     "${SRC_DIR}/setup/es-mappings/findings/default.json"
-    "${SRC_DIR}/setup/prism.raw_template.yaml"
+    "${SRC_DIR}/setup/es-templates/prism.raw_template.yaml"
     "${SRC_DIR}/setup/es-pipelines/cowrie-pipeline.yml"
     "${SRC_DIR}/systemd/dshield_prism-forward.service"
     "${SRC_DIR}/systemd/dshield_prism-forward.timer"
@@ -216,7 +217,7 @@ REQUIRED_FILES=(
     "${SRC_DIR}/systemd/dshield_prism-recluster-full.service"
     "${SRC_DIR}/systemd/dshield_prism-recluster-full.timer"
     "${SRC_DIR}/systemd/dshield_prism-backfill.service"
-    "${SRC_DIR}/setup/3-bootstrap-reference-corpus.sh"
+    "${SRC_DIR}/setup/scripts/bootstrap-reference-corpus.sh"
 )
 for required in "${REQUIRED_FILES[@]}"; do
     [[ -f "${required}" ]] || die "Missing source file: ${required}"
@@ -590,22 +591,22 @@ fi
 # NON-FATAL by design: it needs GitHub egress (clones Atomic Red Team) and the
 # embedding model up, neither guaranteed on every box (air-gapped installs,
 # LLM not yet configured). A failure here only means the Tradecraft panel stays
-# empty until you run setup/3-bootstrap-reference-corpus.sh by hand later. Refresh
+# empty until you run setup/scripts/bootstrap-reference-corpus.sh by hand later. Refresh
 # is operator-driven (~quarterly), not scheduled — see docs/reference-corpus.md.
-# The three steps live in setup/3-bootstrap-reference-corpus.sh so the same path
+# The three steps live in setup/scripts/bootstrap-reference-corpus.sh so the same path
 # can be re-run standalone (e.g. after a `pipeline --force` wipes the corpus).
 
 log "Bootstrapping external reference corpus (Tradecraft Matches) — best-effort"
 set +e
 SERVICE_USER="${SERVICE_USER}" INSTALL_DIR="${INSTALL_DIR}" VENV="${VENV}" \
-    bash "${SRC_DIR}/setup/3-bootstrap-reference-corpus.sh"
+    bash "${SRC_DIR}/setup/scripts/bootstrap-reference-corpus.sh"
 REF_RC=$?
 set -e
 if (( REF_RC != 0 )); then
     warn "Reference-corpus bootstrap failed (rc=${REF_RC}) — install continues. The"
     warn "  'Tradecraft Matches' panel stays empty until you run it by hand (with the"
     warn "  embedding model up + GitHub reachable):"
-    warn "    sudo bash ${INSTALL_DIR}/setup/3-bootstrap-reference-corpus.sh"
+    warn "    sudo bash ${INSTALL_DIR}/setup/scripts/bootstrap-reference-corpus.sh"
     warn "  See docs/reference-corpus.md."
 else
     log "  reference corpus imported + external centroids minted (Tradecraft Matches live after next 'cluster sessions')"
@@ -715,7 +716,7 @@ fi
 # instead of:
 #     sudo -u dshield_prism /opt/dshield_prism/.venv/bin/python -m enrich.cli ...
 # Wrapper script (not a shell alias) so it works in any shell, in scripts,
-# in cron, and over non-interactive ssh. Idempotent: re-running 2-setup.sh
+# in cron, and over non-interactive ssh. Idempotent: re-running install.sh
 # rewrites the file with identical content.
 
 PRISM_WRAPPER="/usr/local/bin/prism"
@@ -793,7 +794,7 @@ Browser console:
     systemctl restart dshield_prism-console.service
   open  http://<this-host>:8765/        (redirects to /findings)
 
-  To skip the console install / unit, re-run 2-setup.sh with --no-console.
+  To skip the console install / unit, re-run install.sh with --no-console.
   To bind loopback only, drop in /etc/systemd/system/dshield_prism-console.service.d/override.conf
   with [Service] / ExecStart= overriding the --host flag.
 

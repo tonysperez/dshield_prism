@@ -1,6 +1,6 @@
 """ES bootstrap — apply project-owned templates and ingest pipelines.
 
-Reads `setup/*.yaml` and `setup/es-pipelines/*.yml`, each formatted as a
+Reads `setup/es-templates/*.yaml` and `setup/es-pipelines/*.yml`, each formatted as a
 Kibana DevTools snippet:
 
     PUT _index_template/prism.raw
@@ -34,8 +34,8 @@ log = logging.getLogger(__name__)
 # template is optional — operators who want a plain index can delete
 # it and bootstrap-es will just skip it).
 _BOOTSTRAP_GLOBS: tuple[str, ...] = (
-    "setup/*.yaml",
-    "setup/*.yml",
+    "setup/es-templates/*.yaml",
+    "setup/es-templates/*.yml",
     "setup/es-pipelines/*.yaml",
     "setup/es-pipelines/*.yml",
 )

@@ -190,7 +190,15 @@ Everything else lives in [docs/roadmap.md](docs/roadmap.md).
 
 ## Install
 
-Step-by-step setup, configuration, and operational workflows are in [docs/operations.md](docs/operations.md).
+One command. An interactive wizard writes your config (no manual file editing),
+then installs the pipeline, systemd timers, and console:
+
+```bash
+sudo bash setup/setup.sh
+```
+
+Idempotent and re-runnable. Full step-by-step setup, configuration, and
+operational workflows are in [docs/operations.md](docs/operations.md).
 
 ### Prereqs
 

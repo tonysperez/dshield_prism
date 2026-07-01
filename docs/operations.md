@@ -26,25 +26,38 @@ Requires:
    - Tested running Prism on Ubuntu 24.04 LTS
    - Recommended 2GB RAM and 2 CPU cores for a small deployment, up to 8GB RAM and 6 CPU cores for larger deployments with frequent backfilling
 
-```bash
-sudo bash setup/1-create-sensor-pipelines.sh
-```
+One command. An interactive wizard writes `.env` + `config/local.yaml` for you
+(no manual editing), then installs everything:
 
 ```bash
-sudo bash setup/2-setup.sh
+sudo bash setup/setup.sh
 ```
 
-```bash
-sudo bash setup/3-bootstrap-reference-corpus.sh
-```
+It prompts for the ES URL + credentials, the local LLM endpoint + models, your
+sensor name(s) + `public`/`confidential` classification, and optional cloud /
+intel API keys — **validating live that the ES credentials authenticate and that
+the chosen models are actually loaded on the LLM box** (retry / continue / abort
+on failure; `--no-verify` skips these checks) — then creates the service user,
+installs to `/opt/dshield_prism`,
+applies the ES templates + ingest pipelines + indices (created manually rather
+than letting Fleet manage them, so Fleet can't wipe them), and installs the
+systemd units. Idempotent — safe to re-run; existing config is kept unless you
+pass `--reconfigure`.
 
-Idempotent. Requires `.env` + `config/local.yaml` filled in, and a reachable LLM
-server. The script creates the service user, installs to `/opt/dshield_prism`,
-and installs the systemd units. It manually creates the ES indices (rather than
-letting Elastic Fleet manage them) so Fleet can't wipe them.
+- Just (re)write config without installing: `bash setup/setup.sh --configure-only`.
+- Installer flags pass straight through, e.g. `sudo bash setup/setup.sh --no-console --ufw`.
 
-The **console** installs separately — it's self-contained with no dependency on
-the `enrich` package. See [`console/README.md`](../console/README.md).
+The underlying steps stay runnable standalone under `setup/scripts/`:
+`create-sensor-pipelines.sh`, `install.sh`, and `bootstrap-reference-corpus.sh`
+(the external reference corpus is optional + best-effort — `install.sh` runs it
+for you). Teardown lives at [`setup/destroy.sh`](../setup/destroy.sh).
+
+**Final manual step** (Security Onion / Fleet, not scriptable from here): in
+Kibana → Fleet, set each sensor's Cowrie integration `pipeline:` field to
+`prism.cowrie.session.<sensor-name>` (printed at the end of setup).
+
+The **console** installs alongside — self-contained, no dependency on the
+`enrich` package. See [`console/README.md`](../console/README.md).
 
 ## Configuration
 
@@ -53,6 +66,10 @@ the `enrich` package. See [`console/README.md`](../console/README.md).
 | `config/default.yaml` | committed defaults — the documented baseline |
 | `config/local.yaml` | per-deploy overrides (gitignored) |
 | `.env` | secrets: ES credentials, provider API keys (gitignored) |
+
+`setup/setup.sh` generates `.env` + a minimal `config/local.yaml` for you on a
+fresh install (re-run with `--reconfigure` to regenerate); edit `local.yaml`
+directly for anything the wizard doesn't prompt for.
 
 Override knobs in `local.yaml`; never edit `default.yaml` for a deploy. ES
 credentials come from `.env` (`ES_USERNAME`/`ES_PASSWORD` or `ES_API_KEY`).
@@ -182,7 +199,7 @@ backfill wall-clock onto old activity and flood the inbox).
    field, so `observer.name` must be stamped at ingest, per sensor — it's the
    `_id` namespace, and a `default` collision silently merges two sensors'
    sessions on upsert. Use
-   [`setup/1-create-sensor-pipelines.sh`](../setup/1-create-sensor-pipelines.sh)
+   [`setup/scripts/create-sensor-pipelines.sh`](../setup/scripts/create-sensor-pipelines.sh)
    (prompts for `name:classification`), then point that sensor's Fleet Cowrie
    integration `pipeline:` field at `prism.cowrie.session.<name>`. Pick a
    `public`/`confidential` classification per sensor — see
@@ -222,7 +239,7 @@ Treat any intel minted later as as-of-now; don't read backfilled drift /
 verdict-flips as signal. If you used `pipeline --force --backfill` (a
 wipe-and-rebuild rehearsal), it also wipes the Tradecraft reference corpus —
 re-bootstrap with
-[`setup/3-bootstrap-reference-corpus.sh`](../setup/3-bootstrap-reference-corpus.sh).
+[`setup/scripts/bootstrap-reference-corpus.sh`](../setup/scripts/bootstrap-reference-corpus.sh).
 
 ## Workstation operations
 
