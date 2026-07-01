@@ -71,6 +71,40 @@ function tsCell(iso, indexName) {
   return td;
 }
 
+async function loadOverview() {
+  const body = document.getElementById("overview-stats");
+  if (!body) return;
+  let data;
+  try {
+    const r = await fetch("/api/health/overview");
+    data = await r.json();
+  } catch (e) {
+    body.innerHTML = "";
+    body.appendChild(el("div", {class: "h-error"}, [`fetch failed: ${e.message}`]));
+    return;
+  }
+  if (data.error) {
+    body.innerHTML = "";
+    body.appendChild(el("div", {class: "h-error"}, [data.error]));
+    return;
+  }
+  body.innerHTML = "";
+  const stats = [
+    ["Total IPs", data.total_ips],
+    ["Sessions",  data.total_sessions],
+    ["Commands",  data.total_commands],
+    ["Playbooks", data.active_playbooks],
+    ["Clusters",  data.total_clusters],
+    ["Outliers",  data.total_outliers],
+  ];
+  for (const [label, value] of stats) {
+    body.appendChild(el("div", {class: "stat-card"}, [
+      el("div", {class: "s-label"}, [label]),
+      el("div", {class: "s-value"}, [fmtNum(value)]),
+    ]));
+  }
+}
+
 async function loadFreshness() {
   const body = document.getElementById("freshness-body");
   let data;
@@ -245,6 +279,7 @@ async function purgeCache() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  loadOverview();
   loadFreshness();
   loadRuns();
   loadOpsRuns();

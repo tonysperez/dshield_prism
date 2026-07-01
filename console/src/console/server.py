@@ -41,9 +41,8 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 # don't shift as the analyst tabs around.
 NAV_ITEMS: list[dict[str, str]] = [
     {"id": "inbox",     "label": "Inbox",    "href": "/inbox"},
+    {"id": "explore",   "label": "Explore",  "href": "/explore"},
     {"id": "graph",     "label": "Graph",    "href": "/graph"},
-    {"id": "browse",    "label": "Browse",   "href": "/browse"},
-    {"id": "history",   "label": "History",  "href": "/history"},
     {"id": "hunts",     "label": "Hunts",    "href": "/hunts"},
     {"id": "rules",     "label": "Rules",    "href": "/artifact-rules"},
     {"id": "curation",  "label": "Curation", "href": "/curation"},
@@ -195,9 +194,9 @@ def build_app(config_path: str | None = None) -> FastAPI:
             {"active_nav": active_nav, **(ctx or {})},
         )
 
-    # `/` lands on the analyst inbox. `/findings` and `/insights` remain
-    # as 302 redirects so bookmarks and deep links (with query strings)
-    # continue to resolve after the rename.
+    # `/` lands on the analyst inbox. `/findings`, `/history`, `/browse`, and
+    # `/insights` remain as 302 redirects so bookmarks and deep links (with
+    # query strings) continue to resolve after the rename.
     from fastapi.responses import RedirectResponse
 
     def _preserve_qs(request: Request, target: str) -> str:
@@ -220,17 +219,21 @@ def build_app(config_path: str | None = None) -> FastAPI:
     def graph_page(request: Request):
         return _render(request, "index.html", active_nav="graph")
 
-    @app.get("/browse")
-    def browse_page(request: Request):
-        return _render(request, "insights.html", active_nav="browse")
+    @app.get("/explore")
+    def explore_page(request: Request):
+        return _render(request, "explore.html", active_nav="explore")
 
     @app.get("/history")
-    def history_page(request: Request):
-        return _render(request, "history.html", active_nav="history")
+    def history_page_redirect(request: Request) -> RedirectResponse:
+        return RedirectResponse(_preserve_qs(request, "/explore"), status_code=302)
+
+    @app.get("/browse")
+    def browse_page_redirect(request: Request) -> RedirectResponse:
+        return RedirectResponse(_preserve_qs(request, "/explore"), status_code=302)
 
     @app.get("/insights")
     def insights_page_redirect(request: Request) -> RedirectResponse:
-        return RedirectResponse(_preserve_qs(request, "/browse"), status_code=302)
+        return RedirectResponse(_preserve_qs(request, "/explore"), status_code=302)
 
     # /compare folded into the graph as an inline compare panel
     # (ROADMAP #17.11 amended, G.2). The standalone page is gone; any
@@ -281,9 +284,6 @@ def build_app(config_path: str | None = None) -> FastAPI:
     # ------------------------------------------------------------------
     # API
     # ------------------------------------------------------------------
-    _insights_cache: dict[str, Any] = {"ts": 0.0, "data": None}
-    _INSIGHTS_TTL = 60.0  # seconds — data changes slowly
-
     @app.get("/api/timeline")
     def timeline_api(
         kind:             str  = Query(...),
@@ -298,23 +298,9 @@ def build_app(config_path: str | None = None) -> FastAPI:
         data = queries.timeline_sessions(es, cfg, kind=kind, id_=id, limit=limit, sf=sf)
         return JSONResponse(data)
 
-    @app.get("/api/insights")
-    def insights_api() -> JSONResponse:
-        now = time.monotonic()
-        if _insights_cache["data"] and now - _insights_cache["ts"] < _INSIGHTS_TTL:
-            return JSONResponse(_insights_cache["data"])
-        try:
-            data = queries.insights_summary(es, cfg, run_cache)
-            _insights_cache["ts"] = now
-            _insights_cache["data"] = data
-            return JSONResponse(data)
-        except Exception as e:
-            log.exception("insights_summary failed")
-            raise HTTPException(500, f"insights query failed: {e}")
-
-    # History (longitudinal lifecycle). Unlike /api/insights this is parameterised
-    # (window + sort lens + recurring filter), so it isn't memoised — the aggs are
-    # cheap and the params vary per interaction.
+    # History (longitudinal lifecycle). Unlike a memoised summary this is
+    # parameterised (window + sort lens + recurring filter), so it isn't
+    # cached — the aggs are cheap and the params vary per interaction.
     @app.get("/api/history")
     def history_api(request: Request) -> JSONResponse:
         qp = request.query_params
@@ -335,9 +321,9 @@ def build_app(config_path: str | None = None) -> FastAPI:
             raise HTTPException(500, f"history query failed: {e}")
 
     # Health page — command-grounding coverage report (ROADMAP #11.5).
-    # Same 60s in-memory cache pattern as /api/insights; the underlying
-    # data changes only when curated YAMLs / the tldr bundle / the
-    # corpus drift, none of which happen sub-minute.
+    # 60s in-memory cache; the underlying data changes only when curated
+    # YAMLs / the tldr bundle / the corpus drift, none of which happen
+    # sub-minute.
     _health_cmds_cache: dict[str, Any] = {"ts": 0.0, "data": None}
     _HEALTH_CMDS_TTL = 60.0
 
@@ -364,7 +350,6 @@ def build_app(config_path: str | None = None) -> FastAPI:
         """Wipe every in-memory cache so the next request reads from ES.
 
         The console layers a few caches on top of ES for query throughput:
-          - _insights_cache         (60 s TTL on the /api/insights payload)
           - _health_cmds_cache      (60 s TTL on /api/health/commands)
           - run_cache._cache        (5 min TTL on `latest run_id` per
                                      centroid index — RunCache in queries.py)
@@ -374,9 +359,6 @@ def build_app(config_path: str | None = None) -> FastAPI:
         that POSTs here so operators don't have to restart the process.
         """
         cleared: list[str] = []
-        _insights_cache["data"] = None
-        _insights_cache["ts"] = 0.0
-        cleared.append("insights")
         _invalidate_health_cache()
         cleared.append("health_commands")
         try:
@@ -963,6 +945,20 @@ def build_app(config_path: str | None = None) -> FastAPI:
                 ok=False, indexes={}, doc_counts={},
                 error=f"{e.__class__.__name__}: {e}",
             )
+
+    @app.get("/api/health/overview")
+    def health_overview_api() -> JSONResponse:
+        """Corpus-summary stat bar (Total IPs / Sessions / Commands /
+        Playbooks / Clusters / Outliers). Drives the Overview section on
+        /health — the stat bar formerly shown on the retired Browse page."""
+        try:
+            return JSONResponse(queries.health_overview(es, cfg))
+        except Exception as e:  # pragma: no cover -- depends on ES state
+            return JSONResponse({
+                "total_ips": 0, "total_sessions": 0, "total_commands": 0,
+                "active_playbooks": 0, "total_clusters": 0, "total_outliers": 0,
+                "error": f"{e.__class__.__name__}: {e}",
+            })
 
     @app.get("/api/health/freshness")
     def health_freshness_api() -> JSONResponse:

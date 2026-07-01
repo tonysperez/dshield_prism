@@ -471,12 +471,13 @@ escalated to the cloud LLM and never queried against CTI feeds.** Central logic:
 ## Console
 
 Read-only FastAPI + vanilla-JS app; never writes to ES. Nav:
-**Inbox · Graph · Browse · History · Hunts · Rules · Curation · Health**
-(`/findings`, `/insights`, `/compare` are 302 redirects to `/inbox`, `/browse`,
-`/graph`). The graph swim-lane is IP → Session → Command → File; inline
+**Inbox · Explore · Graph · Hunts · Rules · Curation · Health**
+(`/findings` redirects to `/inbox`; `/compare` redirects to `/graph`; `/history`,
+`/browse`, and `/insights` all redirect to `/explore`, with `/history` preserving
+its query string). The graph swim-lane is IP → Session → Command → File; inline
 compare renders a verdict card for a peer cluster/playbook/campaign; the Report
 tool gathers in-view artifacts into a copy-ready writeup (IOCs defanged by
-default). History is a longitudinal one-row-per-playbook list ranked by a
+default). Explore (formerly History) is a longitudinal one-row-per-playbook list ranked by a
 composite `interest` score — weights liveness·.30 / trend·.25 / recurrence·.20 /
 mass·.15 / escalation·.10 in `_HISTORY_WEIGHTS` (queries.py). `/api/history` takes
 `entity` (playbook/session_cluster/ip_cluster/campaign/operation), `window`

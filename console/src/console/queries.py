@@ -1479,6 +1479,56 @@ def health_runs(es: Elasticsearch, cfg: AppConfig) -> list[dict]:
     return rows
 
 
+def health_overview(es: Elasticsearch, cfg: AppConfig) -> dict:
+    """Corpus-summary stat bar for the Health page's Overview section
+    (formerly Browse/Insights' top stat bar). Returns
+    `{total_ips, total_sessions, total_commands, active_playbooks,
+    total_clusters, total_outliers}`. Cluster/outlier totals are summed
+    from `health_runs()` rather than re-running a separate per-verb
+    run_summary query — `health_runs()` is already the canonical "latest
+    run per cluster verb" source. Every field defaults to 0 on any
+    per-query failure so a partial ES outage degrades gracefully instead
+    of failing the whole panel.
+    """
+    idxs = cfg.elasticsearch.indexes.cowrie
+
+    def _count(idx: str) -> int:
+        try:
+            return es.count(index=idx).get("count", 0)
+        except Exception:
+            return 0
+
+    total_ips = _count(idxs.ips_rollup)
+    total_sessions = _count(idxs.sessions_rollup)
+    total_commands = _count(idxs.commands)
+
+    try:
+        pb_field = _resolve_agg_field(
+            es, idxs.sessions_rollup, "dshield.cowrie.enrichment.session.playbook_id",
+        )
+        r = es.search(index=idxs.sessions_rollup, size=0, aggs={
+            "playbooks": {"cardinality": {"field": pb_field}}
+        })
+        active_playbooks = r["aggregations"]["playbooks"]["value"]
+    except Exception:
+        active_playbooks = 0
+
+    total_clusters = 0
+    total_outliers = 0
+    for row in health_runs(es, cfg):
+        total_clusters += row.get("n_clusters") or 0
+        total_outliers += row.get("n_outliers") or 0
+
+    return {
+        "total_ips":        total_ips,
+        "total_sessions":   total_sessions,
+        "total_commands":   total_commands,
+        "active_playbooks": active_playbooks,
+        "total_clusters":   total_clusters,
+        "total_outliers":   total_outliers,
+    }
+
+
 # A `status=started` ops doc is patched in place to finished/failed on normal
 # exit, so one that's still "started" is either a live verb or a crashed one
 # that never got patched. Treat started docs older than this as ghosts, not live
@@ -1645,537 +1695,6 @@ def health_ops_runs(es: Elasticsearch, cfg: AppConfig) -> dict:
     out["running"] = _running_ops(es, idx, cfg.ops.pipeline_running_window_min)
 
     return out
-
-
-# ---------------------------------------------------------------------------
-# Insights: pre-aggregated data for the /insights dashboard page.
-# ---------------------------------------------------------------------------
-
-def insights_summary(
-    es: Elasticsearch, cfg: AppConfig, run_cache: RunCache,
-) -> dict:
-    idxs = cfg.elasticsearch.indexes.cowrie
-
-    # --- Overview counts ---------------------------------------------------
-    def _count(idx: str) -> int:
-        try:
-            return es.count(index=idx).get("count", 0)
-        except Exception:
-            return 0
-
-    total_ips = _count(idxs.ips_rollup)
-    total_sessions = _count(idxs.sessions_rollup)
-    total_commands = _count(idxs.commands)
-
-    pb_field = _resolve_agg_field(
-        es, idxs.sessions_rollup, "dshield.cowrie.enrichment.session.playbook_id",
-    )
-    try:
-        r = es.search(index=idxs.sessions_rollup, size=0, aggs={
-            "playbooks": {"cardinality": {"field": pb_field}}
-        })
-        active_playbooks = r["aggregations"]["playbooks"]["value"]
-    except Exception:
-        active_playbooks = 0
-
-    # --- Cluster run summaries --------------------------------------------
-    def _run_summary(idx: str, kind: str) -> dict:
-        run_id = run_cache.latest(es, idx)
-        must: list[dict] = [{"term": {"doc_type": "run_summary"}}]
-        if run_id:
-            must.append({"term": {"run_id": run_id}})
-        try:
-            r = es.search(index=idx, size=1,
-                          _source=["total_docs", "n_clusters", "n_outliers",
-                                   "run_id", "@timestamp"],
-                          query={"bool": {"must": must}},
-                          sort=[{"@timestamp": {"order": "desc"}}])
-            hits = r["hits"]["hits"]
-            src = hits[0]["_source"] if hits else {}
-        except Exception:
-            src = {}
-        return {
-            "total_docs": src.get("total_docs"),
-            "n_clusters": src.get("n_clusters"),
-            "n_outliers": src.get("n_outliers"),
-            "run_id": src.get("run_id"),
-            "timestamp": src.get("@timestamp"),
-        }
-
-    cluster_runs = {
-        "command": _run_summary(idxs.command_clusters, "command"),
-        "session": _run_summary(idxs.session_clusters, "session"),
-        "ip":      _run_summary(idxs.ip_clusters, "ip"),
-    }
-
-    # --- Playbooks --------------------------------------------------------
-    # Aggregate over the session rollup (the canonical playbook membership
-    # source). For each playbook_id bucket we count sessions directly and
-    # use a cardinality sub-agg on source.ip for the distinct-IP count, then
-    # look up the centroid doc to get the LLM display name.
-    playbooks: list[dict] = []
-    # `pb_field` is reused from the active_playbooks block above.
-    # Sparkline: 14-day daily session-count per playbook, baked into the
-    # same agg so the Insights endpoint is still one round-trip.
-    try:
-        r = es.search(
-            index=idxs.sessions_rollup, size=0,
-            query={"range": {"event.start": {"gte": "now-14d"}}},
-            aggs={
-                "by_playbook": {
-                    "terms": {
-                        "field": pb_field,
-                        "size": 30,
-                        "order": {"_count": "desc"},
-                        "min_doc_count": 1,
-                    },
-                    "aggs": {
-                        "distinct_ips": {"cardinality": {"field": "source.ip"}},
-                        "daily": {
-                            "date_histogram": {
-                                "field": "event.start",
-                                "fixed_interval": "1d",
-                                "min_doc_count": 0,
-                                "extended_bounds": {"min": "now-14d", "max": "now"},
-                            },
-                        },
-                    },
-                },
-            },
-        )
-        buckets = r["aggregations"]["by_playbook"]["buckets"]
-        pb_ids = [b["key"] for b in buckets if b.get("key")]
-        # Names from the session rollup (authoritative post-cutover), not the
-        # session-cluster centroids which `cluster sessions --novel-pool` no longer
-        # refreshes for the assigned bulk.
-        name_map = _playbook_names(es, cfg, pb_ids)
-        for b in buckets:
-            pid = b.get("key")
-            if not pid:
-                continue
-            # 14-day daily counts as a plain int array, oldest → newest. The
-            # frontend renders it as an inline SVG sparkline; the dates are
-            # implied by position (today is the last bucket).
-            daily_counts = [
-                int(db.get("doc_count") or 0)
-                for db in (b.get("daily") or {}).get("buckets", [])
-            ]
-            playbooks.append({
-                "id":            pid,
-                "name":          name_map.get(pid, ""),
-                "session_count": b["doc_count"],
-                "ip_count":      int(b["distinct_ips"]["value"]),
-                "daily_14d":     daily_counts,
-            })
-    except Exception as e:
-        log.warning("insights playbooks failed: %s", e)
-
-    # --- Top command clusters ---------------------------------------------
-    command_clusters: list[dict] = []
-    try:
-        run_id = run_cache.latest(es, idxs.command_clusters)
-        must: list[dict] = [{"term": {"doc_type": "cluster"}}]
-        if run_id:
-            must.append({"term": {"run_id": run_id}})
-        r = es.search(
-            index=idxs.command_clusters, size=10,
-            _source=["cluster_id", "size", "sample_commands"],
-            query={"bool": {"must": must}},
-            sort=[{"size": {"order": "desc"}}],
-        )
-        cluster_ids = []
-        raw_clusters: list[dict] = []
-        for h in r["hits"]["hits"]:
-            s = h["_source"]
-            cid = s.get("cluster_id")
-            if not cid:
-                continue
-            cluster_ids.append(cid)
-            samples = s.get("sample_commands") or []
-            if isinstance(samples, str):
-                samples = [samples]
-            raw_clusters.append({
-                "cluster_id": cid,
-                "size": s.get("size", 0),
-                "sample_commands": [c[:100] for c in samples[:3]],
-                "dominant_intent": None,
-            })
-        # Enrich with dominant intent per cluster
-        if cluster_ids:
-            r2 = es.search(
-                index=idxs.commands, size=0,
-                query={"bool": {"filter": [
-                    {"terms": {"dshield.cowrie.enrichment.cluster.id": cluster_ids}},
-                    {"term": {"dshield.cowrie.enrichment.cluster.is_outlier": False}},
-                ]}},
-                aggs={"by_cluster": {
-                    "terms": {"field": "dshield.cowrie.enrichment.cluster.id", "size": 20},
-                    "aggs": {"dominant_intent": {
-                        "terms": {"field": "dshield.cowrie.enrichment.intent", "size": 1}
-                    }}
-                }},
-            )
-            intent_map: dict[str, str | None] = {}
-            for b in r2["aggregations"]["by_cluster"]["buckets"]:
-                ib = b["dominant_intent"]["buckets"]
-                intent_map[b["key"]] = ib[0]["key"] if ib else None
-            for cl in raw_clusters:
-                cl["dominant_intent"] = intent_map.get(cl["cluster_id"])
-        command_clusters = raw_clusters
-    except Exception as e:
-        log.warning("insights command_clusters failed: %s", e)
-
-    # --- Top session clusters ---------------------------------------------
-    session_clusters: list[dict] = []
-    try:
-        run_id = run_cache.latest(es, idxs.session_clusters)
-        must = [{"term": {"doc_type": "cluster"}}]
-        if run_id:
-            must.append({"term": {"run_id": run_id}})
-        r = es.search(
-            index=idxs.session_clusters, size=10,
-            _source=["cluster_id", "size", "playbook_id", "playbook_name", "sample_session_ids"],
-            query={"bool": {"must": must}},
-            sort=[{"size": {"order": "desc"}}],
-        )
-        for h in r["hits"]["hits"]:
-            s = h["_source"]
-            cid = s.get("cluster_id")
-            if not cid:
-                continue
-            samples = s.get("sample_session_ids") or []
-            if isinstance(samples, str):
-                samples = [samples]
-            session_clusters.append({
-                "cluster_id":          cid,
-                "size":                s.get("size", 0),
-                "playbook_id":         s.get("playbook_id"),
-                "playbook_name":       s.get("playbook_name"),
-                "sample_session_ids":  [str(x)[:16] for x in samples[:3]],
-            })
-    except Exception as e:
-        log.warning("insights session_clusters failed: %s", e)
-
-    # --- Top IP clusters --------------------------------------------------
-    ip_clusters: list[dict] = []
-    try:
-        run_id = run_cache.latest(es, idxs.ip_clusters)
-        must = [{"term": {"doc_type": "cluster"}}]
-        if run_id:
-            must.append({"term": {"run_id": run_id}})
-        r = es.search(
-            index=idxs.ip_clusters, size=10,
-            _source=["cluster_id", "size", "sample_ips"],
-            query={"bool": {"must": must}},
-            sort=[{"size": {"order": "desc"}}],
-        )
-        cluster_ids = []
-        raw_ip_clusters: list[dict] = []
-        for h in r["hits"]["hits"]:
-            s = h["_source"]
-            cid = s.get("cluster_id")
-            if not cid:
-                continue
-            cluster_ids.append(cid)
-            samples = s.get("sample_ips") or []
-            if isinstance(samples, str):
-                samples = [samples]
-            # IP clusters are unnamed actor profiles; an IP's playbook
-            # membership is derived from the sessions it produced. The
-            # `playbook_count` here is the breadth of playbooks spanned by
-            # this IP cluster's IPs.
-            raw_ip_clusters.append({
-                "cluster_id":     cid,
-                "size":           s.get("size", 0),
-                "sample_ips":     list(samples[:4]),
-                "top_countries":  [],
-                "playbook_count": None,
-            })
-        # Enrich with top countries per cluster
-        if cluster_ids:
-            r2 = es.search(
-                index=idxs.ips_rollup, size=0,
-                query={"terms": {"dshield.cowrie.enrichment.ip.cluster.id": cluster_ids}},
-                aggs={"by_cluster": {
-                    "terms": {"field": "dshield.cowrie.enrichment.ip.cluster.id", "size": 20},
-                    "aggs": {"countries": {
-                        "terms": {"field": "source.geo.country_iso_code", "size": 5}
-                    }}
-                }},
-            )
-            cc_map: dict[str, list[dict]] = {}
-            for b in r2["aggregations"]["by_cluster"]["buckets"]:
-                cc_map[b["key"]] = [
-                    {"cc": cb["key"], "count": cb["doc_count"]}
-                    for cb in b["countries"]["buckets"]
-                ]
-            for cl in raw_ip_clusters:
-                cl["top_countries"] = cc_map.get(cl["cluster_id"], [])
-
-            # Per-cluster distinct playbook count: for each IP cluster, count
-            # the distinct playbook_ids spanned by sessions of IPs in that
-            # cluster. Two-hop join (ipcluster -> ips -> sessions -> playbooks).
-            try:
-                cluster_to_ips: dict[str, list[str]] = {cid: [] for cid in cluster_ids}
-                r3 = es.search(
-                    index=idxs.ips_rollup, size=0,
-                    query={"terms": {"dshield.cowrie.enrichment.ip.cluster.id": cluster_ids}},
-                    aggs={"by_cluster": {
-                        "terms": {"field": "dshield.cowrie.enrichment.ip.cluster.id", "size": len(cluster_ids)},
-                        "aggs": {"ips": {"terms": {"field": "source.ip", "size": 500}}},
-                    }},
-                )
-                for b in r3["aggregations"]["by_cluster"]["buckets"]:
-                    cluster_to_ips[b["key"]] = [ib["key"] for ib in b["ips"]["buckets"]]
-
-                pb_field2 = _resolve_agg_field(
-                    es, idxs.sessions_rollup,
-                    "dshield.cowrie.enrichment.session.playbook_id",
-                )
-                pb_count_map: dict[str, int] = {}
-                for cid, ip_list in cluster_to_ips.items():
-                    if not ip_list:
-                        pb_count_map[cid] = 0
-                        continue
-                    try:
-                        rc = es.search(
-                            index=idxs.sessions_rollup, size=0,
-                            query={"terms": {"source.ip": ip_list}},
-                            aggs={"distinct_playbooks": {"cardinality": {"field": pb_field2}}},
-                        )
-                        pb_count_map[cid] = int(rc["aggregations"]["distinct_playbooks"]["value"])
-                    except Exception:
-                        pb_count_map[cid] = 0
-                for cl in raw_ip_clusters:
-                    cl["playbook_count"] = pb_count_map.get(cl["cluster_id"], 0)
-            except Exception as e:
-                log.warning("insights ip_clusters playbook_count failed: %s", e)
-        ip_clusters = raw_ip_clusters
-    except Exception as e:
-        log.warning("insights ip_clusters failed: %s", e)
-
-    # --- Novel-but-recurring commands -------------------------------------
-    novel_commands: list[dict] = []
-    try:
-        # Use is_outlier=True since truly novel commands are outliers.
-        # Filter occurrence_count >= 3 to exclude one-off typos.
-        r = es.search(
-            index=idxs.commands, size=20,
-            _source=[
-                "process.command_line", "process.hash.sha256",
-                "dshield.cowrie.enrichment.intent",
-                "dshield.cowrie.enrichment.cluster.novelty_score",
-                "dshield.cowrie.enrichment.cluster.novelty_score_external",
-                "dshield.cowrie.enrichment.cluster.is_outlier",
-                "dshield.cowrie.enrichment.unique_sessions",
-                "dshield.cowrie.enrichment.unique_source_ips",
-                "dshield.cowrie.enrichment.occurrence_count",
-            ],
-            query={"bool": {"filter": [
-                {"range": {"dshield.cowrie.enrichment.unique_sessions": {"gte": 3}}},
-                # Gate out the encoding-artifact tail — see _NOVEL_CONFIDENCE_MIN
-                # and ROADMAP issue #3. Without this, raw-byte commands score
-                # novelty=1.0 with confidence=1 and dominate the panel.
-                {"range": {"dshield.cowrie.enrichment.confidence": {"gte": _NOVEL_CONFIDENCE_MIN}}},
-            ]}},
-            sort=[{
-                "dshield.cowrie.enrichment.cluster.novelty_score": {"order": "desc"}
-            }],
-        )
-        import math as _math
-        for h in r["hits"]["hits"]:
-            s = h["_source"]
-            enr = (s.get("dshield") or {}).get("cowrie", {}).get("enrichment", {}) or {}
-            cluster = enr.get("cluster") or {}
-            novelty = cluster.get("novelty_score") or 0.0
-            sess = enr.get("unique_sessions") or 0
-            # Compute a combined "interesting" score weighting novelty × spread
-            score = novelty * _math.log(sess + 1)
-            sha = ((s.get("process") or {}).get("hash") or {}).get("sha256") or ""
-            cmd_line = (s.get("process") or {}).get("command_line") or sha
-            novel_commands.append({
-                "sha256": sha,
-                "command_line": cmd_line,
-                "intent": enr.get("intent"),
-                "novelty_score": novelty,
-                # Brutal-review 5.7: when the dual-novelty writer (5.5)
-                # is active for this corpus, surface BOTH scores so the
-                # analyst can see "this is novel to my sensor" (in-corpus)
-                # next to "this is novel to the documented adversary
-                # catalog" (external). Absent when no external ref exists
-                # at the command layer yet.
-                "novelty_score_external": cluster.get("novelty_score_external"),
-                "is_outlier": cluster.get("is_outlier", False),
-                "unique_sessions": sess,
-                "unique_source_ips": enr.get("unique_source_ips") or 0,
-                "occurrence_count": enr.get("occurrence_count") or 0,
-                "score": score,
-            })
-        # Re-sort by combined score (not just raw novelty)
-        novel_commands.sort(key=lambda x: x["score"], reverse=True)
-    except Exception as e:
-        log.warning("insights novel_commands failed: %s", e)
-
-    # Multi-session campaigns from the campaigns index — best-effort; an
-    # empty list is fine if the miner hasn't run yet.
-    mined_campaigns = list_campaigns(es, cfg, size=20)
-
-    # Operations (brutal-review 7.2) — bhv × inf campaign mergers from
-    # 7.1's miner. Empty until either (a) the miner ran or (b) the
-    # corpus produced a bhv×inf pair with high enough IP overlap to
-    # clear the threshold.
-    operations = list_operations(es, cfg, size=20)
-
-    # Stamp a one-line evidence-quality verdict on every row consumed by
-    # the /browse catalog. Same vocabulary the inbox + graph orientation
-    # card carry, so the analyst learns one mental scale. Best-effort:
-    # failures leave the field absent rather than fail the whole panel.
-    try:
-        from enrich.findings.evidence_quality import (
-            band_thresholds, format_anchor_evidence_quality,
-        )
-        try:
-            thresholds = band_thresholds(es, cfg)
-        except Exception:
-            thresholds = None
-        for row in playbooks:
-            v = format_anchor_evidence_quality(
-                "playbook", row, thresholds=thresholds,
-            )
-            if v: row["evidence_quality"] = v
-        for row in mined_campaigns:
-            v = format_anchor_evidence_quality(
-                "campaign", row, thresholds=thresholds,
-            )
-            if v: row["evidence_quality"] = v
-    except Exception as exc:
-        log.warning("insights evidence_quality stamping failed: %s", exc)
-
-    # --- Tradecraft matches (brutal-review phase 5.10) --------------------
-    # Sessions whose embedding is closest to a documented external (AR)
-    # adversary-technique centroid. Read-only enrichment surface — not a
-    # finding kind, no status workflow. Joined to the centroid's resolved
-    # `external_match_techniques` so the analyst sees the MITRE label
-    # inline ("Matches T1003.007 + T1014 + T1027 — cosine 0.93").
-    tradecraft_matches: list[dict] = []
-    try:
-        # Top sessions by external_match_cosine. Only meaningful when the
-        # cosine is well above noise — 0.5 is the conservative floor;
-        # below that the "match" is structural happenstance, not signal.
-        r = es.search(
-            index=idxs.sessions_rollup, size=15,
-            _source=[
-                "cowrie.session_id",
-                "source.ip",
-                "dshield.cowrie.enrichment.session.cluster.id",
-                "dshield.cowrie.enrichment.session.cluster.external_match_id",
-                "dshield.cowrie.enrichment.session.cluster.external_match_cosine",
-                "dshield.cowrie.enrichment.session.cluster.novelty_score_external",
-                "dshield.cowrie.enrichment.session.command_count",
-                "dshield.cowrie.enrichment.session.dominant_intent",
-                "dshield.cowrie.enrichment.session.playbook_id",
-                "dshield.cowrie.enrichment.session.playbook_name",
-            ],
-            query={"bool": {"must": [
-                {"exists": {"field": "dshield.cowrie.enrichment.session.cluster.external_match_id"}},
-                {"range":  {"dshield.cowrie.enrichment.session.cluster.external_match_cosine": {"gte": 0.5}}},
-            ]}},
-            sort=[{
-                "dshield.cowrie.enrichment.session.cluster.external_match_cosine": {"order": "desc"}
-            }],
-        )
-        # Bulk-fetch each referenced external centroid's technique
-        # distribution once. The session_clusters index uses the cluster
-        # run's run_id as part of the centroid's `_id` so we can't reuse
-        # session-side IDs directly; query by (reference_source=external,
-        # cluster_id=...) instead and cache.
-        match_ids = sorted({
-            ((h["_source"].get("dshield") or {}).get("cowrie", {})
-             .get("enrichment", {}).get("session", {}).get("cluster") or {}).get("external_match_id")
-            for h in r["hits"]["hits"]
-        } - {None})
-        tech_by_match: dict[str, dict] = {}
-        if match_ids:
-            # Find the latest external generation, then pull centroids in
-            # that generation for the matched cluster_ids only.
-            try:
-                gen_r = es.search(
-                    index=idxs.session_clusters, size=1,
-                    query={"bool": {"must": [
-                        {"term": {"doc_type": "reference_centroid"}},
-                        {"term": {"reference_source.keyword": "external"}},
-                    ]}},
-                    sort=[{"reference_generation": {"order": "desc"}}],
-                    _source=["reference_generation"],
-                )
-                gen_hits = gen_r["hits"]["hits"]
-                latest_gen = (
-                    int(gen_hits[0]["_source"]["reference_generation"])
-                    if gen_hits else None
-                )
-                if latest_gen is not None:
-                    cent_r = es.search(
-                        index=idxs.session_clusters, size=100,
-                        query={"bool": {"must": [
-                            {"term":  {"doc_type": "reference_centroid"}},
-                            {"term":  {"reference_source.keyword": "external"}},
-                            {"term":  {"reference_generation": latest_gen}},
-                            {"terms": {"cluster_id": match_ids}},
-                        ]}},
-                        _source=["cluster_id", "external_match_techniques"],
-                    )
-                    for h in cent_r["hits"]["hits"]:
-                        s = h["_source"]
-                        tech_by_match[s["cluster_id"]] = s.get("external_match_techniques") or {}
-            except Exception as exc:
-                log.warning("insights tradecraft: technique lookup failed: %s", exc)
-        for h in r["hits"]["hits"]:
-            s = h["_source"]
-            sess_enr = ((s.get("dshield") or {}).get("cowrie", {})
-                        .get("enrichment", {}).get("session", {})) or {}
-            cluster = sess_enr.get("cluster") or {}
-            match_id = cluster.get("external_match_id")
-            cosine = cluster.get("external_match_cosine")
-            techs = tech_by_match.get(match_id) or {}
-            # Render the technique distribution as a stable ordered list
-            # of (id, weight) tuples — the analyst reads "T1003.007: 0.6"
-            # not the raw dict.
-            techs_sorted = sorted(techs.items(), key=lambda kv: -float(kv[1]))
-            tradecraft_matches.append({
-                "session_id":  (s.get("cowrie") or {}).get("session_id") or h["_id"],
-                "source_ip":   (s.get("source") or {}).get("ip"),
-                "local_cluster_id":     cluster.get("id"),
-                "external_match_id":    match_id,
-                "external_match_cosine": cosine,
-                "novelty_score_external": cluster.get("novelty_score_external"),
-                "techniques":  [{"id": t, "weight": float(w)} for t, w in techs_sorted],
-                "command_count":    sess_enr.get("command_count"),
-                "dominant_intent":  sess_enr.get("dominant_intent"),
-                "playbook_id":      sess_enr.get("playbook_id"),
-                "playbook_name":    sess_enr.get("playbook_name"),
-            })
-    except Exception as exc:
-        log.warning("insights tradecraft_matches failed: %s", exc)
-
-    return {
-        "overview": {
-            "total_ips":        total_ips,
-            "total_sessions":   total_sessions,
-            "total_commands":   total_commands,
-            "active_playbooks": active_playbooks,
-            "cluster_runs":     cluster_runs,
-        },
-        # Playbooks (named session clusters) and mined campaigns (multi-
-        # session patterns) are distinct surfaces.
-        "playbooks":           playbooks,
-        "mined_campaigns":     mined_campaigns,
-        "operations":          operations,
-        "command_clusters":    command_clusters,
-        "session_clusters":    session_clusters,
-        "ip_clusters":         ip_clusters,
-        "novel_commands":      novel_commands,
-        "tradecraft_matches":  tradecraft_matches,
-    }
 
 
 # ---------------------------------------------------------------------------

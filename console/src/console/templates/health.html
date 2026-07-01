@@ -26,6 +26,33 @@
       color: #414b62; font-weight: 400;
     }
 
+    /* Overview stat bar — ported from the retired Browse/Insights page. */
+    .stat-bar {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .stat-card {
+      background: #111827;
+      border: 1px solid #1e2540;
+      border-radius: 7px;
+      padding: 13px 15px;
+    }
+    .stat-card .s-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #5a6278;
+      margin-bottom: 5px;
+    }
+    .stat-card .s-value {
+      font-size: 24px;
+      font-weight: 600;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: #c8d0e7;
+    }
+
     /* Table shared by both panels. */
     table.h-table {
       width: 100%; border-collapse: collapse; font-size: 12px;
@@ -76,6 +103,13 @@
   <main id="health-main">
 
     <section>
+      <p class="h-section-title">Overview
+        <span class="h-hint">corpus-wide totals &mdash; IPs, sessions, commands, named playbooks, and cluster/outlier counts from the latest run of each cluster verb</span>
+      </p>
+      <div id="overview-stats" class="stat-bar"><em class="h-empty">loading…</em></div>
+    </section>
+
+    <section>
       <p class="h-section-title">Data freshness
         <span class="h-hint">per-index document count and the most recent <code>@timestamp</code> &mdash; stale rows highlight in amber</span>
       </p>
@@ -98,7 +132,7 @@
 
     <section>
       <p class="h-section-title">Cache
-        <span class="h-hint">in-memory caches in the console process — insights summaries (60&nbsp;s TTL), latest cluster <code>run_id</code> (5&nbsp;min TTL). Purge to force a fresh read after a pipeline cycle.</span>
+        <span class="h-hint">in-memory caches in the console process — command-grounding coverage (60&nbsp;s TTL), latest cluster <code>run_id</code> (5&nbsp;min TTL). Purge to force a fresh read after a pipeline cycle.</span>
       </p>
       <div class="h-actions">
         <button type="button" id="cfg-purge-cache" class="h-action-btn">Purge cache</button>

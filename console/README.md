@@ -74,8 +74,7 @@ Pages:
 | Path | Page |
 |---|---|
 | `/` | Search → graph investigation view (the default landing page) |
-| `/insights` | Read-only summary dashboard: top novel commands, active campaigns, recent activity. Click any row to pivot into the graph view |
-| `/history` | Longitudinal lifecycle list: one row per **playbook / session-cluster / IP-cluster / campaign / operation** (entity selector), its own activity band (time-flipped — now on the left) on a shared adaptive axis, with a live-period strip and an `interest` composite ranking. Window selector (30/90/180d · all · custom, default 90d), all/recurring filter, alive/dead state filter, sort lens; row name has a hover tooltip; click a row to open it in the graph |
+| `/explore` | Longitudinal lifecycle list: one row per **playbook / session-cluster / IP-cluster / campaign / operation** (entity selector), its own activity band (time-flipped — now on the left) on a shared adaptive axis, with a live-period strip and an `interest` composite ranking. Window selector (30/90/180d · all · custom, default 90d), all/recurring filter, alive/dead state filter, sort lens; row name has a hover tooltip; click a row to open it in the graph |
 
 API endpoints:
 
@@ -90,7 +89,7 @@ GET  /api/ioc/session/{sid}/commands
 GET  /api/ioc/command/{sha}/sessions
 GET  /api/cluster/{kind}/{cid}/members
 GET  /api/timeline?kind=ip|session_cluster|playbook&id=...
-GET  /api/insights                 # 60s server-side cache
+GET  /api/health/overview          # corpus-summary stat bar (Total IPs / Sessions / Commands / Playbooks / Clusters / Outliers)
 POST /api/ask                      # natural-language Q&A backed by the parent project's LLM config
 ```
 
@@ -119,9 +118,9 @@ console/
     _es.py                  -- Elasticsearch client factory
     web/
       index.html            -- search + graph investigation view
-      insights.html         -- dashboard-style overview page
+      explore.html          -- longitudinal lifecycle list page
       css/                  -- vanilla CSS, no framework
-      js/{app.js,graph.js,insights.js,timeline.js}
+      js/{app.js,graph.js,explore.js,timeline.js}
       js/vendor/{cytoscape,layout-base,cose-base,cytoscape-fcose}.js
 ```
 

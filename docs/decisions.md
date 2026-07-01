@@ -42,8 +42,11 @@ agg; the rest have no per-session field so each band is built by a shared
 by member_source_ips, IP-clusters by member IPs collected from `ips_rollup`) —
 rather than schema-backfilling ids onto every session, which would be a pipeline +
 corpus-write change. Campaign/operation membership is a mining-time snapshot, so
-those bands miss later-backfilled sessions until re-mined. This is the path toward
-folding Browse into History.
+those bands miss later-backfilled sessions until re-mined. This was the path
+toward folding Browse into History — now done: Browse is retired (its
+Operations/Campaigns tables were superseded by this entity selector), its
+corpus-summary stat bar moved to the Health page's Overview section, and the
+page itself was renamed History → Explore.
 
 **Playbook merge uses complete-linkage, not single-linkage.** A merged group
 forms only when *every* pairwise centroid cosine clears the threshold, so a chain
