@@ -15,7 +15,7 @@ import hashlib
 import logging
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from elasticsearch import Elasticsearch, NotFoundError
@@ -2199,14 +2199,12 @@ _TL_SOURCE = [
 ]
 
 
-# --- History (archive discovery) -----------------------------------------
-# The History page is the serendipitous-discovery surface over the *archive*
-# (everything older than the last 14 days, which Browse owns). It ranks by
-# salience — novelty, optionally weighted by reach — not volume, so the commodity
-# scanning that dominates a flat list is suppressed and genuinely unusual
-# behaviours surface. The timeline is the navigation map; selecting a range
-# scopes the ranking. Lookup/search is deliberately NOT here — that's the Graph.
-_HISTORY_RECENT_EXCL = "now-14d"   # Browse owns the last 14d; History is the archive
+# --- History ---------------------------------------------------------------
+# The History page is the longitudinal lifecycle surface (see `history_summary`
+# below): one row per playbook, each its whole activity arc on a shared time axis,
+# ranked by an `interest` composite. `_rank_standout` below is the legacy salience
+# lens from the earlier "archive discovery" design — retained only for its smoke
+# test; the live page no longer calls it.
 
 
 def _rank_standout(buckets: list[dict], sort_mode: str,
@@ -2305,20 +2303,441 @@ def _playbook_names(es: Elasticsearch, cfg: AppConfig, pb_ids: list[str]) -> dic
     return out
 
 
-def history_summary(
-    es: Elasticsearch, cfg: AppConfig, *,
-    start: str | None = None, end: str | None = None,
-    standout_sort: str = "novel_reach", limit: int = 12,
-) -> dict:
-    """Archive-discovery payload for the History page (`/api/history`).
+# ---- longitudinal History — per-playbook lifecycle scoring (all pure) --------
+# The reworked History is a ranked, one-row-per-playbook longitudinal list: each
+# row is that playbook's whole activity arc on a SHARED time axis, ranked by a
+# composite `interest` score. Weights come straight from the mockup
+# (discover-history-v2); kept in one constant so they stay tunable. All ranking /
+# recurrence / state logic below is pure (no ES) so it is smoke-tested directly.
+_HISTORY_WEIGHTS = {
+    "liveness": 0.30, "trend": 0.25, "recurrence": 0.20,
+    "mass": 0.15, "escalation": 0.10,
+}
+_HISTORY_WINDOWS = {"30d": 30, "90d": 90, "180d": 180}
+_HISTORY_SORTS = {"interest", "recency", "mass", "trend", "longevity"}
+_HISTORY_ENTITIES = {"playbook", "campaign", "session_cluster", "ip_cluster", "operation"}
+_HISTORY_POOL_CAP = 250   # max rows; surfaced via scope.capped — never a silent cut
+_HISTORY_DEAD_DAYS = 14    # silent this long (real time) at the leading edge → "dead"
+_BUCKET_DAYS = {"1d": 1, "7d": 7, "30d": 30, "90d": 90}
+_CAMPAIGN_ID_CAP = 6000    # member ids per campaign/operation to band on (keeps msearch light)
+_IPCLUSTER_MEMBER_CAP = 200  # top member IPs per ip-cluster (bounds the members sub-agg buckets)
 
-    `timeline` is the full-corpus activity histogram (the navigation map);
-    `standout` is the salience-ranked playbooks for the selected `[start, end)`
-    window (default end = `now-14d`, so it is purely the archive). `standout_sort`
-    is the analyst's lens — see `_rank_standout`.
+
+def _pick_interval(span_days: float) -> tuple[str, str]:
+    """Adaptive bucket for the shared axis, mirroring the mockup: days<90d ·
+    weeks<2y · months<decade · quarters beyond. Returns (fixed_interval, unit)."""
+    if span_days <= 92:
+        return "1d", "day"
+    if span_days <= 731:
+        return "7d", "week"
+    if span_days <= 3651:
+        return "30d", "month"
+    return "90d", "quarter"
+
+
+def _modal_name(agg: dict | None) -> str:
+    """First key of a terms sub-agg (the modal label), or ''."""
+    bs = (agg or {}).get("buckets") or []
+    return bs[0].get("key", "") if bs else ""
+
+
+def _history_rows(buckets: list[dict], name_map: dict | None, *,
+                  kind: str = "playbook") -> list[dict]:
+    """Pure: direct-agg terms buckets (each with a `band` date_histogram + ips/first/
+    last/novelty sub-aggs) → display rows carrying an aligned integer `band` array.
+    Every band shares the same bucket boundaries, so arrays compare directly on one
+    axis. Name comes from `name_map` when given, else the bucket's `name` modal
+    sub-agg. Keyless buckets are dropped."""
+    rows: list[dict] = []
+    for b in buckets:
+        pid = b.get("key")
+        if not pid:
+            continue
+        band = [
+            int(db.get("doc_count") or 0)
+            for db in ((b.get("band") or {}).get("buckets") or [])
+        ]
+        name = name_map.get(pid, "") if name_map is not None else _modal_name(b.get("name"))
+        rows.append({
+            "id":          pid,
+            "kind":        kind,
+            "name":        name,
+            "sessions":    int(b.get("doc_count") or 0),
+            "ips":         int((b.get("ips") or {}).get("value") or 0),
+            "novelty":     round(float((b.get("novelty") or {}).get("value") or 0.0), 3),
+            "first_seen":  (b.get("first") or {}).get("value_as_string"),
+            "last_seen":   (b.get("last") or {}).get("value_as_string"),
+            "band":        band,
+        })
+    return rows
+
+
+def _band_recurs(band: list[int], gap: int) -> int:
+    """Pure: how many times a playbook re-activates after a dormant run of >= `gap`
+    empty buckets. One continuous episode → 0; two episodes split by a long gap → 1.
+    Leading zeros (before it is ever born) don't count."""
+    recurs = born = 0
+    zero_run = 0
+    for v in band:
+        if v > 0:
+            if born and zero_run >= gap:
+                recurs += 1
+            born = 1
+            zero_run = 0
+        elif born:
+            zero_run += 1
+    return recurs
+
+
+def _band_episodes(band: list[int], gap: int) -> list[list[int]]:
+    """Pure: the contiguous ALIVE spans as `[start_idx, end_idx]` bucket ranges
+    (inclusive). A dormant run shorter than `gap` bridges (still one episode); a run
+    of >= `gap` empty buckets ends the episode; leading/trailing zeros are dead. The
+    UI draws one marker per span, so a recurring playbook's live periods read at a
+    glance. `len(episodes) - 1 == _band_recurs` once born."""
+    eps: list[list[int]] = []
+    start = end = -1
+    zero_run = 0
+    for i, v in enumerate(band):
+        if v > 0:
+            if start < 0:
+                start = i
+            elif zero_run >= gap:
+                eps.append([start, end])
+                start = i
+            end = i
+            zero_run = 0
+        elif start >= 0:
+            zero_run += 1
+    if start >= 0:
+        eps.append([start, end])
+    return eps
+
+
+def _score_history(rows: list[dict], *, gap: int, dead_tail: int) -> None:
+    """Pure, in place: derive per-row lifecycle signals (mass/liveness/trend/
+    recurrence/escalation, plus recurs, trend_dir, state, span_buckets), then blend
+    the min-max-normalized signals into a 0–100 `interest` (weights =
+    _HISTORY_WEIGHTS). Normalizing across the pool keeps one hot playbook from
+    pegging everyone else's score."""
+    import math
+    if not rows:
+        return
+    for r in rows:
+        band = r["band"]
+        n = len(band)
+        total = sum(band)
+        tail = band[-dead_tail:] if dead_tail else band
+        early = sum(band[: n // 2])
+        late = sum(band[n // 2:])
+        last_fifth = band[-max(1, n // 5):] if n else []
+        episodes = _band_episodes(band, gap)
+        recurs = max(0, len(episodes) - 1)
+        nz = [i for i, v in enumerate(band) if v > 0]
+        r["_mass"] = math.log1p(total)
+        r["_live"] = (sum(last_fifth) / total) if total else 0.0
+        r["_trend"] = ((late - early) / (late + early)) if (n >= 2 and late + early) else 0.0
+        r["_recur"] = float(recurs)
+        r["_esc"] = float(r.get("novelty") or 0.0)
+        r["recurs"] = recurs
+        r["episodes"] = episodes
+        r["trend_dir"] = ("up" if r["_trend"] > 0.15 else
+                          "down" if r["_trend"] < -0.15 else "flat")
+        r["state"] = "live" if sum(tail) > 0 else "dead"
+        r["span_buckets"] = (nz[-1] - nz[0] + 1) if nz else 0
+
+    def _norm(key: str) -> None:
+        vals = [r[key] for r in rows]
+        lo, hi = min(vals), max(vals)
+        rng = hi - lo
+        # rng==0 (single row, or a signal constant across the pool) → neutral 0.5,
+        # not 0.0, so a lone / uniform playbook doesn't render as maximally boring.
+        for r in rows:
+            r[key + "_n"] = ((r[key] - lo) / rng) if rng else 0.5
+
+    for k in ("_mass", "_live", "_trend", "_recur", "_esc"):
+        _norm(k)
+    w = _HISTORY_WEIGHTS
+    for r in rows:
+        r["interest"] = round(100.0 * (
+            w["liveness"]   * r["_live_n"] +
+            w["trend"]      * r["_trend_n"] +
+            w["recurrence"] * r["_recur_n"] +
+            w["mass"]       * r["_mass_n"] +
+            w["escalation"] * r["_esc_n"]
+        ), 1)
+        r["terms"] = {
+            "liveness":   round(r["_live_n"], 3),
+            "trend":      round(r["_trend_n"], 3),
+            "recurrence": round(r["_recur_n"], 3),
+            "mass":       round(r["_mass_n"], 3),
+            "escalation": round(r["_esc_n"], 3),
+        }
+        for k in [k for k in r if k.startswith("_")]:
+            del r[k]
+
+
+def _sort_history(rows: list[dict], sort_mode: str) -> list[dict]:
+    """Pure, in place: re-order rows by the analyst's lens (desc). Unknown → interest."""
+    keymap = {
+        "interest":  lambda r: r.get("interest", 0.0),
+        "recency":   lambda r: r.get("last_seen") or "",
+        "mass":      lambda r: r.get("sessions", 0),
+        "trend":     lambda r: r.get("terms", {}).get("trend", 0.0),
+        "longevity": lambda r: r.get("span_buckets", 0),
+    }
+    rows.sort(key=keymap.get(sort_mode, keymap["interest"]), reverse=True)
+    return rows
+
+
+def _band_msearch(
+    es: Elasticsearch, sess: str, *,
+    band_hist: dict, range_q: dict, sess_field: str, id_lists: list[list],
+) -> list[dict]:
+    """One `msearch`: for each id-list, a windowed band + ip/first/last over
+    `sessions_rollup` filtered by `sess_field IN ids`. Returns one dict per input
+    list (aligned by position): `{band, ips, first, last}`; empty band on error /
+    no ids. Used by the member-set entities (campaign, operation, ip_cluster)."""
+    if not id_lists:
+        return []
+    body: list[dict] = []
+    for ids in id_lists:
+        body.append({})   # per-search header; index is passed to msearch()
+        body.append({"size": 0, "query": {"bool": {"filter": [
+            range_q, {"terms": {sess_field: ids}}]}},
+            "aggs": {"band":  {"date_histogram": band_hist},
+                     "ips":   {"cardinality": {"field": "source.ip"}},
+                     "first": {"min": {"field": "event.start"}},
+                     "last":  {"max": {"field": "event.start"}}}})
+    try:
+        responses = (es.msearch(searches=body, index=sess).get("responses")) or []
+    except Exception as e:
+        log.warning("history band msearch failed: %s", e)
+        responses = []
+    out: list[dict] = []
+    for sub in responses:
+        aggs = (sub or {}).get("aggregations") or {}
+        out.append({
+            "band":  [int(b.get("doc_count") or 0)
+                      for b in ((aggs.get("band") or {}).get("buckets") or [])],
+            "ips":   int((aggs.get("ips") or {}).get("value") or 0),
+            "first": (aggs.get("first") or {}).get("value_as_string"),
+            "last":  (aggs.get("last") or {}).get("value_as_string"),
+        })
+    while len(out) < len(id_lists):   # pad if msearch returned short
+        out.append({"band": [], "ips": 0, "first": None, "last": None})
+    return out
+
+
+def _member_rows(docs: list[dict], band_data: list[dict], *, id_key: str,
+                 name_fn, kind: str | None = None, kind_fn=None,
+                 novelty_fn=None) -> list[dict]:
+    """Zip member-entity docs with their `_band_msearch` results into history rows.
+    Metrics are windowed (from the band); first/last are session-derived, matching
+    the direct-agg rows."""
+    rows: list[dict] = []
+    for d, bd in zip(docs, band_data):
+        cid = d.get(id_key)
+        if not cid:
+            continue
+        rows.append({
+            "id":         cid,
+            "kind":       kind_fn(d) if kind_fn else kind,
+            "name":       name_fn(d) or "",
+            "sessions":   sum(bd["band"]),
+            "ips":        bd["ips"],
+            "novelty":    float(novelty_fn(d)) if novelty_fn else 0.0,
+            "first_seen": bd["first"],
+            "last_seen":  bd["last"],
+            "band":       bd["band"],
+        })
+    return rows
+
+
+def _campaign_history_rows(
+    es: Elasticsearch, cfg: AppConfig, run_cache: Any, *,
+    band_hist: dict, range_q: dict, limit: int,
+) -> tuple[list[dict], int]:
+    """Campaign rows: banded by each campaign's `member_session_ids` over
+    `sessions_rollup` (capped `_CAMPAIGN_ID_CAP`). NOTE: membership is a mining-time
+    snapshot, so backfilled sessions ingested after the last `mine campaigns` run
+    aren't included — re-mine with a wider window to pick them up."""
+    idx = cfg.elasticsearch.indexes.cowrie.campaigns
+    sess = cfg.elasticsearch.indexes.cowrie.sessions_rollup
+    run_id = run_cache.latest(es, idx)
+    must: list[dict] = [{"term": {"doc_type": "campaign"}}]
+    if run_id:
+        must.append({"term": {"run_id": run_id}})
+    q = {"bool": {"must": must}}
+    total = 0
+    try:
+        total = int(es.count(index=idx, query=q)["count"])
+    except Exception as e:
+        log.warning("campaign count failed: %s", e)
+    try:
+        r = es.search(index=idx, size=limit,
+                      _source=["campaign_id", "kind", "name", "member_session_ids"],
+                      query=q, sort=[{"session_count": {"order": "desc"}}])
+        camps = [h["_source"] for h in r["hits"]["hits"]]
+    except Exception as e:
+        log.warning("campaign list failed: %s", e)
+        return [], total
+    id_lists = [list(dict.fromkeys(c.get("member_session_ids") or []))[:_CAMPAIGN_ID_CAP]
+                for c in camps]
+    bands = _band_msearch(es, sess, band_hist=band_hist, range_q=range_q,
+                          sess_field="cowrie.session_id", id_lists=id_lists)
+    rows = _member_rows(camps, bands, id_key="campaign_id",
+                        name_fn=lambda c: c.get("name") or "",
+                        kind_fn=lambda c: "campaign:" + (c.get("kind") or ""))
+    return rows, total
+
+
+def _operation_history_rows(
+    es: Elasticsearch, cfg: AppConfig, *,
+    band_hist: dict, range_q: dict, limit: int,
+) -> tuple[list[dict], int]:
+    """Operation rows: banded by each operation's `member_source_ips` over
+    `sessions_rollup` (filter on `source.ip`). Operations are (behaviour × infra)
+    campaign mergers; same snapshot caveat as campaigns."""
+    idx = cfg.elasticsearch.indexes.cowrie.operations
+    sess = cfg.elasticsearch.indexes.cowrie.sessions_rollup
+    total = 0
+    try:
+        if not es.indices.exists(index=idx):
+            return [], 0
+        total = int(es.count(index=idx)["count"])
+    except Exception as e:
+        log.warning("operation count failed: %s", e)
+    try:
+        r = es.search(index=idx, size=limit,
+                      _source=["operation_id", "behaviour_name",
+                               "infrastructure_name", "member_source_ips"],
+                      sort=[{"shared_ip_count": {"order": "desc"}}])
+        ops = [h["_source"] for h in r["hits"]["hits"]]
+    except Exception as e:
+        log.warning("operation list failed: %s", e)
+        return [], total
+    id_lists = [list(dict.fromkeys(o.get("member_source_ips") or []))[:_CAMPAIGN_ID_CAP]
+                for o in ops]
+    bands = _band_msearch(es, sess, band_hist=band_hist, range_q=range_q,
+                          sess_field="source.ip", id_lists=id_lists)
+
+    def _opname(o: dict) -> str:
+        b, i = o.get("behaviour_name"), o.get("infrastructure_name")
+        return (f"{b} × {i}") if (b and i) else (b or i or "")
+
+    rows = _member_rows(ops, bands, id_key="operation_id",
+                        kind="operation", name_fn=_opname)
+    return rows, total
+
+
+def _ipcluster_history_rows(
+    es: Elasticsearch, cfg: AppConfig, *,
+    band_hist: dict, range_q: dict, limit: int,
+) -> tuple[list[dict], int]:
+    """IP-cluster rows. No per-session ip-cluster field exists, so member IPs are
+    collected from `ips_rollup` (the live `ip.cluster.id` enrichment, top
+    `_IPCLUSTER_MEMBER_CAP` by activity per cluster), then each cluster is banded by
+    those `source.ip`s over `sessions_rollup`."""
+    sess = cfg.elasticsearch.indexes.cowrie.sessions_rollup
+    ips = cfg.elasticsearch.indexes.cowrie.ips_rollup
+    cl_field = _resolve_agg_field(es, ips, "dshield.cowrie.enrichment.ip.cluster.id")
+    nov_field = "dshield.cowrie.enrichment.ip.mean_novelty_score"
+    total = 0
+    clusters: list[dict] = []
+    try:
+        r = es.search(index=ips, size=0, aggs={
+            "total": {"cardinality": {"field": cl_field}},
+            "by_cluster": {
+                "terms": {"field": cl_field, "size": limit,
+                          "order": {"_count": "desc"}, "min_doc_count": 1},
+                "aggs": {
+                    "members": {"terms": {"field": "source.ip",
+                                          "size": _IPCLUSTER_MEMBER_CAP}},
+                    "novelty": {"avg": {"field": nov_field}},
+                },
+            },
+        })
+        aggs = r["aggregations"]
+        total = int((aggs.get("total") or {}).get("value") or 0)
+        for b in aggs["by_cluster"]["buckets"]:
+            cid = b.get("key")
+            if not cid:
+                continue
+            member_ips = [mb.get("key")
+                          for mb in ((b.get("members") or {}).get("buckets") or [])
+                          if mb.get("key")]
+            clusters.append({
+                "cluster_id": cid,
+                "novelty": float((b.get("novelty") or {}).get("value") or 0.0),
+                "ips": member_ips,
+            })
+    except Exception as e:
+        log.warning("ip-cluster agg failed: %s", e)
+        return [], total
+    bands = _band_msearch(es, sess, band_hist=band_hist, range_q=range_q,
+                          sess_field="source.ip", id_lists=[c["ips"] for c in clusters])
+    rows = _member_rows(clusters, bands, id_key="cluster_id", kind="ip_cluster",
+                        name_fn=lambda c: "",
+                        novelty_fn=lambda c: c.get("novelty") or 0.0)
+    return rows, total
+
+
+def _sesscluster_history_rows(
+    es: Elasticsearch, cfg: AppConfig, *,
+    band_hist: dict, range_q: dict, limit: int,
+) -> tuple[list[dict], int]:
+    """Session-cluster rows — a direct `terms` agg on the per-session
+    `session.cluster.id` (like playbooks; native novelty). The label is the modal
+    `playbook_name` (session clusters are the raw grain below the named playbook)."""
+    sess = cfg.elasticsearch.indexes.cowrie.sessions_rollup
+    cl_field = _resolve_agg_field(
+        es, sess, "dshield.cowrie.enrichment.session.cluster.id")
+    nov_field = "dshield.cowrie.enrichment.session.cluster.novelty_score"
+    name_field = "dshield.cowrie.enrichment.session.playbook_name"
+    total = 0
+    rows: list[dict] = []
+    try:
+        r = es.search(index=sess, size=0, query=range_q, aggs={
+            "total": {"cardinality": {"field": cl_field}},
+            "by_cluster": {
+                "terms": {"field": cl_field, "size": limit,
+                          "order": {"novelty": "desc"}, "min_doc_count": 1},
+                "aggs": {
+                    "band":    {"date_histogram": band_hist},
+                    "ips":     {"cardinality": {"field": "source.ip"}},
+                    "first":   {"min": {"field": "event.start"}},
+                    "last":    {"max": {"field": "event.start"}},
+                    "novelty": {"avg": {"field": nov_field}},
+                    "name":    {"terms": {"field": name_field, "size": 1}},
+                },
+            },
+        })
+        aggs = r["aggregations"]
+        total = int((aggs.get("total") or {}).get("value") or 0)
+        rows = _history_rows(aggs["by_cluster"]["buckets"], None, kind="session_cluster")
+    except Exception as e:
+        log.warning("session-cluster history failed: %s", e)
+    return rows, total
+
+
+def history_summary(
+    es: Elasticsearch, cfg: AppConfig, run_cache: Any, *,
+    entity: str = "playbook",
+    window: str | None = None,
+    start: str | None = None, end: str | None = None,
+    sort: str = "interest", filter_: str = "all", state_: str = "all",
+    limit: int = _HISTORY_POOL_CAP,
+) -> dict:
+    """Longitudinal History payload (`/api/history`): one row per entity over a
+    shared time window, each with an aligned activity `band` and an `interest`
+    composite score. `entity` ∈ {playbook,campaign}. `window` ∈
+    {30d,90d,180d,all,custom}; `custom` uses `start`/`end` (ISO dates). See
+    docs/reference.md for the full contract.
     """
-    if standout_sort not in ("novel", "novel_reach"):
-        standout_sort = "novel_reach"
+    entity = (entity or "playbook").lower()
+    if entity not in _HISTORY_ENTITIES:
+        entity = "playbook"
     idxs = cfg.elasticsearch.indexes.cowrie
     sess = idxs.sessions_rollup
     pb_field = _resolve_agg_field(
@@ -2326,56 +2745,116 @@ def history_summary(
     )
     nov_field = "dshield.cowrie.enrichment.session.cluster.novelty_score"
 
-    # Timeline — full corpus shape, adaptive bucketing (the navigation map).
-    timeline: list[dict] = []
-    try:
-        r = es.search(index=sess, size=0, aggs={
-            "tl": {"auto_date_histogram": {"field": "event.start", "buckets": 120}},
-        })
-        timeline = [
-            {"start": b.get("key_as_string"), "sessions": int(b["doc_count"])}
-            for b in r["aggregations"]["tl"]["buckets"]
-        ]
-    except Exception as e:
-        log.warning("history timeline failed: %s", e)
+    now = datetime.now(timezone.utc)
 
-    # Scope for the sections: [start, end), default end = now-14d (archive only).
-    rng: dict = {"lt": end or _HISTORY_RECENT_EXCL}
-    if start:
-        rng["gte"] = start
-    range_q = {"range": {"event.start": rng}}
+    # Resolve the concrete [gte, lt) window + adaptive bucket interval.
+    window = (window or "90d").lower()
+    if window in _HISTORY_WINDOWS:
+        lt, gte = now, now - timedelta(days=_HISTORY_WINDOWS[window])
+    elif window == "custom":
+        try:
+            gte = datetime.fromisoformat((start or "").replace("Z", "+00:00"))
+            lt = datetime.fromisoformat((end or "").replace("Z", "+00:00"))
+            if gte.tzinfo is None:
+                gte = gte.replace(tzinfo=timezone.utc)
+            if lt.tzinfo is None:
+                lt = lt.replace(tzinfo=timezone.utc)
+            lt = min(lt, now)   # never let a future end pad the band with fake-dead zeros
+            if lt <= gte:
+                raise ValueError("end <= start")
+        except Exception:
+            window, lt, gte = "90d", now, now - timedelta(days=90)
+    elif window == "all":
+        lt = now
+        try:
+            r0 = es.search(index=sess, size=0,
+                           aggs={"m": {"min": {"field": "event.start"}}})
+            mn = (r0["aggregations"]["m"] or {}).get("value")
+            gte = (datetime.fromtimestamp(mn / 1000.0, tz=timezone.utc)
+                   if mn else now - timedelta(days=90))
+        except Exception as e:
+            log.warning("history corpus-min failed: %s", e)
+            gte = now - timedelta(days=90)
+    else:
+        window, lt, gte = "90d", now, now - timedelta(days=90)
 
-    # Standout — pull the most-novel playbook pool, re-rank by the chosen lens.
-    standout: list[dict] = []
-    total_pb = 0
+    span_days = max(1.0, (lt - gte).total_seconds() / 86400.0)
+    interval, unit = _pick_interval(span_days)
+    gte_ms, lt_ms = int(gte.timestamp() * 1000), int(lt.timestamp() * 1000)
+    band_hist = {
+        "field": "event.start", "fixed_interval": interval,
+        "min_doc_count": 0, "extended_bounds": {"min": gte_ms, "max": lt_ms},
+    }
+    range_q = {"range": {"event.start":
+                         {"gte": gte_ms, "lt": lt_ms, "format": "epoch_millis"}}}
+
+    rows: list[dict] = []
+    total = n_buckets = pool_n = 0
     try:
-        resp = es.search(index=sess, size=0, query=range_q, aggs={
-            "total": {"cardinality": {"field": pb_field}},
-            "by_playbook": {
-                "terms": {"field": pb_field, "size": 100,
-                          "order": {"novelty": "desc"}, "min_doc_count": 1},
-                "aggs": {
-                    "novelty": {"avg": {"field": nov_field}},
-                    "ips":     {"cardinality": {"field": "source.ip"}},
-                    "first":   {"min": {"field": "event.start"}},
-                    "last":    {"max": {"field": "event.start"}},
+        if entity == "campaign":
+            rows, total = _campaign_history_rows(
+                es, cfg, run_cache, band_hist=band_hist, range_q=range_q, limit=limit)
+        elif entity == "operation":
+            rows, total = _operation_history_rows(
+                es, cfg, band_hist=band_hist, range_q=range_q, limit=limit)
+        elif entity == "ip_cluster":
+            rows, total = _ipcluster_history_rows(
+                es, cfg, band_hist=band_hist, range_q=range_q, limit=limit)
+        elif entity == "session_cluster":
+            rows, total = _sesscluster_history_rows(
+                es, cfg, band_hist=band_hist, range_q=range_q, limit=limit)
+        else:
+            resp = es.search(index=sess, size=0, query=range_q, aggs={
+                "total": {"cardinality": {"field": pb_field}},
+                "by_playbook": {
+                    # Retrieve the pool by novelty, not raw session count: History's
+                    # job is surfacing genuinely unusual behaviour, so a low-volume but
+                    # novel playbook must win a pool slot over the noisy scanners. The
+                    # final on-page order is still the `interest` composite (below).
+                    "terms": {"field": pb_field, "size": limit,
+                              "order": {"novelty": "desc"}, "min_doc_count": 1},
+                    "aggs": {
+                        "band":    {"date_histogram": band_hist},
+                        "ips":     {"cardinality": {"field": "source.ip"}},
+                        "first":   {"min": {"field": "event.start"}},
+                        "last":    {"max": {"field": "event.start"}},
+                        "novelty": {"avg": {"field": nov_field}},
+                    },
                 },
-            },
-        })
-        aggs = resp["aggregations"]
-        total_pb = int((aggs.get("total") or {}).get("value") or 0)
-        buckets = aggs["by_playbook"]["buckets"]
-        name_map = _playbook_names(es, cfg, [b["key"] for b in buckets if b.get("key")])
-        standout = _rank_standout(buckets, standout_sort, name_map, limit)
+            })
+            aggs = resp["aggregations"]
+            total = int((aggs.get("total") or {}).get("value") or 0)
+            buckets = aggs["by_playbook"]["buckets"]
+            name_map = _playbook_names(es, cfg, [b["key"] for b in buckets if b.get("key")])
+            rows = _history_rows(buckets, name_map)
+        n_buckets = max((len(r["band"]) for r in rows), default=0)
+        # dead_tail is a REAL-TIME threshold (silent >= _HISTORY_DEAD_DAYS at the
+        # leading edge → dead), converted to buckets, so "dead" means the same thing
+        # whether the window buckets by day, week, or month.
+        bucket_days = _BUCKET_DAYS.get(interval, 1)
+        dead_tail = max(1, -(-_HISTORY_DEAD_DAYS // bucket_days))   # ceil-div
+        _score_history(rows, gap=max(2, n_buckets // 15), dead_tail=dead_tail)
+        pool_n = len(rows)   # the fetched pool, before the row filters
+        if (filter_ or "all") == "recurring":
+            rows = [r for r in rows if r["recurs"] >= 1]
+        if state_ in ("live", "dead"):
+            rows = [r for r in rows if r["state"] == state_]
+        _sort_history(rows, sort)
     except Exception as e:
-        log.warning("history standout failed: %s", e)
+        log.warning("history longitudinal failed: %s", e)
 
     return {
-        "scope": {"start": start, "end": end or _HISTORY_RECENT_EXCL,
-                  "total_playbooks": total_pb},
-        "standout_sort": standout_sort,
-        "timeline": timeline,
-        "standout": standout,
+        "entity": entity,
+        "scope": {"start": gte.isoformat(), "end": lt.isoformat(), "window": window,
+                  "total": total, "pool": pool_n,
+                  "returned": len(rows), "limit": limit,
+                  "capped": total > limit},
+        "axis": {"start": gte.isoformat(), "end": lt.isoformat(),
+                 "unit": unit, "buckets": n_buckets},
+        "sort": sort if sort in _HISTORY_SORTS else "interest",
+        "filter": "recurring" if (filter_ or "all") == "recurring" else "all",
+        "state": state_ if state_ in ("live", "dead") else "all",
+        "rows": rows,
     }
 
 

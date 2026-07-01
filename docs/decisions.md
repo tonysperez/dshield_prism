@@ -25,6 +25,26 @@ lineages under one id. This is what keeps a playbook's identity stable as its
 membership shifts run-to-run. Campaign/operation ids inherit the stability via
 content-hash over their member sets.
 
+**History is a longitudinal per-playbook lifecycle list, not archive discovery.**
+The original History was salience-ranked "standout" cards over the >14d archive —
+the same rate metric as Browse, scrubbed back — and showed no per-behaviour arc.
+History is now one row per playbook over a selectable window (30/90/180d · all ·
+custom; default 90d), each rendering that playbook's own activity band on a shared
+adaptive time axis, ranked by a composite `interest` score (liveness·.30 +
+trend·.25 + recurrence·.20 + mass·.15 + escalation·.10, each min-max normalized
+across the returned pool so one hot playbook can't peg the rest). The archive-only
+`now-14d` exclusion is gone — the window includes recent days. The legacy
+`_rank_standout` salience lens is retained only for its smoke test. The page also
+covers session-clusters, IP-clusters, campaigns, and operations via an entity
+selector. Direct per-session fields (playbook_id, session cluster.id) use a `terms`
+agg; the rest have no per-session field so each band is built by a shared
+`_band_msearch` over `sessions_rollup` (campaigns by member_session_ids, operations
+by member_source_ips, IP-clusters by member IPs collected from `ips_rollup`) —
+rather than schema-backfilling ids onto every session, which would be a pipeline +
+corpus-write change. Campaign/operation membership is a mining-time snapshot, so
+those bands miss later-backfilled sessions until re-mined. This is the path toward
+folding Browse into History.
+
 **Playbook merge uses complete-linkage, not single-linkage.** A merged group
 forms only when *every* pairwise centroid cosine clears the threshold, so a chain
 of borderline edges can't bridge unrelated behaviors into one playbook.

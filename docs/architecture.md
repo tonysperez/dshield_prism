@@ -236,5 +236,7 @@ Cytoscape). Eight pages around one analyst workflow:
 **Inbox · Graph · Browse · History · Hunts · Rules · Curation · Health**. Search
 any IOC and pivot through its behavioral neighborhood as a node-link graph;
 compare two clusters/playbooks/campaigns inline; gather in-view artifacts into a
-copy-ready report. It reads the enriched indices directly and never writes to
+copy-ready report. History ranks every entity's whole activity arc
+(playbooks, session/IP clusters, campaigns, operations) on a shared adaptive time
+axis by a composite interest score (see [reference.md](reference.md#console)). It reads the enriched indices directly and never writes to
 ES. See [`console/README.md`](../console/README.md).

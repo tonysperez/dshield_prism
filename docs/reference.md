@@ -476,7 +476,21 @@ Read-only FastAPI + vanilla-JS app; never writes to ES. Nav:
 `/graph`). The graph swim-lane is IP → Session → Command → File; inline
 compare renders a verdict card for a peer cluster/playbook/campaign; the Report
 tool gathers in-view artifacts into a copy-ready writeup (IOCs defanged by
-default). Search, install, page list, API endpoints, and the deliberately-
+default). History is a longitudinal one-row-per-playbook list ranked by a
+composite `interest` score — weights liveness·.30 / trend·.25 / recurrence·.20 /
+mass·.15 / escalation·.10 in `_HISTORY_WEIGHTS` (queries.py). `/api/history` takes
+`entity` (playbook/session_cluster/ip_cluster/campaign/operation), `window`
+(30d/90d/180d/all/custom, default 90d), `sort`, `filter` (all/recurring), and
+`state` (all/live/dead) params. Playbooks and session-clusters are a direct `terms`
+agg on `session.playbook_id` / `session.cluster.id` (native novelty). The member-set
+entities have no per-session field, so each band is built by a shared `_band_msearch`
+filtering `sessions_rollup`: campaigns by `member_session_ids` (`cowrie.session_id`),
+operations by `member_source_ips` (`source.ip`), IP-clusters by member IPs collected
+from `ips_rollup`'s `ip.cluster.id` (top `_IPCLUSTER_MEMBER_CAP`=200 by activity).
+Campaign/operation membership is a mining-time snapshot (misses later-backfilled
+sessions until re-mined). Each row's band is
+time-flipped (now on the left) with a live-period strip marking alive spans; an
+entity is `dead` when silent for `_HISTORY_DEAD_DAYS` (14) at the leading edge. Search, install, page list, API endpoints, and the deliberately-
 duplicated config/ES code are documented in [`console/README.md`](../console/README.md).
 
 ## CI gates

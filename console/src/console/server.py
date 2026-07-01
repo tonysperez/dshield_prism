@@ -312,18 +312,22 @@ def build_app(config_path: str | None = None) -> FastAPI:
             log.exception("insights_summary failed")
             raise HTTPException(500, f"insights query failed: {e}")
 
-    # History (archive discovery). Unlike /api/insights this is parameterised
-    # (date window + Standout ranking lens), so it isn't memoised — the aggs are
-    # cheap and the params vary per click.
+    # History (longitudinal lifecycle). Unlike /api/insights this is parameterised
+    # (window + sort lens + recurring filter), so it isn't memoised — the aggs are
+    # cheap and the params vary per interaction.
     @app.get("/api/history")
     def history_api(request: Request) -> JSONResponse:
         qp = request.query_params
         try:
             data = queries.history_summary(
-                es, cfg,
+                es, cfg, run_cache,
+                entity=qp.get("entity") or "playbook",
+                window=qp.get("window") or "90d",
                 start=qp.get("start") or None,
                 end=qp.get("end") or None,
-                standout_sort=qp.get("sort") or "novel_reach",
+                sort=qp.get("sort") or "interest",
+                filter_=qp.get("filter") or "all",
+                state_=qp.get("state") or "all",
             )
             return JSONResponse(data)
         except Exception as e:

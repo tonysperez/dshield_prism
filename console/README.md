@@ -75,11 +75,13 @@ Pages:
 |---|---|
 | `/` | Search → graph investigation view (the default landing page) |
 | `/insights` | Read-only summary dashboard: top novel commands, active campaigns, recent activity. Click any row to pivot into the graph view |
+| `/history` | Longitudinal lifecycle list: one row per **playbook / session-cluster / IP-cluster / campaign / operation** (entity selector), its own activity band (time-flipped — now on the left) on a shared adaptive axis, with a live-period strip and an `interest` composite ranking. Window selector (30/90/180d · all · custom, default 90d), all/recurring filter, alive/dead state filter, sort lens; row name has a hover tooltip; click a row to open it in the graph |
 
 API endpoints:
 
 ```
 GET  /api/health
+GET  /api/history?entity=playbook&window=90d&sort=interest&filter=all&state=all   # entity∈{playbook,session_cluster,ip_cluster,campaign,operation}; window∈{30d,90d,180d,all,custom} (+&start=&end= ISO for custom); state∈{all,live,dead}
 GET  /api/search?q=...
 GET  /api/ioc/{type}/{id}
 GET  /api/ioc/{type}/{id}/neighbors?limit=50&require_login=&require_commands=
