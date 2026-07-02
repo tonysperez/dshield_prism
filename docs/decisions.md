@@ -48,6 +48,18 @@ Operations/Campaigns tables were superseded by this entity selector), its
 corpus-summary stat bar moved to the Health page's Overview section, and the
 page itself was renamed History → Explore.
 
+**Clustering accumulates embeddings as chunked float32, never a whole-corpus
+`list[list[float]]`.** A Python list of 768 float objects costs ~25KB/doc (24B
+per float + list pointers) vs ~3KB as a float32 numpy row — an ~8× multiplier
+that OOM-killed the historical backfill mid-fetch at ~570K enriched commands on
+a 16GB box (raw corpus ~70M docs). `run_layer_clustering` buffers each ES page
+and flushes to a float32 chunk every 50K docs, `np.vstack` at the end. This is
+purely a memory-representation fix — HDBSCAN input and cluster output are
+byte-identical (eval gates moved +0.0000). The command layer clusters
+all-at-once by design; unlike sessions/IPs it has no `window_days` escape hatch,
+so keeping its peak footprint at the float32 floor is what makes full-corpus
+backfill survivable. Size a scale ceiling off `_count`, not `_cat docs.count`.
+
 **Playbook merge uses complete-linkage, not single-linkage.** A merged group
 forms only when *every* pairwise centroid cosine clears the threshold, so a chain
 of borderline edges can't bridge unrelated behaviors into one playbook.

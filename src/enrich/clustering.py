@@ -1156,15 +1156,33 @@ def run_layer_clustering(
     t_start = time.monotonic()
 
     doc_ids: list[str] = []
-    embeddings_list: list[list[float]] = []
     labels_list: list[str] = []  # human-readable label per doc (e.g. command text, session_id)
     scalars_list: list[dict] = []
 
+    # Accumulate embeddings as float32 in bounded chunks rather than one
+    # corpus-wide list[list[float]]. A Python list of 768 float objects is
+    # ~25KB/doc (24B per float + list pointers); the float32 row it becomes is
+    # ~3KB. Holding the whole corpus in Python-list form costs ~8x and OOM'd
+    # the backfill mid-fetch at ~570K commands (16GB box). Flushing every
+    # _EMBED_CHUNK docs caps the transient Python-object bloat to one chunk
+    # while the final matrix is identical float32. Benefits every layer.
+    _EMBED_CHUNK = 50_000
+    embed_chunks: list[np.ndarray] = []
+    embed_buf: list[list[float]] = []
+
+    def _flush_embed_buf() -> None:
+        if embed_buf:
+            embed_chunks.append(np.asarray(embed_buf, dtype=np.float32))
+            embed_buf.clear()
+
     for doc_id, emb, label, scalars in docs_iter:
         doc_ids.append(doc_id)
-        embeddings_list.append(emb)
+        embed_buf.append(emb)
         labels_list.append(label)
         scalars_list.append(scalars)
+        if len(embed_buf) >= _EMBED_CHUNK:
+            _flush_embed_buf()
+    _flush_embed_buf()
 
     n_docs = len(doc_ids)
     log.info("[%s] Fetched %d docs with embeddings", layer_label, n_docs)
@@ -1179,8 +1197,8 @@ def run_layer_clustering(
             "window_days": int(window_days or 0), "dry_run": dry_run,
         }
 
-    matrix = np.array(embeddings_list, dtype=np.float32)
-    del embeddings_list
+    matrix = np.vstack(embed_chunks) if len(embed_chunks) > 1 else embed_chunks[0]
+    embed_chunks.clear()  # vstack copied; drop the per-chunk arrays to free RAM
     normalized = l2_normalize(matrix)
     del matrix
 
