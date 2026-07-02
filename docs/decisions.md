@@ -10,6 +10,24 @@ operator's voice, see the **Lessons Learned** section of
 
 ## Decisions that still constrain
 
+**The CI quality gate measures operator jobs, not partition agreement.** The old
+gate graded unsupervised-partition metrics (ARI/NMI/homogeneity/completeness/
+v_measure) with a flat absolute-0.05 tolerance — a geometry off the shipped
+nearest-prototype assign path, and a tolerance that let a 12% relative slide pass.
+`eval_operational.py` replaces it: every gated metric maps to a named operator
+failure (assignment macro-F1 + per-label accuracy; novel precision/recall + false-
+familiar at the shipped τ via a whole-label holdout; minted-playbook purity +
+distinct count). Thresholds are **per-metric, variance-justified** — a bootstrap-CI
+half-width for metrics with real n, a **hard absolute floor** for per-label accuracy
+(n is too small there for a CI, so a CI-derived tolerance would gate nothing on a
+collapse). Novelty is gated only if the generated baseline shows it non-degenerate
+at τ in the label-mean geometry — measured, not assumed (it reads ≈0.84 recall, so
+it gates); false-familiar (= 1 − novel recall) is reported, never a second gate on
+the same quantity. The partition metrics are kept as printed diagnostics
+(`eval_clustering.py` / `eval_assignment.py` exit 0). Novelty measured against the
+real production anchors, an expanded label set, and a labeled drift set are
+deferred follow-ups (quality-metrics Slices B/D/E).
+
 **Labeling is nearest-prototype assignment, not full-corpus clustering.** The
 embedding earns no measurable edge over a TF-IDF text baseline on this corpus
 (see [evaluation.md](evaluation.md)), so re-partitioning the whole corpus every

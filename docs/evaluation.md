@@ -31,15 +31,29 @@ JSONL ever materializes on disk.
 
 ## The gates
 
-Five gates run in CI; run them all locally before any commit.
+The gates run in CI; run them all locally before any commit.
 
 | Gate | Script | Measures |
 |---|---|---|
-| Clustering quality | `eval_clustering.py` | HDBSCAN session clustering vs analyst labels (ARI, completeness, homogeneity) |
-| Assignment quality | `eval_assignment.py` | nearest-prototype assignment accuracy + held-out novelty (the Option-A labeler) |
+| **Operational** | `eval_operational.py` | the operator jobs on the eval geometry: assignment macro-F1 + per-label accuracy, novel precision/recall + false-familiar at the shipped τ (whole-label holdout), minted-playbook purity + distinct count |
 | Real-anchor assignment | `eval_assignment_prod.py` | assignment against the committed public anchor snapshot |
 | Production-scale | `eval_production_scale.py` | the eval-labeled subset clustered *inside* the full production HDBSCAN |
 | Command-scale | `eval_command_scale.py` | command-layer clustering at production scale |
+| Clustering (diagnostic) | `eval_clustering.py` | partition metrics (ARI/NMI/homogeneity/completeness/v_measure) — **prints, does not gate** |
+| Assignment (diagnostic) | `eval_assignment.py` | accuracy / macro-F1 / mean_auc_novel — **prints, does not gate** |
+
+The operational gate is the semantic gate: each metric maps to a named operator
+failure (a wrong label, a missed novel, an incoherent minted playbook), and every
+threshold is variance-justified — a bootstrap-CI half-width for metrics with real
+n, a hard absolute floor for per-label accuracy (a collapse detector). No flat
+absolute drop, so a green gate means the tool still does its job rather than that
+a chance-adjusted partition score held steady. Novelty is gated at the shipped τ
+only if the baseline shows it non-degenerate in the label-mean geometry; false-
+familiar (= 1 − novel recall) is reported, not double-gated.
+
+The partition metrics measure a geometry off the shipped nearest-prototype assign
+path, so `eval_clustering.py` and `eval_assignment.py` still print for a coarse
+sanity check but no longer fail a build.
 
 Baselines are re-captured only for an *intentional* production change — never to
 silence a regression. That's the whole point of the gates.
@@ -81,8 +95,8 @@ negative result are archived under
 
 **Assignment recovers analyst labels well.** Nearest-prototype assignment
 recovers the analyst playbook on a held-out split at ≈0.84 accuracy / ≈0.83
-macro-F1, and held-out behaviors read as novel at ≈0.74 AUC. Gated by
-`eval_assignment.py`.
+macro-F1. Whole-label holdout at the shipped τ reads held-out behaviors as novel
+at ≈0.84 recall. Gated by `eval_operational.py`.
 
 **Copy/paste scripts dominate the signal.** Around 5 of the top-20 corpus
 behaviors are copy/paste-tight — every member runs the exact same command set

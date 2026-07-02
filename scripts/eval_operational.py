@@ -1,0 +1,373 @@
+"""Operational quality gate — the post-partition CI gate (quality-metrics Slice A).
+
+Grades the operator jobs on the committed eval geometry (`eval/labels-v1.yaml` +
+`eval/sessions-v1.unlabeled.jsonl`), offline and deterministic — no live ES:
+
+  * **assign**       — macro-F1 + per-label accuracy (nearest-prototype).
+  * **mint-novel**   — novel precision/recall + false-familiar via a whole-label
+                       (leave-one-label-out) holdout scored through
+                       `assign_batch` at the shipped tau; minted-playbook purity
+                       + genuinely-distinct count by clustering the novel pool.
+
+Every gated threshold is variance-justified — a bootstrap-CI half-width for
+metrics with real n (macro-F1, minted purity/distinct), or a hard absolute floor
+for per-label accuracy (a collapse detector; n is too small there for a CI). No
+flat uniform absolute drop — that was the old gate's hole.
+
+Novelty is gated **only if the generated baseline shows it non-degenerate** at
+tau in this (label-mean) geometry — label-mean prototypes run hotter than
+production's fine anchors, so tau=0.94 can pin novel-recall at ~0, and a metric
+that cannot move is not a gate. Otherwise novelty (and false-familiar, which is
+1 - novel recall) print as diagnostics; honest novelty gating lands with the real
+anchors in Slice E. See docs/decisions.md.
+
+Gate direction per metric: floors fail when current < baseline - tolerance;
+the `diagnostic` basis never fails a build.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from enrich.clustering import cluster_deps_available, l2_normalize  # noqa: E402
+from enrich.sources.cowrie.assignment import NOVEL, assign_batch  # noqa: E402
+from eval_assignment import (  # noqa: E402  (reuse the smoke-tested metric cores)
+    build_prototypes,
+    classification_metrics,
+    load_labeled,
+    stratified_split,
+)
+
+# Degeneracy floor: if measured novel-recall is at/below this at write-baseline
+# time, novelty is marked diagnostic rather than gated (geometry pinned it).
+_DEGENERATE_RECALL = 0.05
+# Minimum novel-pool size worth clustering for minted purity.
+_MINTED_MIN_POOL = 10
+_MINT_MIN_CLUSTER_SIZE = 5
+_MINT_MIN_SAMPLES = 2
+
+
+# ---------------------------------------------------------------------------
+# Assignment block — macro-F1 + per-label accuracy
+# ---------------------------------------------------------------------------
+def _macro_f1_from(pred: list[str], truth: list[str]) -> float:
+    per = []
+    for lb in sorted(set(truth)):
+        tp = sum(1 for p, t in zip(pred, truth) if p == lb and t == lb)
+        fp = sum(1 for p, t in zip(pred, truth) if p == lb and t != lb)
+        fn = sum(1 for p, t in zip(pred, truth) if p != lb and t == lb)
+        prec = tp / (tp + fp) if (tp + fp) else 0.0
+        rec = tp / (tp + fn) if (tp + fn) else 0.0
+        per.append(2 * prec * rec / (prec + rec) if (prec + rec) else 0.0)
+    return float(np.mean(per)) if per else 0.0
+
+
+# ---------------------------------------------------------------------------
+# Novelty block — leave-one-label-out holdout scored at the shipped tau
+# ---------------------------------------------------------------------------
+def novelty_records(labels: list[str], embs: np.ndarray, *, tau: float,
+                    confident_tau: float, min_label_size: int = 4) -> list[tuple[bool, bool]]:
+    """One (truth_novel, pred_novel) record per session, each session counted once
+    per role — so precision's base rate is honest and the records are independent
+    for the bootstrap:
+
+      * negatives (should-read-familiar): every session assigned ONCE against the
+        FULL prototype set (its own behavior present) — a novel flag here is a
+        false alarm (false positive).
+      * positives (should-read-novel): leave-one-label-out — each eligible label's
+        sessions assigned against the prototypes with THAT label withheld, so the
+        behavior genuinely has no home. A novel flag is a true positive.
+    """
+    by = defaultdict(list)
+    for i, lb in enumerate(labels):
+        by[lb].append(i)
+    records: list[tuple[bool, bool]] = []
+    # negatives: full prototypes, each session once.
+    all_ids, all_mat = build_prototypes(embs, labels)
+    neg = assign_batch(embs, all_mat, all_ids, tau=tau, confident_tau=confident_tau)
+    records.extend((False, a.status == NOVEL) for a in neg)
+    # positives: leave-one-label-out.
+    for held in sorted(by):
+        if len(by[held]) < min_label_size:
+            continue
+        keep_mask = np.array([labels[i] != held for i in range(len(labels))])
+        keep_labels = [labels[i] for i in range(len(labels)) if keep_mask[i]]
+        proto_ids, proto_mat = build_prototypes(embs[keep_mask], keep_labels)
+        pos = assign_batch(embs[by[held]], proto_mat, proto_ids,
+                           tau=tau, confident_tau=confident_tau)
+        records.extend((True, a.status == NOVEL) for a in pos)
+    return records
+
+
+def _pr_from_records(records: list[tuple[bool, bool]]) -> dict:
+    tp = sum(1 for truth, pred in records if truth and pred)
+    fp = sum(1 for truth, pred in records if not truth and pred)
+    fn = sum(1 for truth, pred in records if truth and not pred)
+    precision = round(tp / (tp + fp), 4) if (tp + fp) else None
+    recall = round(tp / (tp + fn), 4) if (tp + fn) else None
+    false_familiar = round(fn / (tp + fn), 4) if (tp + fn) else None  # = 1 - recall
+    return {"novel_precision": precision, "novel_recall": recall,
+            "false_familiar": false_familiar, "n_flagged_novel": tp + fp}
+
+
+# ---------------------------------------------------------------------------
+# Minted-playbook block — cluster the novel pool, purity vs true labels
+# ---------------------------------------------------------------------------
+def purity_of(records: list[tuple[str, str]]) -> float | None:
+    """Session-weighted modal-label purity: fraction of members whose true label
+    equals their cluster's modal label. `records` is (member_true_label, modal)."""
+    if not records:
+        return None
+    return round(sum(1 for t, m in records if t == m) / len(records), 4)
+
+
+def minted_block(labels: list[str], embs: np.ndarray, *, holdout_k: int) -> dict:
+    """Withhold the `holdout_k` rarest labels together, cluster their pooled
+    sessions, and measure purity (session-weighted modal-true-label share over
+    non-noise clusters) + the count of distinct modal true-labels the minted
+    clusters cover. The rarest labels are picked with a stable `(count, label)`
+    key so the pool is independent of the input JSONL order."""
+    if not cluster_deps_available():
+        return {"minted_purity": None, "minted_distinct": None, "records": [], "skip": "no cluster deps"}
+    from sklearn.cluster import HDBSCAN
+
+    sizes = Counter(labels)
+    rarest = [lb for lb, _ in sorted(sizes.items(), key=lambda kv: (kv[1], kv[0]))[:holdout_k]]
+    pool_idx = [i for i, lb in enumerate(labels) if lb in rarest]
+    if len(pool_idx) < _MINTED_MIN_POOL:
+        return {"minted_purity": None, "minted_distinct": None, "records": [], "skip": "pool too small"}
+    pool_embs = l2_normalize(embs[pool_idx])
+    pool_labels = [labels[i] for i in pool_idx]
+    pred = HDBSCAN(min_cluster_size=_MINT_MIN_CLUSTER_SIZE, min_samples=_MINT_MIN_SAMPLES,
+                   metric="euclidean", copy=True).fit_predict(pool_embs)
+    # per non-noise cluster: modal true label + member records for purity
+    modal_labels: dict[int, str] = {}
+    records: list[tuple[str, str]] = []  # (member_true_label, cluster_modal_label)
+    for c in sorted(set(int(x) for x in pred) - {-1}):
+        members = [pool_labels[i] for i in range(len(pred)) if pred[i] == c]
+        modal = Counter(members).most_common(1)[0][0]
+        modal_labels[c] = modal
+        records.extend((m, modal) for m in members)
+    distinct = len(set(modal_labels.values()))
+    return {"minted_purity": purity_of(records),
+            "minted_distinct": distinct if records else None, "records": records}
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap CI (deterministic)
+# ---------------------------------------------------------------------------
+def bootstrap_half_width(values: list[float], stat, *, n: int, seed: int = 0) -> float:
+    """Half-width of the 95% percentile CI of `stat` over resamples of `values`.
+    Deterministic (seeded). `values` is the per-unit record list; `stat` maps a
+    resampled list → a scalar (or None, skipped)."""
+    if not values:
+        return 0.0
+    rng = np.random.default_rng(seed)
+    # 1-D object array so each element stays the original record (a plain
+    # np.array(list_of_tuples) would build a 2-D (n,2) array and reshape records).
+    arr = np.empty(len(values), dtype=object)
+    for i, v in enumerate(values):
+        arr[i] = v
+    dist = []
+    for _ in range(n):
+        pick = rng.integers(0, len(arr), size=len(arr))
+        s = stat([arr[j] for j in pick])
+        if s is not None:
+            dist.append(s)
+    if not dist:
+        return 0.0
+    lo, hi = np.percentile(dist, [2.5, 97.5])
+    return round(float(hi - lo) / 2.0, 4)
+
+
+# ---------------------------------------------------------------------------
+# Evaluate
+# ---------------------------------------------------------------------------
+def evaluate(labels: list[str], embs: np.ndarray, *, tau: float, confident_tau: float,
+             holdout_k: int, bootstrap: int, per_label_floor: float) -> dict:
+    # One stratified split, reused for the point estimate AND the bootstrap, so
+    # the CI protects exactly the estimator it reports (no train/test drift, no
+    # second split call).
+    train, test = stratified_split(labels)
+    proto_ids, proto_mat = build_prototypes(embs[train], [labels[i] for i in train])
+    test_embs, test_truth = embs[test], [labels[i] for i in test]
+    cls = classification_metrics(test_embs, test_truth, proto_ids, proto_mat)
+    per_label_acc = {lb: m["recall"] for lb, m in cls["per_label"].items()}
+
+    nov_records = novelty_records(labels, embs, tau=tau, confident_tau=confident_tau)
+    nov = _pr_from_records(nov_records)
+    mint = minted_block(labels, embs, holdout_k=holdout_k)
+
+    # CIs. macro-F1 over the resampled test set; novelty/minted over their records.
+    test_pred = [r.playbook_id for r in assign_batch(test_embs, proto_mat, proto_ids,
+                                                      tau=0.0, confident_tau=0.0)]
+    paired = list(zip(test_pred, test_truth))
+    f1_hw = bootstrap_half_width(
+        paired, lambda s: _macro_f1_from([p for p, _ in s], [t for _, t in s]),
+        n=bootstrap)
+    rec_hw = bootstrap_half_width(nov_records, lambda s: _pr_from_records(s)["novel_recall"], n=bootstrap)
+    prec_hw = bootstrap_half_width(nov_records, lambda s: _pr_from_records(s)["novel_precision"], n=bootstrap)
+    pur_hw = bootstrap_half_width(mint["records"], purity_of, n=bootstrap)
+
+    return {
+        "n_labeled": len(labels), "n_labels": len(set(labels)), "n_test": cls["n_test"],
+        "tau": tau, "confident_tau": confident_tau, "holdout_k": holdout_k,
+        "metrics": {
+            "macro_f1": cls["macro_f1"],
+            "novel_precision": nov["novel_precision"],
+            "novel_recall": nov["novel_recall"],
+            "false_familiar": nov["false_familiar"],
+            "minted_purity": mint["minted_purity"],
+            "minted_distinct": mint["minted_distinct"],
+        },
+        "ci_half_width": {"macro_f1": f1_hw, "novel_recall": rec_hw,
+                          "novel_precision": prec_hw, "minted_purity": pur_hw},
+        "per_label_accuracy": per_label_acc,
+        "per_label_floor": per_label_floor,
+        "novelty_degenerate": (nov["novel_recall"] is None or nov["novel_recall"] <= _DEGENERATE_RECALL),
+        "n_flagged_novel": nov["n_flagged_novel"],
+        "minted_skip": mint.get("skip"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Baseline + gate
+# ---------------------------------------------------------------------------
+def build_baseline(report: dict, *, epsilon: float) -> dict:
+    """Per-metric {baseline, tolerance, direction, basis}. macro-F1 / minted purity /
+    novelty → CI floor (novelty unless degenerate); per-label → hard floor; minted-
+    distinct + false-familiar → diagnostic."""
+    hw = report["ci_half_width"]
+    m = report["metrics"]
+    degen = report["novelty_degenerate"]
+
+    def ci(name):
+        return {"baseline": m[name], "tolerance": max(hw.get(name, 0.0), epsilon),
+                "direction": "floor", "basis": "ci"}
+
+    metrics = {
+        "macro_f1": ci("macro_f1"),
+        "minted_purity": (ci("minted_purity") if m["minted_purity"] is not None
+                          else {"baseline": None, "direction": "floor", "basis": "diagnostic"}),
+        # minted_distinct is an integer HDBSCAN cluster count over a small pool —
+        # a tol-0 floor would flake red on cross-BLAS MST tie-breaks, so it is
+        # reported, not gated. minted_purity (a ratio) carries the mint signal.
+        "minted_distinct": {"baseline": m["minted_distinct"], "direction": "floor",
+                            "basis": "diagnostic"},
+        "novel_precision": ({"baseline": None, "direction": "floor", "basis": "diagnostic"}
+                            if degen else ci("novel_precision")),
+        "novel_recall": ({"baseline": None, "direction": "floor", "basis": "diagnostic"}
+                         if degen else ci("novel_recall")),
+        "false_familiar": {"baseline": m["false_familiar"], "direction": "ceiling",
+                           "basis": "diagnostic"},
+    }
+    note = ("Per-metric thresholds: macro-F1 / minted purity / novelty use a bootstrap-CI "
+            "floor (baseline - half-width); per-label accuracy uses a hard absolute floor "
+            "(collapse detector); minted-distinct + false-familiar are diagnostics; novelty is "
+            + ("DIAGNOSTIC (label-mean geometry pinned novel-recall <= "
+               f"{_DEGENERATE_RECALL} at tau — honest gating deferred to Slice E's "
+               "real anchors)" if degen else "a CI floor (non-degenerate at tau)")
+            + "; false-familiar (= 1 - novel recall) is always reported, never gated.")
+    return {
+        "metrics": metrics,
+        "per_label_floor": report["per_label_floor"],
+        "tau": report["tau"], "confident_tau": report["confident_tau"],
+        "holdout_k": report["holdout_k"],
+        "captured_from": "eval_operational.py --write-baseline",
+        "tolerance_semantic": note,
+    }
+
+
+def gate(report: dict, baseline: dict) -> tuple[list[str], bool]:
+    lines, ok = [], True
+    lines.append(f"  {'metric':18}{'basis':>11}{'baseline':>10}{'current':>10}{'tol':>8}  status")
+    for name, spec in baseline["metrics"].items():
+        cur = report["metrics"].get(name)
+        basis = spec.get("basis", "ci")
+        bl = spec.get("baseline")
+        if basis == "diagnostic" or bl is None:
+            lines.append(f"  {name:18}{'diagnostic':>11}{bl!s:>10}{cur!s:>10}      —  (info)")
+            continue
+        tol = spec.get("tolerance", 0)
+        if cur is None:
+            # A GATED metric that went None at runtime is a collapse (e.g. novelty
+            # stopped producing any signal) — fail, never silently skip.
+            ok = False
+            lines.append(f"  {name:18}{basis:>11}{bl!s:>10}{'None':>10}      —  FAIL")
+            continue
+        if spec["direction"] == "ceiling":
+            passed = cur <= bl + tol
+        else:
+            passed = cur >= bl - tol
+        ok = ok and passed
+        lines.append(f"  {name:18}{basis:>11}{bl:>10.4f}{cur:>10.4f}{tol:>8.3f}  "
+                     f"{'PASS' if passed else 'FAIL'}")
+    # per-label accuracy: hard absolute floor — catches a single label collapsing.
+    floor = baseline["per_label_floor"]
+    worst = None
+    for lb, acc in sorted(report["per_label_accuracy"].items()):
+        passed = acc >= floor
+        ok = ok and passed
+        if worst is None or acc < worst[1]:
+            worst = (lb, acc)
+        lines.append(f"  {('per_label:' + lb):18}{'floor':>11}{floor:>10.3f}{acc:>10.4f}"
+                     f"{'':>8}  {'PASS' if passed else 'FAIL'}")
+    return lines, ok
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--labels", default="eval/labels-v1.yaml")
+    ap.add_argument("--unlabeled", default="eval/sessions-v1.unlabeled.jsonl")
+    ap.add_argument("--baseline", default="eval/baseline-operational.json")
+    ap.add_argument("--tau", type=float, default=0.94)
+    ap.add_argument("--confident-tau", type=float, default=0.98)
+    ap.add_argument("--holdout-k", type=int, default=2)
+    ap.add_argument("--per-label-floor", type=float, default=0.3)
+    ap.add_argument("--bootstrap", type=int, default=1000)
+    ap.add_argument("--epsilon", type=float, default=0.02)
+    ap.add_argument("--write-baseline", action="store_true")
+    ap.add_argument("--no-json", action="store_true")
+    args = ap.parse_args()
+
+    labels, embs = load_labeled(Path(args.labels), Path(args.unlabeled))
+    if not labels:
+        print("No labelled sessions with embeddings found.", file=sys.stderr)
+        return 1
+    report = evaluate(labels, embs, tau=args.tau, confident_tau=args.confident_tau,
+                      holdout_k=args.holdout_k, bootstrap=args.bootstrap,
+                      per_label_floor=args.per_label_floor)
+
+    if args.write_baseline:
+        baseline = build_baseline(report, epsilon=args.epsilon)
+        Path(args.baseline).write_text(json.dumps(baseline, indent=2) + "\n")
+        print(f"wrote baseline {args.baseline}")
+        print(f"  novelty: {'DIAGNOSTIC (degenerate)' if report['novelty_degenerate'] else 'GATED'} "
+              f"(novel_recall={report['metrics']['novel_recall']}, "
+              f"flagged_novel={report['n_flagged_novel']})")
+        return 0
+
+    if not args.no_json:
+        print(json.dumps(report, indent=2))
+
+    if not Path(args.baseline).exists():
+        print(f"\nNo baseline at {args.baseline} — printing metrics only, no gate.")
+        return 0
+    baseline = json.loads(Path(args.baseline).read_text())
+    lines, ok = gate(report, baseline)
+    print()
+    for ln in lines:
+        print(ln)
+    print(f"\nGATE: {'PASS' if ok else 'FAIL'}")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

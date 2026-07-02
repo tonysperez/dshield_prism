@@ -1,0 +1,44 @@
+{
+  "metrics": {
+    "macro_f1": {
+      "baseline": 0.8332,
+      "tolerance": 0.0987,
+      "direction": "floor",
+      "basis": "ci"
+    },
+    "minted_purity": {
+      "baseline": 1.0,
+      "tolerance": 0.02,
+      "direction": "floor",
+      "basis": "ci"
+    },
+    "minted_distinct": {
+      "baseline": 2,
+      "direction": "floor",
+      "basis": "diagnostic"
+    },
+    "novel_precision": {
+      "baseline": 0.6316,
+      "tolerance": 0.0813,
+      "direction": "floor",
+      "basis": "ci"
+    },
+    "novel_recall": {
+      "baseline": 0.84,
+      "tolerance": 0.0718,
+      "direction": "floor",
+      "basis": "ci"
+    },
+    "false_familiar": {
+      "baseline": 0.16,
+      "direction": "ceiling",
+      "basis": "diagnostic"
+    }
+  },
+  "per_label_floor": 0.3,
+  "tau": 0.94,
+  "confident_tau": 0.98,
+  "holdout_k": 2,
+  "captured_from": "eval_operational.py --write-baseline",
+  "tolerance_semantic": "Per-metric thresholds: macro-F1 / minted purity / novelty use a bootstrap-CI floor (baseline - half-width); per-label accuracy uses a hard absolute floor (collapse detector); minted-distinct + false-familiar are diagnostics; novelty is a CI floor (non-degenerate at tau); false-familiar (= 1 - novel recall) is always reported, never gated."
+}

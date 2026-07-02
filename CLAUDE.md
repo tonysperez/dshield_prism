@@ -76,12 +76,14 @@ the box** — equally load-bearing, and the source of the worse failures.
 console/.venv/bin/ruff check src scripts
 console/.venv/bin/python scripts/run_smoke.py   # ES-independent smoke tests
 
-# eval.yml — clustering quality gates (always run them all; the prod/command
-# gates are path-scoped in CI but run them locally regardless)
+# eval.yml — quality gates (always run them all; the prod/command gates are
+# path-scoped in CI but run them locally regardless)
+console/.venv/bin/python scripts/eval_operational.py \
+  --baseline eval/baseline-operational.json --no-json   # THE operational gate (Slice A)
 console/.venv/bin/python scripts/eval_clustering.py \
-  --baseline eval/baseline.json --no-json
+  --baseline eval/baseline.json --no-json   # DIAGNOSTIC — partition metrics, exits 0
 console/.venv/bin/python scripts/eval_assignment.py \
-  --baseline eval/baseline-assignment.json --no-json   # Option-A assignment gate
+  --baseline eval/baseline-assignment.json --no-json   # DIAGNOSTIC — exits 0
 console/.venv/bin/python scripts/eval_assignment_prod.py \
   --baseline eval/baseline-assignment-prod.json --no-json   # real-anchor gate; SKIPs until the public anchor snapshot is committed
 console/.venv/bin/python scripts/eval_production_scale.py \

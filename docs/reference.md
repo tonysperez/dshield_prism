@@ -548,9 +548,10 @@ via `console/.venv`:
 console/.venv/bin/ruff check src scripts
 console/.venv/bin/python scripts/run_smoke.py
 
-# Clustering / assignment quality gates (always run them all)
-console/.venv/bin/python scripts/eval_clustering.py --baseline eval/baseline.json --no-json
-console/.venv/bin/python scripts/eval_assignment.py --baseline eval/baseline-assignment.json --no-json
+# Quality gates (always run them all)
+console/.venv/bin/python scripts/eval_operational.py --baseline eval/baseline-operational.json --no-json   # THE operational gate
+console/.venv/bin/python scripts/eval_clustering.py --baseline eval/baseline.json --no-json   # DIAGNOSTIC (exits 0)
+console/.venv/bin/python scripts/eval_assignment.py --baseline eval/baseline-assignment.json --no-json   # DIAGNOSTIC (exits 0)
 console/.venv/bin/python scripts/eval_assignment_prod.py --baseline eval/baseline-assignment-prod.json --no-json
 console/.venv/bin/python scripts/eval_production_scale.py --snapshot eval/production-snapshot-v1.jsonl.gz --baseline eval/baseline-prod-scale.json --no-json
 console/.venv/bin/python scripts/eval_command_scale.py --snapshot eval/command-snapshot-v1.jsonl.gz --baseline eval/baseline-command-scale.json --no-json

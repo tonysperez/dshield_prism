@@ -16,7 +16,10 @@ the assignment era cares about:
     in-distribution sessions' nearest cosine. Reports a rank-AUC of "held-out reads as
     novel" (threshold-free) + the mean-cosine gap.
 
-Gate (like the other evals): each metric fails when current < baseline - tolerance.
+DIAGNOSTIC ONLY (post quality-metrics Slice A): assignment quality now gates in
+scripts/eval_operational.py with variance-justified thresholds. This script still
+prints accuracy / macro-F1 / mean_auc_novel for visibility but never fails a build;
+mean_auc_novel is threshold-free (the pipeline ships one fixed cosine point).
 """
 from __future__ import annotations
 
@@ -210,25 +213,25 @@ def main() -> int:
     if not args.no_json:
         print(json.dumps(report, indent=2))
 
+    # DIAGNOSTIC ONLY. The operational gate is scripts/eval_operational.py; the
+    # assignment macro-F1 / per-label accuracy / novelty numbers now gate there
+    # (variance-justified thresholds). This script prints the same metrics for
+    # visibility but never fails a build — mean_auc_novel is a threshold-free
+    # diagnostic (the pipeline ships one fixed cosine point, not an AUC).
     base = json.loads(Path(args.baseline).read_text()) if Path(args.baseline).exists() else None
-    print(f"\n  {'metric':18}{'baseline':>10}{'current':>10}{'tol':>8}{'delta':>9}  status")
-    ok = True
-    for m, axis in _GATED.items():
+    print(f"\n  {'metric':18}{'baseline':>10}{'current':>10}{'delta':>9}")
+    for m in _GATED:
         cur = report["metrics"].get(m)
         if base is None:
             print(f"  {m:18}{'(none)':>10}{cur!s:>10}")
             continue
         bl = base["metrics"].get(m)
-        tol = base.get("tolerance", args.tolerance)
         if cur is None or bl is None:
-            print(f"  {m:18}{bl!s:>10}{cur!s:>10}  SKIP")
+            print(f"  {m:18}{bl!s:>10}{cur!s:>10}")
             continue
-        passed = cur >= bl - tol
-        ok = ok and passed
-        print(f"  {m:18}{bl:>10.4f}{cur:>10.4f}{tol:>8.3f}{cur - bl:>+9.4f}  "
-              f"{'PASS' if passed else 'FAIL'}")
-    print(f"\nGATE: {'PASS' if ok else 'FAIL'}")
-    return 0 if ok else 1
+        print(f"  {m:18}{bl:>10.4f}{cur:>10.4f}{cur - bl:>+9.4f}")
+    print("\nDIAGNOSTIC — not gating (operational gate: scripts/eval_operational.py)")
+    return 0
 
 
 if __name__ == "__main__":

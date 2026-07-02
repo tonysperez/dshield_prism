@@ -647,7 +647,10 @@ def _render_gate(rows: list[dict], ok: bool) -> str:
             f"{r['tolerance']:>10.4f} {dlt:>10}  {r['status']}"
         )
     out.append("")
-    out.append(f"GATE: {'PASS' if ok else 'FAIL'}")
+    out.append("DIAGNOSTIC — not gating. The partition metrics (ARI/NMI/homogeneity/")
+    out.append("completeness/v_measure) measure a geometry off the shipped nearest-")
+    out.append("prototype assign path; they print for a coarse sanity check but no")
+    out.append("longer fail a build. The operational gate is scripts/eval_operational.py.")
     return "\n".join(out)
 
 
@@ -666,8 +669,9 @@ def main() -> int:
                     help="Skip writing the JSON dump (stdout only)")
     ap.add_argument("--baseline", type=Path, default=None,
                     help=(
-                        "Compare metrics to this baseline file and exit "
-                        "non-zero on regression. Use to gate PRs."
+                        "Print a diagnostic delta vs this baseline. Post-Slice-A "
+                        "the partition metrics no longer gate (always exits 0); "
+                        "the gate is scripts/eval_operational.py."
                     ))
     args = ap.parse_args()
 
@@ -685,8 +689,7 @@ def main() -> int:
     if args.baseline is not None:
         rows, ok = _compare_to_baseline(report, args.baseline)
         print(_render_gate(rows, ok))
-        return 0 if ok else 1
-    return 0
+    return 0  # partition metrics are diagnostic post-Slice-A; never fail the build
 
 
 if __name__ == "__main__":

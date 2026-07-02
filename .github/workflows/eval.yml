@@ -19,26 +19,37 @@ jobs:
       # pinned eval set. No ES connection needed.
       - name: Install deps
         run: pip install -e .[cluster]
-      - name: Run clustering eval + gate against baseline
+      - name: Run operational gate against baseline
+        run: |
+          python scripts/eval_operational.py \
+            --baseline eval/baseline-operational.json \
+            --no-json
+        # THE gate (quality-metrics Slice A). Grades the operator jobs on the
+        # committed eval geometry: assignment macro-F1 + per-label accuracy, novel
+        # precision/recall + false-familiar at the shipped tau via a whole-label
+        # holdout, minted-playbook purity + distinct count. Thresholds are variance-
+        # justified (bootstrap-CI half-width; per-label = hard floor), not a flat
+        # drop. Deterministic, no ES. Re-base via `eval_operational.py
+        # --write-baseline` after an intentional change (inspect the printed
+        # novelty degeneracy line before committing).
+      - name: Run clustering eval (DIAGNOSTIC — not gating)
         run: |
           python scripts/eval_clustering.py \
             --baseline eval/baseline.json \
             --no-json
-        # Exit non-zero on regression beyond the per-metric tolerance in
-        # eval/baseline.json. To re-baseline after an intentional
-        # improvement, regenerate eval/baseline.json on a feature branch
-        # and commit the new file — the next CI run on that branch will
-        # gate against the updated numbers.
-        # Clustering still gates the novel-pool HDBSCAN path post-Option-A-cutover.
-      - name: Run assignment eval + gate against baseline
+        # Post-Slice-A the partition metrics (ARI/NMI/homogeneity/completeness/
+        # v_measure) are a coarse geometry sanity check only — off the shipped
+        # nearest-prototype assign path — and no longer fail a build (exits 0).
+        # The novel-pool HDBSCAN small-cluster axis still prints here.
+      - name: Run assignment eval (DIAGNOSTIC — not gating)
         run: |
           python scripts/eval_assignment.py \
             --baseline eval/baseline-assignment.json \
             --no-json
-        # Option-A counterpart: gates the nearest-prototype assignment algorithm
-        # (classification accuracy + macro-F1) and held-out novelty separation
-        # (mean_auc_novel) against the analyst labels. Same eval set, no ES. Re-base
-        # via `eval_assignment.py --write-baseline` after an intentional change.
+        # Post-Slice-A this prints accuracy / macro-F1 / mean_auc_novel for
+        # visibility but never fails a build; the assignment + novelty numbers
+        # gate in eval_operational.py. mean_auc_novel is threshold-free (the
+        # pipeline ships one fixed cosine point, not an AUC).
       - name: Run prod-scale assignment eval (real anchors) + gate
         run: |
           python scripts/eval_assignment_prod.py \
