@@ -8,7 +8,6 @@ The app is read-only against Elasticsearch.
 from __future__ import annotations
 
 import logging
-import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -24,7 +23,6 @@ from ._es import make_client
 from . import findings as findings_mod, graph, intel as intel_mod, ioc, queries
 # Imported as a renamed local to avoid shadowing the `health()` function
 # below that's registered as the `/api/health` system-check route.
-from . import health as health_mod
 from .models import (
     GraphResponse, HealthResponse, IOCDetail, SearchCandidate,
     SearchResponse, TableResponse,
@@ -44,8 +42,7 @@ NAV_ITEMS: list[dict[str, str]] = [
     {"id": "explore",   "label": "Explore",  "href": "/explore"},
     {"id": "graph",     "label": "Graph",    "href": "/graph"},
     {"id": "hunts",     "label": "Hunts",    "href": "/hunts"},
-    {"id": "rules",     "label": "Rules",    "href": "/artifact-rules"},
-    {"id": "curation",  "label": "Curation", "href": "/curation"},
+    {"id": "tune",      "label": "Tune",     "href": "/tune"},
 ]
 
 
@@ -78,12 +75,6 @@ class WriteupRequest(BaseModel):
     scope:            dict = {}
     evidence_quality: str = ""
     escalate:         bool = False
-
-
-class DenylistAddRequest(BaseModel):
-    """POST body for /api/health/commands/denylist (ROADMAP #11.5)."""
-    token: str
-    rationale: str = ""
 
 
 class FindingStatusRequest(BaseModel):
@@ -245,9 +236,11 @@ def build_app(config_path: str | None = None) -> FastAPI:
     def health_page(request: Request):
         return _render(request, "health.html", active_nav="health")
 
-    @app.get("/curation")
-    def curation_page(request: Request):
-        return _render(request, "curation.html", active_nav="curation")
+    @app.get("/curation", include_in_schema=False)
+    def curation_page_redirect(request: Request) -> RedirectResponse:
+        # Curation retired — its grounding scan didn't scale (see
+        # spec-grounding-precompute). Bookmarks land on Tune.
+        return RedirectResponse("/tune", status_code=302)
 
     @app.get("/hunts")
     def hunts_page(request: Request):
@@ -275,10 +268,18 @@ def build_app(config_path: str | None = None) -> FastAPI:
         # consistency with the URL pane.
         return _render(request, "artifact_hash.html", active_nav="")
 
-    @app.get("/artifact-rules")
-    def artifact_rules_page(request: Request):
-        # Analyst-authored artifact-rule management page (ROADMAP #5).
-        return _render(request, "artifact_rules.html", active_nav="rules")
+    @app.get("/tune")
+    def tune_page(request: Request):
+        # Extensible tuning surface. Sub-tab shell built to host many
+        # tuning types; today it carries a single tab — analyst artifact
+        # rules (ROADMAP #5). Curation's grounding worklist returns as a
+        # second tab once the pipeline precomputes it (spec-grounding-precompute).
+        return _render(request, "tune.html", active_nav="tune")
+
+    @app.get("/artifact-rules", include_in_schema=False)
+    def artifact_rules_page_redirect(request: Request) -> RedirectResponse:
+        # Rules now live under the Tune tab; keep the old URL working.
+        return RedirectResponse("/tune", status_code=302)
 
     # ------------------------------------------------------------------
     # API
@@ -319,47 +320,19 @@ def build_app(config_path: str | None = None) -> FastAPI:
             log.exception("history_summary failed")
             raise HTTPException(500, f"history query failed: {e}")
 
-    # Health page — command-grounding coverage report (ROADMAP #11.5).
-    # 60s in-memory cache; the underlying data changes only when curated
-    # YAMLs / the tldr bundle / the corpus drift, none of which happen
-    # sub-minute.
-    _health_cmds_cache: dict[str, Any] = {"ts": 0.0, "data": None}
-    _HEALTH_CMDS_TTL = 60.0
-
-    @app.get("/api/health/commands")
-    def health_commands_api() -> JSONResponse:
-        now = time.monotonic()
-        if _health_cmds_cache["data"] and now - _health_cmds_cache["ts"] < _HEALTH_CMDS_TTL:
-            return JSONResponse(_health_cmds_cache["data"])
-        try:
-            data = health_mod.health_commands(es, cfg)
-            _health_cmds_cache["ts"] = now
-            _health_cmds_cache["data"] = data
-            return JSONResponse(data)
-        except Exception as e:
-            log.exception("health_commands failed")
-            raise HTTPException(500, f"health_commands query failed: {e}")
-
-    def _invalidate_health_cache() -> None:
-        _health_cmds_cache["data"] = None
-        _health_cmds_cache["ts"] = 0.0
-
     @app.post("/api/cache/purge")
     def purge_caches() -> JSONResponse:
         """Wipe every in-memory cache so the next request reads from ES.
 
-        The console layers a few caches on top of ES for query throughput:
-          - _health_cmds_cache      (60 s TTL on /api/health/commands)
+        The console layers a cache on top of ES for query throughput:
           - run_cache._cache        (5 min TTL on `latest run_id` per
                                      centroid index — RunCache in queries.py)
 
-        After a fresh pipeline run, these caches can hold stale results
-        until their TTLs expire. The settings modal exposes a button
+        After a fresh pipeline run, this cache can hold stale results
+        until its TTL expires. The settings modal exposes a button
         that POSTs here so operators don't have to restart the process.
         """
         cleared: list[str] = []
-        _invalidate_health_cache()
-        cleared.append("health_commands")
         try:
             # RunCache holds {index: (ts, run_id)}; clearing forces the
             # next .latest() call to re-query ES.
@@ -368,24 +341,6 @@ def build_app(config_path: str | None = None) -> FastAPI:
         except Exception:                                # pragma: no cover
             pass
         return JSONResponse({"ok": True, "cleared": cleared})
-
-    @app.post("/api/health/commands/denylist")
-    def denylist_add_api(body: DenylistAddRequest) -> JSONResponse:
-        ok, msg = health_mod.add_token_to_denylist(body.token, body.rationale)
-        if not ok:
-            raise HTTPException(400, msg)
-        _invalidate_health_cache()
-        return JSONResponse({"ok": True, "message": msg})
-
-    @app.delete("/api/health/commands/denylist/{token}")
-    def denylist_remove_api(token: str) -> JSONResponse:
-        ok, msg = health_mod.remove_token_from_denylist(token)
-        if not ok:
-            # "not present" is a benign no-op for idempotent UI clicks;
-            # truly malformed input would have been rejected earlier.
-            raise HTTPException(404, msg)
-        _invalidate_health_cache()
-        return JSONResponse({"ok": True, "message": msg})
 
     # ------------------------------------------------------------------
     # Hunts (brutal-review phase 6.3) — read-only list view + run-now.
@@ -842,7 +797,14 @@ def build_app(config_path: str | None = None) -> FastAPI:
     def _get_pipeline_cfg():
         if _pipeline_cfg["value"] is None:
             from enrich.config import load_config as _load_pipeline_cfg
-            _pipeline_cfg["value"] = _load_pipeline_cfg(config_path)
+            # `config_path` is None under `serve`'s default. The pipeline loader
+            # then defaults to the CWD-relative `config/default.yaml`, which
+            # misses when the console is launched from inside `console/` (its
+            # cwd). Fall back to the console's own resolver — it also probes
+            # `../config/default.yaml` — so the pipeline cfg loads regardless of
+            # where `serve` was started.
+            from ._config import _default_config_path
+            _pipeline_cfg["value"] = _load_pipeline_cfg(config_path or _default_config_path())
         return _pipeline_cfg["value"]
 
     @app.get("/api/compare/clusters")
@@ -990,6 +952,27 @@ def build_app(config_path: str | None = None) -> FastAPI:
             return JSONResponse(queries.health_ops_runs(es, cfg))
         except Exception as e:  # pragma: no cover -- depends on ES state
             return JSONResponse({"rows": [], "running": [], "error": f"{e.__class__.__name__}: {e}"})
+
+    @app.get("/api/health/pressure")
+    def health_pressure_api() -> JSONResponse:
+        """ES parent-circuit-breaker pressure for the /health status strip
+        (observability lane). Best-effort: degrades to state=unknown (neutral)
+        rather than erroring the page when breaker stats are unavailable."""
+        try:
+            return JSONResponse(queries.es_pressure(es, cfg))
+        except Exception as e:  # pragma: no cover -- depends on ES state
+            return JSONResponse({"state": "unknown", "ratio": None, "detail": "",
+                                 "error": f"{e.__class__.__name__}: {e}"})
+
+    @app.get("/api/health/sensors")
+    def health_sensors_api() -> JSONResponse:
+        """Per-sensor data freshness (max @timestamp per observer.name) for the
+        /health status strip. Empty rows → empty-state placeholder, not an
+        error."""
+        try:
+            return JSONResponse(queries.sensor_freshness(es, cfg))
+        except Exception as e:  # pragma: no cover -- depends on ES state
+            return JSONResponse({"rows": [], "error": f"{e.__class__.__name__}: {e}"})
 
     @app.get("/api/pipeline/status")
     def pipeline_status_api() -> JSONResponse:

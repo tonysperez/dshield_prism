@@ -4,7 +4,8 @@
  *   - Data freshness — per-index doc count + max(@timestamp).
  *   - Recent pipeline runs — latest run_summary per cluster index.
  *
- * LLM-grounding curation moved to /curation under ROADMAP #17.10.
+ * Command-grounding coverage was retired (console scan didn't scale);
+ * it returns under Tune once the pipeline precomputes it.
  */
 
 // Stale thresholds (hours). Rows older than this flag amber. Tuned for
@@ -105,20 +106,63 @@ async function loadOverview() {
   }
 }
 
+// Intel-coverage table — rendered from the intel_* rows already returned by
+// /api/health/freshness (no extra request). Filters on the `intel_` name
+// prefix `queries.health_freshness` uses for each intel index.
+function renderIntelCoverage(rows) {
+  const body = document.getElementById("intel-coverage-body");
+  if (!body) return;
+  // `health_freshness` probes all four intel indices unconditionally, so a
+  // disabled-intel deploy still yields intel_* rows — but with doc_count null
+  // (the index doesn't exist). Treat only rows whose index actually exists as
+  // "deployed"; if none are, show the not-deployed empty state rather than four
+  // permanent "never" rows.
+  const intel = (rows || []).filter(
+    (r) => r.name && r.name.startsWith("intel_") && r.doc_count != null);
+  body.innerHTML = "";
+  if (!intel.length) {
+    body.appendChild(el("em", {class: "h-empty"},
+      ["no intel indices — enable intel enrichment to populate this"]));
+    return;
+  }
+  const table = el("table", {class: "h-table"});
+  table.appendChild(el("thead", null, [el("tr", null, [
+    el("th", null, ["Kind"]),
+    el("th", {class: "num"}, ["Docs"]),
+    el("th", null, ["Last refresh"]),
+  ])]));
+  const tbody = el("tbody");
+  for (const r of intel) {
+    const tr = el("tr");
+    tr.appendChild(el("td", {class: "name"}, [r.name.replace(/^intel_/, "")]));
+    tr.appendChild(el("td", {class: "num"}, [fmtNum(r.doc_count)]));
+    tr.appendChild(tsCell(r.last_ts, r.name));
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  body.appendChild(table);
+}
+
 async function loadFreshness() {
   const body = document.getElementById("freshness-body");
+  const intelBody = document.getElementById("intel-coverage-body");
+  const showErr = (msg) => {
+    for (const b of [body, intelBody]) {
+      if (!b) continue;
+      b.innerHTML = "";
+      b.appendChild(el("div", {class: "h-error"}, [msg]));
+    }
+  };
   let data;
   try {
     const r = await fetch("/api/health/freshness");
     data = await r.json();
   } catch (e) {
-    body.innerHTML = "";
-    body.appendChild(el("div", {class: "h-error"}, [`fetch failed: ${e.message}`]));
+    showErr(`fetch failed: ${e.message}`);
     return;
   }
   if (data.error) {
-    body.innerHTML = "";
-    body.appendChild(el("div", {class: "h-error"}, [data.error]));
+    showErr(data.error);
     return;
   }
   body.innerHTML = "";
@@ -136,6 +180,80 @@ async function loadFreshness() {
     tr.appendChild(el("td", {class: "idx"}, [r.idx || "—"]));
     tr.appendChild(el("td", {class: "num"}, [fmtNum(r.doc_count)]));
     tr.appendChild(tsCell(r.last_ts, r.name));
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  body.appendChild(table);
+  // Same rows drive the intel-coverage block — no second fetch.
+  renderIntelCoverage(data.rows);
+}
+
+async function loadPressure() {
+  const body = document.getElementById("pressure-tile");
+  if (!body) return;
+  let data;
+  try {
+    const r = await fetch("/api/health/pressure");
+    data = await r.json();
+  } catch (e) {
+    body.className = "press-tile state-unknown";
+    body.innerHTML = "";
+    body.appendChild(el("div", {class: "p-label"}, ["ES pressure"]));
+    body.appendChild(el("div", {class: "p-value"}, ["unknown"]));
+    body.appendChild(el("div", {class: "p-detail"}, [`fetch failed: ${e.message}`]));
+    return;
+  }
+  const state = data.state || "unknown";
+  body.className = "press-tile state-" + state;
+  body.innerHTML = "";
+  body.appendChild(el("div", {class: "p-label"}, ["ES pressure"]));
+  const pct = (typeof data.ratio === "number")
+    ? `${(data.ratio * 100).toFixed(0)}%` : "unknown";
+  body.appendChild(el("div", {class: "p-value"}, [pct]));
+  body.appendChild(el("div", {class: "p-detail"}, [data.detail || ""]));
+}
+
+async function loadSensors() {
+  const body = document.getElementById("sensors-body");
+  if (!body) return;
+  let data;
+  try {
+    const r = await fetch("/api/health/sensors");
+    data = await r.json();
+  } catch (e) {
+    body.innerHTML = "";
+    body.appendChild(el("div", {class: "h-error"}, [`fetch failed: ${e.message}`]));
+    return;
+  }
+  if (data.error) {
+    body.innerHTML = "";
+    body.appendChild(el("div", {class: "h-error"}, [data.error]));
+    return;
+  }
+  body.innerHTML = "";
+  const rows = data.rows || [];
+  if (!rows.length) {
+    body.appendChild(el("em", {class: "h-empty"}, ["no sensor data yet"]));
+    return;
+  }
+  const table = el("table", {class: "h-table"});
+  table.appendChild(el("thead", null, [el("tr", null, [
+    el("th", null, ["Sensor"]),
+    el("th", null, ["Last data"]),
+  ])]));
+  const tbody = el("tbody");
+  for (const r of rows) {
+    const tr = el("tr");
+    tr.appendChild(el("td", {class: "name"}, [
+      el("span", {class: "st-dot state-" + (r.state || "ok")}),
+      r.sensor || "—",
+    ]));
+    // Server state is the source of truth for stale (amber), not the client's
+    // per-index STALE_HOURS heuristic — build the ts cell directly.
+    const f = fmtRelTs(r.last_ts);
+    const tsc = el("td", {class: "ts" + (r.state === "stale" ? " stale" : "")}, [f.text]);
+    if (r.last_ts) tsc.setAttribute("data-tooltip", r.last_ts);
+    tr.appendChild(tsc);
     tbody.appendChild(tr);
   }
   table.appendChild(tbody);
@@ -292,13 +410,18 @@ async function loadOpsRuns() {
   const tbody = el("tbody");
   const runningVerbs = new Set(running.map((r) => r.verb));
   for (const r of rows) {
-    const tr = el("tr");
-    tr.appendChild(el("td", {class: "name"}, [r.verb]));
-    // started (in-flight) > failed (amber) > finished.
+    // started (in-flight) > failed (prominent) > finished.
     const inFlight = r.status === "started" || runningVerbs.has(r.verb);
-    const statusCell = el("td", null, [inFlight ? "running" : (r.status || "—")]);
+    const failed = !inFlight && (r.status === "failed" || (r.rc != null && r.rc !== 0));
+    const tr = el("tr", failed ? {class: "run-failed"} : null);
+    tr.appendChild(el("td", {class: "name"}, [r.verb]));
+    let statusText;
+    if (inFlight) statusText = "running";
+    else if (failed) statusText = (r.rc != null) ? `failed (rc ${r.rc})` : "failed";
+    else statusText = r.status || "—";
+    const statusCell = el("td", null, [statusText]);
     if (inFlight) statusCell.style.color = "#34d399";
-    else if (r.status === "failed" || (r.rc != null && r.rc !== 0)) statusCell.style.color = "#fbbf24";
+    else if (failed) statusCell.style.color = "#f87171";
     tr.appendChild(statusCell);
     tr.appendChild(tsCell(r.started_at, "__ops__"));
     tr.appendChild(el("td", {class: "num"},
@@ -343,6 +466,8 @@ async function purgeCache() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  loadPressure();
+  loadSensors();
   loadOverview();
   loadFreshness();
   loadRuns();

@@ -210,3 +210,13 @@ corpus and recorded as a null result.
   valve.)
 - **Letting Elastic Fleet manage the indices** — Fleet wiped the indices it
   controlled. Setup now creates them manually so Fleet can't.
+- **Computing command-grounding coverage on the console request path** — the
+  Curation page tokenized (`parse_shell_line`) and counted the *entire* commands
+  index in Python on every load. Fine at a handful of commands; ~15 min at 500k.
+  It cannot scale from the console: the grouping key (the parsed shell token)
+  isn't an ES field, so ES can't aggregate it — some process must read and
+  tokenize every doc. Caching only hides it until the scan outruns the TTL. The
+  page was retired; coverage must be precomputed by a scheduled pipeline job that
+  writes one summary doc the console reads O(1) (`samples` gated on
+  `releasable_filter` — literal command lines are per-sensor). Don't re-add a
+  full-scan console endpoint.

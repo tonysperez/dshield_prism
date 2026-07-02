@@ -1,0 +1,164 @@
+{% extends "_base.html" %}
+{% block title %}DShield Tune{% endblock %}
+{% block head_extra %}
+  <style>
+    /* Tune — the console's tuning surface. A sub-tab shell built to host
+       many kinds of analyst tuning; today it carries a single tab
+       (artifact Rules, ROADMAP #5). A second tab (command-grounding
+       curation) returns once the pipeline precomputes it — see
+       spec-grounding-precompute. Adding a tab = one <button> + one
+       <div class="tune-panel"> + a panel-module script; the controller
+       (tune.js) wires it automatically. */
+
+    /* display:block is load-bearing — the global `main { display:grid;
+       grid-template-columns:1fr <detail> }` rule (app.css) would otherwise
+       split this page into the graph's two-column layout and squeeze the
+       panel into a narrow strip. */
+    #tune-main {
+      display: block;
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 14px 20px 60px;
+    }
+
+    /* Tab strip. Declared locally so the page stays self-contained, in
+       the same spirit as the detail-pane tabs. */
+    .tune-tabs {
+      display: flex;
+      gap: 2px;
+      border-bottom: 1px solid #1e2540;
+      margin-bottom: 16px;
+    }
+    .tune-tab {
+      font-size: 12px;
+      font-weight: 600;
+      color: #6b7494;
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      padding: 8px 14px;
+      margin-bottom: -1px;
+      cursor: pointer;
+    }
+    .tune-tab:hover { color: #b9c2db; }
+    .tune-tab.active { color: #e8edf7; border-bottom-color: #4cc1ff; }
+
+    .tune-panel { display: none; }
+    .tune-panel.active { display: block; }
+
+    /* --- Rules panel: one cohesive toolbar row, then the table. --- */
+    .rules-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .rules-title { font-size: 13px; font-weight: 600; color: #e8edf7; }
+    .rules-title #rules-count { color: #6b7494; font-weight: 400; margin-left: 4px; }
+    .rules-sub { font-size: 11px; color: #4a5470; }
+    .rules-spacer { flex: 1 1 auto; }
+
+    /* Filter chips sit inline in the toolbar. */
+    .rules-filters { display: flex; align-items: center; gap: 6px; }
+    .rules-filters .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: #4a5470; }
+    .rules-chip {
+      font-size: 11px; font-weight: 600; color: #b9c2db;
+      background: #0e1e35; border: 1px solid #25324c;
+      border-radius: 999px; padding: 2px 10px;
+      cursor: pointer; user-select: none;
+    }
+    .rules-chip:hover { background: #1a2d4e; }
+    .rules-chip.active { color: #4cc1ff; border-color: #4cc1ff80; background: #0a1929; }
+
+    #export-json-btn {
+      font-size: 11px; padding: 4px 11px; border-radius: 4px;
+      border: 1px solid #25324c; background: #0e1e35; color: #b9c2db; cursor: pointer;
+    }
+    #export-json-btn:hover { background: #1a2d4e; }
+
+    table.rules-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    table.rules-table th, table.rules-table td {
+      padding: 6px 10px; text-align: left;
+      /* top-align every cell so the row reads cleanly when Pattern/Note wrap
+         to several lines — scalars and the action button line up with line 1. */
+      vertical-align: top;
+    }
+    /* Row separator lives on the <tr>, not per-cell: under border-collapse it
+       draws one continuous line across every column (including Actions),
+       instead of stepping up where a cell is shorter than the tall row. */
+    table.rules-table thead th { border-bottom: 1px solid #1a2440; }
+    table.rules-table tbody tr { border-bottom: 1px solid #1a2440; }
+    table.rules-table th {
+      color: #6b7494; font-weight: 600; text-transform: uppercase;
+      font-size: 10px; letter-spacing: 0.5px;
+    }
+    /* Pattern wraps to as many lines as needed — full artifact visible and
+       copyable, no truncation. pre-wrap keeps internal spaces (command
+       patterns); break-all wraps long unbroken tokens. */
+    table.rules-table td.pattern {
+      font-family: ui-monospace, monospace;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-width: 360px;
+    }
+    table.rules-table td.note {
+      color: #8e9bbf;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-width: 260px;
+    }
+    table.rules-table td.num { text-align: right; }
+    table.rules-table td.actions button {
+      font-size: 10px; padding: 2px 8px; margin-right: 4px;
+      background: #0e1e35; border: 1px solid #25324c; color: #b9c2db;
+      border-radius: 3px; cursor: pointer;
+    }
+    table.rules-table td.actions button:hover { background: #1a2d4e; }
+    table.rules-table tr.inactive { opacity: 0.5; }
+    .rules-empty { color: #4a5470; font-style: italic; padding: 16px 0; }
+    .ar-badge {
+      display: inline-block; padding: 1px 6px; border-radius: 3px;
+      font-size: 10px; font-weight: 600;
+    }
+    .ar-badge-active { color: #4ade80; background: #064e3b; }
+    .ar-badge-inactive { color: #94a3b8; background: #1a2440; }
+  </style>
+{% endblock %}
+{% block content %}
+  <main id="tune-main">
+    <nav id="tune-tabs" class="tune-tabs" role="tablist">
+      <button type="button" class="tune-tab active" data-tab="rules" role="tab" aria-selected="true">Rules</button>
+    </nav>
+
+    <div id="tune-body">
+      <!-- Rules panel (ROADMAP #5) -->
+      <div id="tab-rules" class="tune-panel active" role="tabpanel">
+        <div class="rules-bar">
+          <span class="rules-title">Rules <small id="rules-count">…</small></span>
+          <span class="rules-sub">analyst-authored extraction · create from the graph detail drawer</span>
+          <span class="rules-spacer"></span>
+          <span class="rules-filters">
+            <span class="lbl">show</span>
+            <span class="rules-chip active" data-filter="active">active</span>
+            <span class="rules-chip" data-filter="inactive">inactive</span>
+            <span class="rules-chip" data-filter="all">all</span>
+          </span>
+          <button type="button" id="export-json-btn">Export JSON</button>
+        </div>
+
+        <div id="rules-table-wrap">
+          <p class="rules-empty">loading…</p>
+        </div>
+      </div>
+
+      <!-- Future tuning tabs slot in here as additional .tune-panel blocks,
+           each owned by its own panel-module script. Next up: command-grounding
+           curation (spec-grounding-precompute). -->
+    </div>
+  </main>
+{% endblock %}
+{% block scripts %}
+  <script src="/static/js/tune.js" defer></script>
+  <script src="/static/js/artifact_rules.js" defer></script>
+{% endblock %}

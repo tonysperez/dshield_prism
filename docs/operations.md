@@ -304,7 +304,9 @@ The full pre-commit CI surface (lint + smoke + eval gates) is in
    filters these — extend it for the new variant.
 6. **A config edit seems ignored** → either `worker.cache_auto_invalidate:
    false`, or the change is forward-only (use `re-enrich-stale`/`reembed`/
-   `re-triage --backward`). `bless-cache --dry-run` shows live hashes.
+   `re-triage --backward`). `bless-cache --dry-run` shows live hashes. If cache
+   rows carry an *old non-empty* hash (not empty-legacy), `bless-cache` stamps 0
+   — see [Restamping a non-semantic config-hash change](#restamping-a-non-semantic-config-hash-change).
 7. **`@timestamp` on enriched docs is event time, not write time** — don't use
    `now-1h` aggregations to confirm "did the pipeline just run." Check the
    SQLite cache `enriched_at` or run verbs with `--dry-run`.
@@ -317,3 +319,59 @@ The full pre-commit CI surface (lint + smoke + eval gates) is in
    `elasticsearch.backpressure.heap_high_watermark` so it pauses earlier; or
    reduce the heaviest aggregation's footprint via `session.specificity_store_cap`.
    Set `elasticsearch.backpressure.enabled: false` to opt out entirely.
+
+## Restamping a non-semantic config-hash change
+
+When an `llm_config_hash`-affecting edit lands that you've confirmed does **not**
+change enrichment outputs (e.g. a comment/whitespace touch to a prompt or a
+`src/enrich/data/commands/` grounding file), the cache would otherwise force a
+full re-enrichment cycle. `bless-cache` only stamps *empty-legacy* rows, so it
+reports `stamped_rows: 0` against rows carrying an old **non-empty** hash. To
+accept those enrichments as current you restamp both stores — the SQLite cache
+(drives skip-if-fresh) **and** the ES docs (carry
+`dshield.cowrie.enrichment.llm_config_hash` for the backward/stale pass).
+
+This is a corpus-wide production write. **Pause the pipeline/backfill first** so
+`enrich` can't re-key mid-flight, and only proceed after confirming the change
+is non-semantic. Substitute the old hash(es) you're collapsing and the live hash
+(`bless-cache --dry-run` prints the live hash; the `GROUP BY` query in
+[reference.md](reference.md#cache-and-config-hashes) lists what's present):
+
+```bash
+set -a && . ./.env && set +a        # ES_USERNAME / ES_PASSWORD
+ES_URL="$(python -c 'import yaml,sys;print(yaml.safe_load(open("config/local.yaml"))["elasticsearch"]["hosts"][0])')"
+OLD_HASHES='["<OLD_HASH_A>","<OLD_HASH_B>"]'   # gens being collapsed
+LIVE_HASH='<LIVE_HASH>'                          # current llm_config_hash
+
+# 1. Pre-check: confirm the row count before writing. Abort if it looks wrong.
+curl -sS -u "$ES_USERNAME:$ES_PASSWORD" \
+  "$ES_URL/prism.enriched.cowrie.command/_count" \
+  -H 'Content-Type: application/json' \
+  -d "{\"query\":{\"terms\":{\"dshield.cowrie.enrichment.llm_config_hash\":$OLD_HASHES}}}"
+
+# 2. ES restamp (async; slices for throughput; proceed past version bumps).
+curl -sS -u "$ES_USERNAME:$ES_PASSWORD" \
+  "$ES_URL/prism.enriched.cowrie.command/_update_by_query?conflicts=proceed&slices=auto&wait_for_completion=false" \
+  -H 'Content-Type: application/json' \
+  -d "{\"query\":{\"terms\":{\"dshield.cowrie.enrichment.llm_config_hash\":$OLD_HASHES}},
+       \"script\":{\"lang\":\"painless\",
+         \"source\":\"if (ctx._source.dshield?.cowrie?.enrichment != null) { ctx._source.dshield.cowrie.enrichment.llm_config_hash = params.h }\",
+         \"params\":{\"h\":\"$LIVE_HASH\"}}}"
+# Poll the returned task id until completed:true, version_conflicts:0
+curl -sS -u "$ES_USERNAME:$ES_PASSWORD" "$ES_URL/_tasks/<TASK_ID>"
+
+# 3. SQLite cache restamp (path = worker.state_db).
+sqlite3 /var/lib/dshield_prism/state.sqlite \
+  "UPDATE enrichment_cache SET llm_config_hash='$LIVE_HASH'
+   WHERE llm_config_hash IN (<OLD_HASH_A>, <OLD_HASH_B>);"
+
+# 4. Verify both collapsed to the single live hash (ES count should be 0).
+sqlite3 /var/lib/dshield_prism/state.sqlite \
+  "SELECT llm_config_hash, COUNT(*) FROM enrichment_cache GROUP BY 1;"
+```
+
+No `dshield.classification` filter on the ES write **on purpose**: you're
+restamping a config hash on every old-hash doc regardless of classification (a
+public-only filter would strand confidential docs on the old hash). It's a
+field write, not a read, so no per-sensor content leaves the box. Resume the
+pipeline once verified.

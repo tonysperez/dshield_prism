@@ -24,6 +24,25 @@ from ._config import AppConfig
 
 log = logging.getLogger(__name__)
 
+# ES parent-circuit-breaker probe for the /health status strip (observability
+# lane). Lives in the parent `enrich` package, so the import is guarded the same
+# way `console.health` guards `command_grounding`: a console-only install (no
+# pipeline) or any import failure degrades to state=unknown, never a page error.
+try:
+    from enrich.es_health import parent_breaker_ratio as _parent_breaker_ratio
+    _ES_HEALTH_AVAILABLE = True
+except Exception:  # pragma: no cover — console-only install / import failure
+    _ES_HEALTH_AVAILABLE = False
+
+# Parent-breaker watermarks for the pressure tile. Mirror the defaults of
+# `enrich.config.ESBackpressureConfig` (heap_high_watermark / heap_resume_
+# watermark) so the tile's ok/warn/crit thresholds match the pipeline's real
+# backpressure behaviour. The console's slim config carries no backpressure
+# block, so these are constants — an operator who retunes the pipeline's
+# watermarks won't shift the tile, which is acceptable for a best-effort UI.
+_ES_HEAP_HIGH_WATERMARK = 0.85
+_ES_HEAP_RESUME_WATERMARK = 0.70
+
 
 # Mirror of `enrich.sources.cowrie.commands.normalize` + `hash_command_full`.
 # Duplicated so the console package stays standalone. If the worker's
@@ -1695,6 +1714,107 @@ def health_ops_runs(es: Elasticsearch, cfg: AppConfig) -> dict:
     out["running"] = _running_ops(es, idx, cfg.ops.pipeline_running_window_min)
 
     return out
+
+
+# ----------------------------------------------------------------------------
+# Observability lane for the /health status strip: ES parent-breaker pressure
+# and per-sensor data freshness. Both pure classifiers (`_derive_pressure_state`,
+# `_sensor_freshness_rows`) take no ES so every I/O-matrix row is unit-testable
+# offline; the ES-touching wrappers are best-effort and degrade to a neutral
+# state rather than raising into the page. See docs/reference.md.
+# ----------------------------------------------------------------------------
+
+def _derive_pressure_state(
+    ratio: float | None, high_wm: float, resume_wm: float,
+) -> dict:
+    """Pure ES-pressure classifier (no ES) — see the spec's I/O matrix.
+
+    `ratio` = the node parent-breaker estimated/limit (0..1) or None; `high_wm`
+    / `resume_wm` = the heap high / resume watermarks. States:
+      * `unknown` — ratio is None (denied / no stats / import failure) → neutral.
+      * `crit`    — ratio >= high watermark.
+      * `warn`    — resume <= ratio < high.
+      * `ok`      — ratio < resume watermark.
+    Returns `{state, ratio, detail}`.
+    """
+    if ratio is None:
+        return {"state": "unknown", "ratio": None,
+                "detail": "breaker stats unavailable"}
+    pct = f"{ratio * 100:.0f}%"
+    if ratio >= high_wm:
+        state = "crit"
+    elif ratio >= resume_wm:
+        state = "warn"
+    else:
+        state = "ok"
+    return {"state": state, "ratio": ratio, "detail": f"heap breaker {pct}"}
+
+
+def es_pressure(es: Elasticsearch, cfg: AppConfig) -> dict:
+    """ES parent-circuit-breaker pressure for the /health status strip.
+
+    Best-effort: a console-only install (no `enrich.es_health`), a denied
+    `nodes.stats`, or malformed stats all degrade to `state=unknown` (neutral) —
+    `parent_breaker_ratio` never raises and returns None on any failure.
+    Returns `{state, ratio, detail}`.
+    """
+    ratio = _parent_breaker_ratio(es) if _ES_HEALTH_AVAILABLE else None
+    return _derive_pressure_state(
+        ratio, _ES_HEAP_HIGH_WATERMARK, _ES_HEAP_RESUME_WATERMARK,
+    )
+
+
+def _sensor_freshness_rows(
+    agg_buckets: list[dict], now: datetime, stale_min: int,
+) -> list[dict]:
+    """Pure per-sensor freshness classifier (no ES) — see the spec's I/O matrix.
+
+    `agg_buckets` = the `by_sensor` terms buckets, each
+    `{key: <observer.name>, last_ts: {value_as_string: <iso>}}`; `now` = an aware
+    datetime; `stale_min` = minutes before a sensor's newest doc is `stale`.
+    Returns one `{sensor, last_ts, state}` per bucket (`state` ok|stale). Zero
+    buckets → `[]` (the caller renders an empty-state placeholder, not an error).
+    A bucket whose ts is missing/unparseable is `stale` — we can't confirm it is
+    fresh, so fail safe toward "a sensor may have gone quiet".
+    """
+    rows: list[dict] = []
+    for b in agg_buckets or []:
+        last_ts = ((b.get("last_ts") or {}).get("value_as_string"))
+        dt = _parse_ops_ts(last_ts)
+        if dt is None:
+            state = "stale"
+        else:
+            age_min = (now - dt).total_seconds() / 60.0
+            state = "stale" if age_min > stale_min else "ok"
+        rows.append({"sensor": b.get("key"), "last_ts": last_ts, "state": state})
+    return rows
+
+
+def sensor_freshness(es: Elasticsearch, cfg: AppConfig) -> dict:
+    """Per-sensor data freshness for the /health status strip.
+
+    Terms-aggregates the **sessions rollup** on `observer.name.keyword` (the only
+    cowrie rollup carrying `observer.name` — commands has `observer.{type,vendor}`
+    only, ips has no `observer` block) with a `max(@timestamp)` sub-agg, then
+    classifies each bucket via the pure `_sensor_freshness_rows`. Best-effort:
+    any ES error → `{rows: []}` (empty-state), never raises. Renders one row for
+    a single-sensor deploy (today: bucket `default`) and one per bucket for N.
+    Returns `{rows:[{sensor, last_ts, state}]}`.
+    """
+    idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
+    try:
+        r = es.search(
+            index=idx, size=0,
+            aggs={"by_sensor": {
+                "terms": {"field": "observer.name.keyword", "size": 100},
+                "aggs": {"last_ts": {"max": {"field": "@timestamp"}}},
+            }},
+        )
+        buckets = r["aggregations"]["by_sensor"]["buckets"]
+    except Exception:
+        return {"rows": []}
+    now = datetime.now(timezone.utc)
+    return {"rows": _sensor_freshness_rows(buckets, now, cfg.ops.sensor_stale_min)}
 
 
 # ----------------------------------------------------------------------------

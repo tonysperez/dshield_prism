@@ -233,10 +233,16 @@ or CTI-facing egress path gates on it — see [reference.md](reference.md#data-c
 
 A read-only, browser-based investigation console (FastAPI + vanilla JS +
 Cytoscape). Pages around one analyst workflow:
-**Inbox · Explore · Graph · Hunts · Rules · Curation**. The topbar Health badge
+**Inbox · Explore · Graph · Hunts · Tune**. Tune is an extensible tuning
+surface (a sub-tab shell): today it carries the analyst artifact-rules tab; a
+command-grounding curation tab returns once the pipeline precomputes coverage
+(the on-load full-corpus scan didn't scale). The topbar Health badge
 is a two-dot door to `/health` (ingestion freshness + pipeline-cycle health from
 `prism.ops`), so Health sits off the nav rather than in it; `/health` also carries
-a clustering-performance grid. Search
+a clustering-performance grid and an observability lane (ES-pressure and
+per-sensor freshness status strip, intel coverage, prominent verb failures — all
+read-only and best-effort, degrading to a neutral state rather than erroring the
+page). Search
 any IOC and pivot through its behavioral neighborhood as a node-link graph;
 compare two clusters/playbooks/campaigns inline; gather in-view artifacts into a
 copy-ready report. Explore ranks every entity's whole activity arc

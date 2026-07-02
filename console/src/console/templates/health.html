@@ -3,8 +3,9 @@
 {% block head_extra %}
   <style>
     /* Pipeline-health page (ROADMAP #17.10). Surfaces data freshness
-       per index and the latest run_summary per cluster verb. LLM-
-       grounding curation moved to /curation. */
+       per index and the latest run_summary per cluster verb. Command-
+       grounding coverage was retired (its console scan didn't scale); it
+       returns under Tune once the pipeline precomputes it. */
 
     #health-main {
       max-width: 1180px;
@@ -133,10 +134,62 @@
     .h-action-status { font-size: 11px; color: #6b7494; }
     .h-action-status.success { color: #4ade80; }
     .h-action-status.error   { color: #f87171; }
+
+    /* Observability status strip (fast-lane): ES pressure + per-sensor
+       freshness. Colours mirror the page's existing state hexes
+       (ok #4ade80 / warn+stale #fbbf24 / crit #f87171 / unknown #6b7494). */
+    .status-strip {
+      display: grid;
+      grid-template-columns: minmax(200px, 260px) 1fr;
+      gap: 14px; align-items: start;
+    }
+    @media (max-width: 720px) { .status-strip { grid-template-columns: 1fr; } }
+    .press-tile {
+      background: #111827; border: 1px solid #1e2540;
+      border-left: 3px solid #6b7494; border-radius: 7px; padding: 13px 15px;
+    }
+    .press-tile .p-label {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+      color: #5a6278; margin-bottom: 5px;
+    }
+    .press-tile .p-value {
+      font-size: 24px; font-weight: 600;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: #c8d0e7;
+    }
+    .press-tile .p-detail { font-size: 11px; color: #6b7494; margin-top: 4px; }
+    .press-tile.state-ok      { border-left-color: #4ade80; }
+    .press-tile.state-warn    { border-left-color: #fbbf24; }
+    .press-tile.state-crit    { border-left-color: #f87171; }
+    .press-tile.state-unknown { border-left-color: #6b7494; }
+    .press-tile.state-ok      .p-value { color: #4ade80; }
+    .press-tile.state-warn    .p-value { color: #fbbf24; }
+    .press-tile.state-crit    .p-value { color: #f87171; }
+    .press-tile.state-unknown .p-value { color: #9aa3b8; }
+    /* Per-sensor freshness (shares table.h-table); state dot + amber stale ts. */
+    .st-dot {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+      margin-right: 7px; vertical-align: middle; background: #6b7494;
+    }
+    .st-dot.state-ok    { background: #4ade80; }
+    .st-dot.state-stale { background: #fbbf24; }
+    /* Failed pipeline-run row emphasis in the ops-runs panel. */
+    table.h-table tr.run-failed td { background: #1a0e0e; }
+    table.h-table tr.run-failed td.name { color: #f87171; }
   </style>
 {% endblock %}
 {% block content %}
   <main id="health-main">
+
+    <section>
+      <p class="h-section-title">Status
+        <span class="h-hint">at-a-glance health &mdash; ES heap/circuit-breaker pressure and whether each sensor is still sending data (a quiet sensor flags amber)</span>
+      </p>
+      <div class="status-strip">
+        <div id="pressure-tile" class="press-tile state-unknown"><em class="h-empty">loading…</em></div>
+        <div id="sensors-body"><em class="h-empty">loading…</em></div>
+      </div>
+    </section>
 
     <section>
       <p class="h-section-title">Overview
@@ -157,6 +210,13 @@
         <span class="h-hint">per-index document count and the most recent <code>@timestamp</code> &mdash; stale rows highlight in amber</span>
       </p>
       <div id="freshness-body"><em class="h-empty">loading…</em></div>
+    </section>
+
+    <section>
+      <p class="h-section-title">Intel coverage
+        <span class="h-hint">per-kind intel doc count and last refresh &mdash; from the same freshness probe, no extra query</span>
+      </p>
+      <div id="intel-coverage-body"><em class="h-empty">loading…</em></div>
     </section>
 
     <section>
@@ -184,8 +244,9 @@
     </section>
 
     <p style="font-size:11px; color:#414b62; margin:0;">
-      LLM-grounding coverage moved to
-      <a href="/curation" style="color:#4cc1ff; text-decoration:none;">/curation</a>.
+      Command-grounding coverage is being reworked into a precomputed pipeline
+      report; it will return under
+      <a href="/tune" style="color:#4cc1ff; text-decoration:none;">Tune</a>.
     </p>
 
   </main>

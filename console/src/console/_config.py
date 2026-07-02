@@ -154,6 +154,12 @@ class OpsConfig(BaseModel):
     # to `behind`. The backward cycle runs ~hourly; 2h with no run = behind.
     # Mirror of enrich.config.OpsConfig; keep the two in lockstep.
     cycle_stale_min: int = 120
+    # Per-sensor data-freshness threshold (minutes) for the /health status strip
+    # (observability lane). A sensor whose newest session-rollup @timestamp is
+    # older than this flags `stale` (a quiet honeypot). Distinct from
+    # cycle_stale_min (pipeline-cycle freshness): this bounds *ingest* freshness
+    # per `observer.name`. Read by queries.sensor_freshness.
+    sensor_stale_min: int = 120
 
 
 class SessionConfig(BaseModel):
@@ -248,7 +254,7 @@ def load_config(path: Optional[str] = None) -> AppConfig:
     # (see _bmad-output/implementation-artifacts/deferred-work.md).
     ops_fields = {
         k: raw_ops[k]
-        for k in ("cycle_stale_min",)
+        for k in ("cycle_stale_min", "sensor_stale_min")
         if k in raw_ops
     }
     return AppConfig(

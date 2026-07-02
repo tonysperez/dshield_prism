@@ -194,6 +194,18 @@ smart-skip-if-fresh. Toggle with `worker.cache_auto_invalidate: false` or
 watermark, so a prompt edit doesn't retroactively re-enrich — `re-enrich-stale`
 (backward pass) handles that.
 
+Inspect which hash generations the cache holds (count of rows per distinct
+hash) — a single generation means no config drift; multiple means a
+config/prompt/model change re-keyed part of the cache:
+
+```bash
+sqlite3 /var/lib/dshield_prism/state.sqlite "
+SELECT 'LLM Config Hash: '   || llm_config_hash   || ' - ' || COUNT(*) FROM enrichment_cache GROUP BY llm_config_hash
+UNION ALL
+SELECT 'Embed Config Hash: ' || embed_config_hash || ' - ' || COUNT(*) FROM enrichment_cache GROUP BY embed_config_hash;
+"
+```
+
 ## Watermarks
 
 Keys in `/var/lib/dshield_prism/state.sqlite`:
@@ -477,7 +489,12 @@ escalated to the cloud LLM and never queried against CTI feeds.** Central logic:
 ## Console
 
 Read-only FastAPI + vanilla-JS app; never writes to ES. Nav:
-**Inbox · Explore · Graph · Hunts · Rules · Curation** — Health is off the nav;
+**Inbox · Explore · Graph · Hunts · Tune** — Tune is a sub-tab shell built to
+host many tuning surfaces; today one tab, analyst artifact rules (the old
+`/artifact-rules` and `/curation` URLs 302 here). The Curation grounding-coverage
+report and its `/api/health/commands` scan were retired — the on-load full-corpus
+tokenize didn't scale (the parsed-token grouping key isn't an ES field); it
+returns as a Tune tab once the pipeline precomputes coverage. Health is off the nav;
 its door is the topbar Health badge, a keyboard-focusable `<a href="/health">`
 carrying two signal dots (ingestion freshness from the rollup `@timestamp`;
 pipeline-cycle health inferred from `prism.ops`, see Run telemetry above) plus a
@@ -485,7 +502,20 @@ chevron, with a tooltip breaking out both signals. `/health` still resolves
 directly and adds a **Clustering performance** section: a per-type
 clusters/outliers grid (IP/session/command) with each type's outlier share
 (`n_outliers / total_docs`, `—` when `total_docs == 0` or the type never ran),
-rendered client-side from the existing `/api/health/runs` rows
+rendered client-side from the existing `/api/health/runs` rows.
+`/health` also carries an **observability lane** (all read-only, best-effort):
+a top **status strip** with an ES-pressure tile (`/api/health/pressure` →
+`es_pressure`, the parent-breaker ratio via `enrich.es_health.parent_breaker_ratio`
+classified ok/warn/crit against the `heap_high`/`heap_resume` watermarks, or
+`unknown` when the probe is unavailable/denied) and a per-sensor freshness table
+(`/api/health/sensors` → `sensor_freshness`, a `terms` agg on `observer.name.keyword`
++ max `@timestamp` over the **sessions rollup only**, `stale` per
+`ops.sensor_stale_min` minutes); an **Intel coverage** block (per-kind doc count +
+last refresh, filtered client-side from the `intel_*` rows already in
+`/api/health/freshness` — no extra query); and prominent failed-run emphasis in
+the Pipeline-activity panel (row highlighted, `rc` shown). The two pure
+classifiers (`_derive_pressure_state`, `_sensor_freshness_rows`) are unit-tested
+offline (`smoke_test_health_observability.py`)
 (`/findings` redirects to `/inbox`; `/compare` redirects to `/graph`; `/history`,
 `/browse`, and `/insights` all redirect to `/explore`, with `/history` preserving
 its query string). The graph swim-lane is IP → Session → Command → File; inline

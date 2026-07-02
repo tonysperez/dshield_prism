@@ -1,11 +1,16 @@
 "use strict";
 
-/* Artifact-rule management page (ROADMAP #5).
+/* Artifact-rule panel module (ROADMAP #5).
  *
  * Reads /api/artifact-rules, renders a table, supports soft-delete /
  * reactivate via DELETE / POST{id}/reactivate, and exports the visible
  * rule set as JSON. Mirrors the findings.js patterns.
+ *
+ * Hosted as the "Rules" tab of the Tune page — IIFE-wrapped so its
+ * helpers (state, el, …) stay local and don't collide with other panel
+ * modules sharing the page.
  */
+(() => {
 
 const state = { filter: "active" };
 
@@ -24,10 +29,6 @@ function el(tag, attrs, children) {
 }
 
 function fmtDate(s) { return s ? s.slice(0, 10) : "—"; }
-function truncate(s, n) {
-  if (!s) return "";
-  return s.length > n ? s.slice(0, n) + "…" : s;
-}
 
 function activeQueryParam() {
   if (state.filter === "active") return "true";
@@ -58,6 +59,7 @@ function renderRows(rules) {
     el("th", null, ["Kind"]),
     el("th", null, ["Match type"]),
     el("th", null, ["Pattern"]),
+    el("th", null, ["Note"]),
     el("th", { class: "num" }, ["Matches"]),
     el("th", null, ["Created"]),
     el("th", null, ["By"]),
@@ -70,9 +72,10 @@ function renderRows(rules) {
     const tr = el("tr", { class: active ? "" : "inactive" });
     tr.appendChild(el("td", null, [r.kind || "—"]));
     tr.appendChild(el("td", null, [r.match_type || "—"]));
-    tr.appendChild(el("td", { class: "pattern", title: r.pattern || "" }, [
-      truncate(r.pattern || "", 80),
-    ]));
+    // Full pattern, wrapped across lines so the analyst can read and copy
+    // the whole artifact — no truncation.
+    tr.appendChild(el("td", { class: "pattern" }, [r.pattern || ""]));
+    tr.appendChild(el("td", { class: "note" }, [r.notes || "—"]));
     tr.appendChild(el("td", { class: "num" }, [
       String(r.match_count_estimate ?? 0),
     ]));
@@ -164,3 +167,5 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   refresh();
 });
+
+})();

@@ -1,6 +1,6 @@
-/* History — longitudinal lifecycle list. One row per playbook, its whole activity
+/* Explore — longitudinal lifecycle list. One row per playbook, its whole activity
    arc on a shared time axis, ranked by an `interest` composite. No external deps.
-   Mirrors insights.js conventions; the band renderer mirrors renderSparkline. */
+   The band renderer mirrors renderSparkline. */
 (function () {
   "use strict";
 
@@ -236,7 +236,7 @@
       renderMinimap([]);
       const w = document.getElementById("hist-list");
       w.innerHTML = "";
-      w.appendChild(el("div", "hist-error", "History query failed: " + esc(e.message)));
+      w.appendChild(el("div", "hist-error", "Explore query failed: " + esc(e.message)));
     }
   }
 
