@@ -186,9 +186,48 @@ body {
   50% { opacity: 1; }
 }
 
-.health { font-size: 11px; color: var(--muted); cursor: help; }
-.health.ok { color: var(--ok); }
+/* Health badge — a semantic <a href="/health"> door carrying two signal dots
+   (ingestion freshness + inferred pipeline-cycle health) and a chevron. */
+.health {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--muted);
+  text-decoration: none;
+  padding: 3px 8px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.health:hover { background: var(--panel2); border-color: var(--border); }
+.health:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.health .health-signal { display: inline-flex; align-items: center; gap: 5px; }
+.health .health-label { color: var(--muted); }
+.health .health-chevron { color: var(--muted); font-size: 14px; line-height: 1; }
+
+/* Signal dots. Neutral (unknown) by default; state classes tint them. */
+.health-dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: 0 0 auto;
+}
+.health-dot.ok      { background: var(--ok); }
+.health-dot.warn    { background: var(--warn); }
+.health-dot.behind  { background: var(--warn); }
+.health-dot.unknown { background: var(--muted); }
+.health-dot.err     { background: var(--err); }
+
+/* Error state — the whole pill goes red when /api/health itself fails. */
 .health.err { color: var(--err); }
+.health.err .health-label,
+.health.err .health-chevron { color: var(--err); }
+
+/* Multi-line breakdown (both signals) needs preserved newlines; the shared
+   tooltip below is nowrap, so widen just the badge's. */
+.health[data-tooltip]:hover::after { white-space: pre-line; }
 
 /* CSS-rendered tooltip. Set data-tooltip="..." on any element to get
    a styled popover on hover. Native HTML title= is unreliable on some

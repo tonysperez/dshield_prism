@@ -53,6 +53,42 @@
       color: #c8d0e7;
     }
 
+    /* Clustering-performance grid — one card per (type × metric), rendered
+       from the same run_summary rows the Recent-runs table uses. */
+    .clustering-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(180px, 1fr));
+      gap: 10px;
+    }
+    .clustering-grid .cl-card {
+      background: #111827;
+      border: 1px solid #1e2540;
+      border-radius: 7px;
+      padding: 13px 15px;
+    }
+    .clustering-grid .cl-type {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+      color: #5a6278; margin-bottom: 6px;
+    }
+    .clustering-grid .cl-nums {
+      display: flex; align-items: baseline; gap: 16px;
+    }
+    .clustering-grid .cl-metric .cl-label {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px;
+      color: #5a6278; margin-bottom: 3px;
+    }
+    .clustering-grid .cl-metric .cl-value {
+      font-size: 22px; font-weight: 600;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: #c8d0e7;
+    }
+    .clustering-grid .cl-share {
+      margin-top: 8px; font-size: 11px; color: #6b7494;
+      font-variant-numeric: tabular-nums;
+    }
+    .clustering-grid .cl-card.never .cl-value,
+    .clustering-grid .cl-card.never .cl-share { color: #4a5470; }
+
     /* Table shared by both panels. */
     table.h-table {
       width: 100%; border-collapse: collapse; font-size: 12px;
@@ -107,6 +143,13 @@
         <span class="h-hint">corpus-wide totals &mdash; IPs, sessions, commands, named playbooks, and cluster/outlier counts from the latest run of each cluster verb</span>
       </p>
       <div id="overview-stats" class="stat-bar"><em class="h-empty">loading…</em></div>
+    </section>
+
+    <section>
+      <p class="h-section-title">Clustering performance
+        <span class="h-hint">clusters &amp; outliers per type from the latest <code>run_summary</code> of each cluster verb, with each type's outlier share (<code>outliers / input&nbsp;docs</code>) &mdash; a type that never ran, or an idle run with zero input docs, shows <code>&mdash;</code></span>
+      </p>
+      <div id="clustering-stats" class="clustering-grid"><em class="h-empty">loading…</em></div>
     </section>
 
     <section>

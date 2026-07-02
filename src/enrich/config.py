@@ -1056,6 +1056,12 @@ class OpsConfig(BaseModel):
     # single `pipeline --backfill` writes one started doc that lives for hours
     # (e.g. 2880 = 48h); revert to 60 for steady state.
     pipeline_running_window_min: int = 60
+    # Console Health-badge cycle-freshness threshold (minutes). Distinct from
+    # `pipeline_running_window_min` (which detects a *live* in-flight verb): this
+    # bounds how old the newest finished `verb_run` may be before the badge's
+    # cycle dot flips to `behind`. The backward cycle runs ~hourly, so 2h with no
+    # run means the schedule stalled. Read by the console's own OpsConfig mirror.
+    cycle_stale_min: int = 120
 
 
 class AnalystRuleConfig(BaseModel):

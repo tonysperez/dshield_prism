@@ -232,8 +232,11 @@ or CTI-facing egress path gates on it — see [reference.md](reference.md#data-c
 ## Console
 
 A read-only, browser-based investigation console (FastAPI + vanilla JS +
-Cytoscape). Seven pages around one analyst workflow:
-**Inbox · Explore · Graph · Hunts · Rules · Curation · Health**. Search
+Cytoscape). Pages around one analyst workflow:
+**Inbox · Explore · Graph · Hunts · Rules · Curation**. The topbar Health badge
+is a two-dot door to `/health` (ingestion freshness + pipeline-cycle health from
+`prism.ops`), so Health sits off the nav rather than in it; `/health` also carries
+a clustering-performance grid. Search
 any IOC and pivot through its behavioral neighborhood as a node-link graph;
 compare two clusters/playbooks/campaigns inline; gather in-view artifacts into a
 copy-ready report. Explore ranks every entity's whole activity arc

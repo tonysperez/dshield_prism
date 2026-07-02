@@ -46,7 +46,6 @@ NAV_ITEMS: list[dict[str, str]] = [
     {"id": "hunts",     "label": "Hunts",    "href": "/hunts"},
     {"id": "rules",     "label": "Rules",    "href": "/artifact-rules"},
     {"id": "curation",  "label": "Curation", "href": "/curation"},
-    {"id": "health",    "label": "Health",   "href": "/health"},
 ]
 
 
@@ -939,7 +938,11 @@ def build_app(config_path: str | None = None) -> FastAPI:
     def health() -> HealthResponse:
         try:
             h = queries.health(es, cfg)
-            return HealthResponse(ok=True, **h)
+            # Additive: fold in the pipeline-cycle signal for the badge's second
+            # dot. Self-guarding (→ {state: unknown} on any ES error), so it
+            # never fails the health route.
+            cycle = queries.pipeline_cycle_health(es, cfg)
+            return HealthResponse(ok=True, cycle=cycle, **h)
         except Exception as e:  # pragma: no cover -- depends on ES state
             return HealthResponse(
                 ok=False, indexes={}, doc_counts={},

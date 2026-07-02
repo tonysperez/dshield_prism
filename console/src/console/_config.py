@@ -147,6 +147,13 @@ class OpsConfig(BaseModel):
     # 2880 = 48h) for a long backfill. Must exist here or pipeline_running()
     # AttributeErrors on the console's slim config.
     pipeline_running_window_min: int = 60
+    # Health-badge cycle-freshness threshold (minutes) — read by
+    # queries.pipeline_cycle_health via cfg.ops.cycle_stale_min. Distinct from
+    # pipeline_running_window_min (which detects a *live* verb): this bounds how
+    # old the newest finished verb_run may be before the badge's cycle dot flips
+    # to `behind`. The backward cycle runs ~hourly; 2h with no run = behind.
+    # Mirror of enrich.config.OpsConfig; keep the two in lockstep.
+    cycle_stale_min: int = 120
 
 
 class SessionConfig(BaseModel):
@@ -225,10 +232,24 @@ def load_config(path: Optional[str] = None) -> AppConfig:
     raw_intel = data.get("intel") or {}
     raw_findings = data.get("findings") or {}
     raw_session = data.get("session") or {}
+    raw_ops = data.get("ops") or {}
     # Pluck the UI-facing fields the console knows about; anything else in the
     # parent's `session:` block is intentionally ignored here.
     session_fields = {
         k: raw_session[k] for k in ("specificity_threshold",) if k in raw_session
+    }
+    # Pluck ONLY `cycle_stale_min` (the badge's cycle-freshness threshold, new
+    # here). `pipeline_running_window_min` and `indexes` are deliberately NOT
+    # read from YAML: before this change `load_config` never populated `ops`, so
+    # the running-banner has always used the OpsConfig defaults. Honouring the
+    # YAML window (default.yaml sets 2880) would silently widen the banner from
+    # 60m→48h — a behaviour change to an existing tunable, out of scope here.
+    # Making the console honour the YAML window is a separate operator-gated item
+    # (see _bmad-output/implementation-artifacts/deferred-work.md).
+    ops_fields = {
+        k: raw_ops[k]
+        for k in ("cycle_stale_min",)
+        if k in raw_ops
     }
     return AppConfig(
         elasticsearch=data["elasticsearch"],
@@ -236,6 +257,7 @@ def load_config(path: Optional[str] = None) -> AppConfig:
         intel=IntelConfig(**raw_intel),
         findings=FindingsConfig(**raw_findings),
         session=SessionConfig(**session_fields),
+        ops=OpsConfig(**ops_fields),
     )
 
 

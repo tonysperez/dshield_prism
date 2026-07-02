@@ -50,8 +50,14 @@ rest; every `reference_centroid` generation is preserved.
 **Run telemetry (`prism.ops`).** Every tracked verb writes a `status=started`
 doc on entry, patched to `finished`/`failed` on exit (`verb`, `host`, timings,
 `rc`, `error`). Best-effort (never breaks the verb). The console reads it for
-the `/health` "Pipeline activity" panel and the site-wide "pipeline running"
-banner.
+the `/health` "Pipeline activity" panel, the site-wide "pipeline running"
+banner, and the topbar Health badge's cycle dot — `queries.pipeline_cycle_health`
+takes the latest `verb_run` per verb (same `by_verb` agg as the panel) and
+classifies via the pure `_derive_cycle_state`: `ok` (all latest runs finished and
+newest within `ops.cycle_stale_min`, default 120 min, or a verb in-flight),
+`warn` (a latest run `failed`), `behind` (newest older than `cycle_stale_min`,
+none running), `unknown` (no telemetry / ES error). `cycle_stale_min` is distinct
+from `pipeline_running_window_min` (live-verb window).
 
 Cross-index joins:
 
@@ -471,7 +477,15 @@ escalated to the cloud LLM and never queried against CTI feeds.** Central logic:
 ## Console
 
 Read-only FastAPI + vanilla-JS app; never writes to ES. Nav:
-**Inbox · Explore · Graph · Hunts · Rules · Curation · Health**
+**Inbox · Explore · Graph · Hunts · Rules · Curation** — Health is off the nav;
+its door is the topbar Health badge, a keyboard-focusable `<a href="/health">`
+carrying two signal dots (ingestion freshness from the rollup `@timestamp`;
+pipeline-cycle health inferred from `prism.ops`, see Run telemetry above) plus a
+chevron, with a tooltip breaking out both signals. `/health` still resolves
+directly and adds a **Clustering performance** section: a per-type
+clusters/outliers grid (IP/session/command) with each type's outlier share
+(`n_outliers / total_docs`, `—` when `total_docs == 0` or the type never ran),
+rendered client-side from the existing `/api/health/runs` rows
 (`/findings` redirects to `/inbox`; `/compare` redirects to `/graph`; `/history`,
 `/browse`, and `/insights` all redirect to `/explore`, with `/history` preserving
 its query string). The graph swim-lane is IP → Session → Command → File; inline

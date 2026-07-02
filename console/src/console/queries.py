@@ -1697,6 +1697,145 @@ def health_ops_runs(es: Elasticsearch, cfg: AppConfig) -> dict:
     return out
 
 
+# ----------------------------------------------------------------------------
+# Pipeline-cycle health for the topbar badge's second dot.
+#
+# The badge carries two independent signals: ingestion freshness (rollup
+# @timestamp, handled by `health()`), and pipeline-CYCLE health — is the
+# scheduled backward cycle actually running its verbs? A stalled cycle is
+# invisible from ingestion freshness alone until data goes stale hours later.
+#
+# `_derive_cycle_state` is a PURE function (no ES) so every I/O-matrix row is
+# unit-testable offline. `pipeline_cycle_health` does the ES fetch, then calls
+# it. See `docs/reference.md` (console Health surface).
+# ----------------------------------------------------------------------------
+
+def _parse_ops_ts(s: str | None) -> datetime | None:
+    """Parse an ISO-8601 ops timestamp to an aware datetime, or None if
+    unparseable/absent. A timestamp lacking a `Z`/offset is assumed UTC so the
+    result is always tz-aware — `_derive_cycle_state` subtracts it from an aware
+    `now_ts`, and a naive value would raise `TypeError`."""
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _derive_cycle_state(
+    rows: list[dict],
+    running: list[dict],
+    now_ts: datetime,
+    stale_min: int,
+) -> dict:
+    """Pure cycle-state classifier (no ES) — see the spec's I/O matrix.
+
+    `rows` = the latest `verb_run` per verb `{verb, status, started_at,
+    finished_at}`; `running` = in-flight `status=started` docs; `now_ts` = an
+    aware datetime; `stale_min` = the freshness threshold in minutes.
+
+    States:
+      * `unknown` — no telemetry (no rows) → neutral dot.
+      * `warn`    — any latest row `status=failed` (failed verb names in detail).
+      * `ok`      — a verb is currently running (recent activity), OR all latest
+                    rows finished and the newest is within `stale_min`.
+      * `behind`  — newest finished ts older than `stale_min`, none running.
+
+    Returns `{state, detail, newest_ts, failed_verbs}`.
+    """
+    if not rows:
+        return {"state": "unknown", "detail": "no pipeline telemetry",
+                "newest_ts": None, "failed_verbs": []}
+
+    failed_verbs = [
+        r.get("verb") for r in rows if r.get("status") == "failed" and r.get("verb")
+    ]
+
+    # Newest activity timestamp across the latest-per-verb rows. Prefer the
+    # finish time; fall back to start for an in-flight/unfinished row.
+    newest_dt: datetime | None = None
+    newest_iso: str | None = None
+    for r in rows:
+        for key in ("finished_at", "started_at"):
+            dt = _parse_ops_ts(r.get(key))
+            if dt is not None and (newest_dt is None or dt > newest_dt):
+                newest_dt = dt
+                newest_iso = r.get(key)
+            if dt is not None:
+                break  # prefer a parseable finished_at; else fall back to started_at
+
+    if failed_verbs:
+        return {
+            "state": "warn",
+            "detail": "failed: " + ", ".join(failed_verbs),
+            "newest_ts": newest_iso,
+            "failed_verbs": failed_verbs,
+        }
+
+    # A verb currently in-flight means the schedule is alive — never "behind".
+    if running:
+        verbs = sorted({r.get("verb") for r in running if r.get("verb")})
+        detail = ("running: " + ", ".join(verbs)) if verbs else "running"
+        return {"state": "ok", "detail": detail,
+                "newest_ts": newest_iso, "failed_verbs": []}
+
+    if newest_dt is None:
+        # Rows exist but carry no parseable timestamp — can't judge freshness.
+        return {"state": "unknown", "detail": "no run timestamps",
+                "newest_ts": None, "failed_verbs": []}
+
+    age_min = (now_ts - newest_dt).total_seconds() / 60.0
+    if age_min > stale_min:
+        return {
+            "state": "behind",
+            "detail": f"newest run {int(age_min)}m ago (> {stale_min}m)",
+            "newest_ts": newest_iso,
+            "failed_verbs": [],
+        }
+    return {"state": "ok", "detail": "cycle current",
+            "newest_ts": newest_iso, "failed_verbs": []}
+
+
+def pipeline_cycle_health(es: Elasticsearch, cfg: AppConfig) -> dict:
+    """Cycle-health signal for the topbar badge's second dot, inferred from
+    `prism.ops` `verb_run` telemetry. Fetches the latest run per verb (same
+    `by_verb` terms+top_hits agg as `health_ops_runs`) plus the in-flight
+    heartbeat, then classifies via the pure `_derive_cycle_state`.
+
+    Graceful: an absent `prism.ops` or any ES error → `{state: "unknown"}`
+    (neutral dot). Returns `{state, detail, newest_ts, failed_verbs}`.
+    """
+    idx = cfg.ops.indexes.default
+    src_fields = ["verb", "status", "started_at", "finished_at"]
+    try:
+        if not es.indices.exists(index=idx):
+            return {"state": "unknown", "detail": "no pipeline telemetry",
+                    "newest_ts": None, "failed_verbs": []}
+        r = es.search(
+            index=idx, size=0,
+            query={"term": {"kind": "verb_run"}},
+            aggs={"by_verb": {
+                "terms": {"field": "verb", "size": 100},
+                "aggs": {"latest": {"top_hits": {
+                    "size": 1,
+                    "sort": [{"started_at": {"order": "desc"}}],
+                    "_source": src_fields,
+                }}},
+            }},
+        )
+        buckets = r["aggregations"]["by_verb"]["buckets"]
+        rows = [b["latest"]["hits"]["hits"][0]["_source"] for b in buckets]
+        running = _running_ops(es, idx, cfg.ops.pipeline_running_window_min)
+    except Exception as exc:  # pragma: no cover -- network paths
+        log.warning("pipeline_cycle_health failed: %s", exc)
+        return {"state": "unknown", "detail": "telemetry query failed",
+                "newest_ts": None, "failed_verbs": []}
+    now_ts = datetime.now(timezone.utc)
+    return _derive_cycle_state(rows, running, now_ts, cfg.ops.cycle_stale_min)
+
+
 # ---------------------------------------------------------------------------
 # Timeline: session data for the Timeline view.
 # ---------------------------------------------------------------------------

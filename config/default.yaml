@@ -565,3 +565,9 @@ ops:
   # systemd runs each finish in minutes, so a crashed one shouldn't ghost for
   # two days).
   pipeline_running_window_min: 2880
+  # Console Health-badge cycle-freshness threshold, in MINUTES. Bounds how old
+  # the newest finished `verb_run` may be before the badge's cycle dot flips to
+  # `behind`. Distinct from `pipeline_running_window_min` (a live in-flight
+  # verb): the backward cycle runs ~hourly, so 2h (120) with no run = the
+  # schedule stalled. Read by the console's OpsConfig mirror.
+  cycle_stale_min: 120

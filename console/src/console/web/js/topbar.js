@@ -36,38 +36,85 @@
     return `${Math.round(sec / 86_400)}d ago`;
   }
 
+  // Copy for the cycle dot per inferred prism.ops state. Keep terse — this is
+  // the badge label; the full breakdown lives in the tooltip.
+  const CYCLE_LABEL = {
+    ok: "cycle ok",
+    warn: "cycle failed",
+    behind: "cycle behind",
+    unknown: "cycle ?",
+  };
+
+  // The badge is a real <a href="/health"> with two signal dots + labels and a
+  // chevron. `refresh()` paints both dots off /api/health: the ingestion dot
+  // from last_data_ts (freshness), the cycle dot from h.cycle (inferred
+  // prism.ops verb-run health). The whole pill degrades to a single .err state
+  // when /api/health itself fails.
+  function setErr(badge, msg) {
+    badge.classList.add("err");
+    const il = document.getElementById("health-ingest-label");
+    const cl = document.getElementById("health-cycle-label");
+    const idot = document.getElementById("health-ingest-dot");
+    const cdot = document.getElementById("health-cycle-dot");
+    if (il) il.textContent = "ES error";
+    if (cl) cl.textContent = "";
+    if (idot) idot.className = "health-dot err";
+    if (cdot) cdot.className = "health-dot";
+    // Keep the link's purpose in its accessible name — refresh() overwrites the
+    // static template aria-label, so re-assert "open Health page" here too.
+    badge.setAttribute("aria-label", `${msg} — open Health page`);
+    badge.dataset.tooltip = msg;
+  }
+
   async function refresh() {
     const badge = document.getElementById("health");
     if (!badge) return;
+    const idot = document.getElementById("health-ingest-dot");
+    const ilabel = document.getElementById("health-ingest-label");
+    const cdot = document.getElementById("health-cycle-dot");
+    const clabel = document.getElementById("health-cycle-label");
     try {
       const r = await fetch("/api/health", { headers: { Accept: "application/json" } });
       const h = await r.json();
       if (!h.ok) {
-        badge.textContent = `ES error: ${h.error || "unknown"}`;
-        badge.className = "health err";
-        badge.removeAttribute("aria-label");
-        delete badge.dataset.tooltip;
+        setErr(badge, `ES error: ${h.error || "unknown"}`);
         return;
       }
+      badge.classList.remove("err");
+
+      // --- Ingestion dot: rollup freshness (existing logic). ---
       const rel = relative(h.last_data_ts);
-      badge.textContent = rel ? `data ${rel}` : "data: none yet";
-      badge.className = rel ? "health ok" : "health";
+      if (ilabel) ilabel.textContent = rel ? `data ${rel}` : "data: none yet";
+      if (idot) idot.className = "health-dot " + (rel ? "ok" : "unknown");
+
+      // --- Cycle dot: inferred prism.ops verb-run health. ---
+      const cycle = h.cycle || {};
+      const state = CYCLE_LABEL[cycle.state] ? cycle.state : "unknown";
+      if (clabel) clabel.textContent = CYCLE_LABEL[state];
+      if (cdot) cdot.className = "health-dot " + state;
+
+      // --- Tooltip: break out both signals. ---
       const total = Object.values(h.doc_counts || {})
         .filter((v) => typeof v === "number")
         .reduce((a, b) => a + b, 0);
-      const parts = [`ES ${h.elasticsearch_version || "?"} · ${total.toLocaleString()} docs`];
-      if (h.last_data_ts) parts.push(`freshest rollup: ${h.last_data_ts}`);
-      const tip = parts.join(" — ");
-      // No `title` — the CSS tooltip is the visible one; setting both
-      // also fires the native tooltip on a delay and they overlap.
-      // aria-label keeps the text discoverable to screen readers.
-      badge.setAttribute("aria-label", tip);
+      const ingestLine = h.last_data_ts
+        ? `Ingestion: freshest rollup ${h.last_data_ts}`
+        : "Ingestion: no rollup data yet";
+      let cycleLine = `Cycle: ${state}`;
+      if (cycle.detail) cycleLine += ` — ${cycle.detail}`;
+      const tip = [
+        `ES ${h.elasticsearch_version || "?"} · ${total.toLocaleString()} docs`,
+        ingestLine,
+        cycleLine,
+      ].join("\n");
+      // No `title` — the CSS tooltip is the visible one; setting both also fires
+      // the native tooltip on a delay and they overlap. aria-label keeps the
+      // text discoverable to screen readers — and names the link's destination,
+      // since this assignment overwrites the static template aria-label.
+      badge.setAttribute("aria-label", `${tip.replace(/\n/g, " — ")} — open Health page`);
       badge.dataset.tooltip = tip;
     } catch (e) {
-      badge.textContent = `ES error: ${e.message}`;
-      badge.className = "health err";
-      badge.removeAttribute("aria-label");
-      delete badge.dataset.tooltip;
+      setErr(badge, `ES error: ${e.message}`);
     }
   }
 

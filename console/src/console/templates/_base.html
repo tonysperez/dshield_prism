@@ -27,7 +27,17 @@
       <div class="topbar-row-spacer"></div>
       {% block topbar_meta %}
       <div id="loading" class="loading hidden" aria-live="polite"></div>
-      <div id="health" class="health">…</div>
+      <a id="health" class="health" href="/health" aria-label="Pipeline health — open /health">
+        <span class="health-signal">
+          <span id="health-ingest-dot" class="health-dot"></span>
+          <span id="health-ingest-label" class="health-label">…</span>
+        </span>
+        <span class="health-signal">
+          <span id="health-cycle-dot" class="health-dot"></span>
+          <span id="health-cycle-label" class="health-label">cycle</span>
+        </span>
+        <span class="health-chevron" aria-hidden="true">›</span>
+      </a>
       {% endblock %}
     </div>
   </header>

@@ -142,8 +142,63 @@ async function loadFreshness() {
   body.appendChild(table);
 }
 
+// verb → the type label shown in the Clustering-performance grid.
+const CLUSTER_TYPE_LABEL = {
+  "cluster ips":      "IP",
+  "cluster sessions": "Session",
+  "cluster commands": "Command",
+};
+// Fixed grid order (IP / session / command), independent of the row order the
+// API returns.
+const CLUSTER_TYPE_ORDER = ["cluster ips", "cluster sessions", "cluster commands"];
+
+// Render the 3-up Clustering-performance grid from the same run_summary rows the
+// Recent-runs table uses (no extra fetch). Each card shows a type's cluster and
+// outlier counts plus its outlier share (outliers / input docs), guarded so a
+// zero-doc idle run or a never-run type shows `—`, never `NaN%`.
+function renderClustering(rows) {
+  const body = document.getElementById("clustering-stats");
+  if (!body) return;
+  body.innerHTML = "";
+  const byVerb = {};
+  for (const r of (rows || [])) byVerb[r.verb] = r;
+
+  for (const verb of CLUSTER_TYPE_ORDER) {
+    const r = byVerb[verb] || {};
+    const ran = r.run_id != null;         // a type with no run_summary never ran
+    const nClusters = r.n_clusters;
+    const nOutliers = r.n_outliers;
+    const totalDocs = r.total_docs;
+
+    // Outlier share: guard div-by-zero (idle run, total_docs == 0) AND a
+    // never-run / missing type — both render `—`, never NaN%.
+    let share = "—";
+    if (ran && typeof nOutliers === "number"
+        && typeof totalDocs === "number" && totalDocs > 0) {
+      share = `${((nOutliers / totalDocs) * 100).toFixed(1)}%`;
+    }
+
+    const card = el("div", {class: "cl-card" + (ran ? "" : " never")}, [
+      el("div", {class: "cl-type"}, [CLUSTER_TYPE_LABEL[verb] || verb]),
+      el("div", {class: "cl-nums"}, [
+        el("div", {class: "cl-metric"}, [
+          el("div", {class: "cl-label"}, ["Clusters"]),
+          el("div", {class: "cl-value"}, [ran ? fmtNum(nClusters) : "—"]),
+        ]),
+        el("div", {class: "cl-metric"}, [
+          el("div", {class: "cl-label"}, ["Outliers"]),
+          el("div", {class: "cl-value"}, [ran ? fmtNum(nOutliers) : "—"]),
+        ]),
+      ]),
+      el("div", {class: "cl-share"}, [`outlier share ${share}`]),
+    ]);
+    body.appendChild(card);
+  }
+}
+
 async function loadRuns() {
   const body = document.getElementById("runs-body");
+  const clustering = document.getElementById("clustering-stats");
   let data;
   try {
     const r = await fetch("/api/health/runs");
@@ -151,13 +206,22 @@ async function loadRuns() {
   } catch (e) {
     body.innerHTML = "";
     body.appendChild(el("div", {class: "h-error"}, [`fetch failed: ${e.message}`]));
+    if (clustering) {
+      clustering.innerHTML = "";
+      clustering.appendChild(el("div", {class: "h-error"}, [`fetch failed: ${e.message}`]));
+    }
     return;
   }
   if (data.error) {
     body.innerHTML = "";
     body.appendChild(el("div", {class: "h-error"}, [data.error]));
+    if (clustering) {
+      clustering.innerHTML = "";
+      clustering.appendChild(el("div", {class: "h-error"}, [data.error]));
+    }
     return;
   }
+  renderClustering(data.rows);
   body.innerHTML = "";
   const table = el("table", {class: "h-table"});
   table.appendChild(el("thead", null, [el("tr", null, [

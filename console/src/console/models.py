@@ -66,4 +66,9 @@ class HealthResponse(BaseModel):
     # "data Xm ago" badge in the topbar. None when no rollup data
     # exists yet (fresh install) or when the lookup errored.
     last_data_ts: str | None = None
+    # Pipeline-cycle health inferred from `prism.ops` verb-run telemetry —
+    # drives the badge's second (cycle) dot. `{state, detail, newest_ts,
+    # failed_verbs}` where state ∈ {ok, warn, behind, unknown}. None/absent when
+    # the cycle probe was skipped or errored (badge renders a neutral dot).
+    cycle: dict[str, Any] | None = None
     error: str | None = None
