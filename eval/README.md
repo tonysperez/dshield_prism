@@ -27,6 +27,7 @@ measurements found, see [`docs/evaluation.md`](../docs/evaluation.md).
 | `labels-v1.yaml` | hand-edited | yes | The labels — one block per `session_id`. Deliverable. |
 | `labeling-prompt-v1.md` | hand-written | yes | Self-contained LLM prompt to automate labeling. |
 | `RUBRIC.md` | hand-written | yes | Labeling rubric. |
+| `labels-v1-relabel.yaml` | hand-edited | no | Optional delayed blind re-label of a subset, same schema — the intra-annotator agreement input. Not committed. |
 | `baseline.json` | generated | yes | Metric snapshot the CI gate diffs against. |
 | `results/` | generated | no | Per-run JSON + per-experiment markdown verdicts from the `eval_*.py` / `sweep_*.py` / `exp_*.py` scripts. Rebuildable; gitignored. |
 | `archive/` | frozen | yes | Retired experiments (see the note above). |
@@ -62,6 +63,37 @@ Then score the clustering against the labels (the CI gate):
 ```bash
 console/.venv/bin/python scripts/eval_clustering.py --baseline eval/baseline.json --no-json
 ```
+
+## Annotator agreement (reliability)
+
+The labels above are worth only as much as they are consistent. `scripts/eval_agreement.py`
+publishes that reliability ceiling — how much any downstream metric (assignment
+macro-F1, novel P/R) can honestly claim, since a model can't beat the labels it's
+graded against.
+
+**Intra-annotator (the headline workflow, single operator).** After finishing a
+labeling batch, wait long enough to forget the specifics, then blind re-label a
+subset into a second file (same schema, e.g. `eval/labels-v1-relabel.yaml`) —
+don't peek at the originals. Score self-consistency:
+
+```bash
+console/.venv/bin/python scripts/eval_agreement.py \
+  --labels-a eval/labels-v1.yaml \
+  --labels-b eval/labels-v1-relabel.yaml
+```
+
+**Inter-annotator (when a second annotator exists).** Same command, two
+annotators' files. The tool is agnostic to which mode.
+
+It reports Cohen's κ, PABAK, and overall + per-label percent agreement, each with
+a bootstrap CI, over the annotated **overlap** (sessions `annotated: true` in
+both files). The agreement unit is a three-way category — the `playbook_label`,
+`__novel__` (real, no matching playbook), or `__reject__` (not real) — and
+`__novel__` / `__reject__` are never merged, so a "novel vs noise" split counts
+as the disagreement it is. Read κ *alongside* PABAK and the per-label breakdown:
+on this prevalence-skewed set κ alone hits the paradox (high agreement, deflated
+κ). It is a diagnostic — it never fails a build; the only error exit is an empty
+overlap or an unreadable file.
 
 ## YAML schema (committed file)
 

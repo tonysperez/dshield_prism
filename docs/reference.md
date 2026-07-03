@@ -559,3 +559,20 @@ console/.venv/bin/python scripts/eval_command_scale.py --snapshot eval/command-s
 
 What each gate measures, the eval-scale-vs-production-scale distinction, and the
 snapshot refresh cadence are in [evaluation.md](evaluation.md).
+
+**Reliability diagnostic (not a gate).** `scripts/eval_agreement.py` scores
+annotator agreement over the overlap of two `labels-v1.yaml`-schema files —
+intra-annotator (an operator's original vs a delayed blind re-label) or
+inter-annotator (two annotators). It reports Cohen's κ, PABAK, and overall +
+per-label percent agreement, each with a bootstrap CI, over a **three-way**
+per-session category: the `playbook_label`, `__novel__` (real, no playbook), or
+`__reject__` (not real) — `__novel__` and `__reject__` are never merged. The
+number bounds how good any downstream metric can honestly claim to be. It is a
+diagnostic (exit 0); the only non-zero exit is a usage error (empty overlap /
+unreadable file). Not wired into CI — there is no committed second-label file
+yet, and κ has no code-regression semantics.
+
+```bash
+console/.venv/bin/python scripts/eval_agreement.py \
+  --labels-a eval/labels-v1.yaml --labels-b eval/labels-v1-relabel.yaml
+```
