@@ -1,4 +1,4 @@
-"""Console Tune page wiring (spec-tune-page-rules).
+"""Console Tune page wiring (spec-tune-page-rules + spec-grounding-precompute).
 
 Verifies the merge/retire wiring without a live ES:
 
@@ -6,8 +6,12 @@ Verifies the merge/retire wiring without a live ES:
     are gone.
   * `build_app` registers `/tune`, and `/curation` + `/artifact-rules`
     are 302 redirects to `/tune` (old bookmarks survive).
-  * The retired grounding-scan surface (`/api/health/commands` and its
+  * The retired full-scan surface (`/api/health/commands` and its old
     denylist routes) is no longer registered.
+  * The spec-grounding-precompute routes ARE registered: the O(1)
+    `/api/health/grounding-coverage` + `/api/tune/grounding-coverage` reads,
+    and the POST/DELETE denylist write routes at their new `/api/tune/...`
+    paths.
   * The Tune template exists and the retired templates are gone.
 
 Offline — the ES client factory is stubbed so `build_app` constructs
@@ -54,8 +58,19 @@ check("/tune registered", "/tune" in paths, str(sorted(p for p in paths if 'tune
 check("/curation still registered (redirect)", "/curation" in paths)
 check("/artifact-rules still registered (redirect)", "/artifact-rules" in paths)
 check("/api/health/commands removed", "/api/health/commands" not in paths)
-check("denylist routes removed",
+check("old denylist routes removed",
       not any(p.startswith("/api/health/commands/denylist") for p in paths))
+
+# --- spec-grounding-precompute routes ---------------------------------------
+check("/api/health/grounding-coverage registered",
+      "/api/health/grounding-coverage" in paths, str(sorted(p for p in paths if 'grounding' in p)))
+check("/api/tune/grounding-coverage registered",
+      "/api/tune/grounding-coverage" in paths, str(sorted(p for p in paths if 'grounding' in p)))
+check("POST denylist route registered",
+      "/api/tune/grounding-coverage/denylist" in paths, str(sorted(p for p in paths if 'grounding' in p)))
+check("DELETE denylist/{token} route registered",
+      "/api/tune/grounding-coverage/denylist/{token}" in paths,
+      str(sorted(p for p in paths if 'grounding' in p)))
 
 # --- Redirect behaviour ----------------------------------------------------
 def _endpoint(path: str):

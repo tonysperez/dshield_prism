@@ -1015,6 +1015,36 @@ class AnalystIndexes(BaseModel):
     artifact_rules: str = "prism.analyst.artifact_rules"
 
 
+class GroundingCoverageIndexes(BaseModel):
+    """Single-doc command-grounding coverage report (spec-grounding-precompute).
+    Ops/metrics-style index — no per-sensor grain."""
+    default: str = "prism.metrics.grounding_coverage"
+
+
+class GroundingCoverageConfig(BaseModel):
+    """`track grounding-coverage` job settings. The job classifies every
+    command seen in `cowrie.commands` (needs_def / tldr_only / curated /
+    denied, via `enrich.command_grounding`) and overwrites a single summary
+    doc the console reads O(1) — see docs/decisions.md "Computing
+    command-grounding coverage on the console request path" for why this
+    moved off the request path.
+
+    `samples` in the written doc are literal per-sensor command lines and
+    MUST be gated on `classification.is_releasable`/`releasable_filter`
+    (counts aggregate all classifications; samples are public-only)."""
+    indexes: GroundingCoverageIndexes = Field(default_factory=GroundingCoverageIndexes)
+    # Fixed id the job overwrites each cadence run — single latest doc, no
+    # per-run history (resolved during planning, see the spec's Ask First).
+    doc_id: str = "latest"
+    # Sample command lines kept per uncurated/denied entry (public-only).
+    samples_per_entry: int = 3
+    # Cap on needs_def / tldr_only / denied list lengths in the written doc
+    # so a runaway corpus can't blow up the doc size.
+    max_list_len: int = 200
+    # ES scan page size for the commands-index walk.
+    scan_batch_size: int = 1000
+
+
 class MetricsIndexes(BaseModel):
     """Threshold-distribution snapshots index (brutal-review phase 4).
 
@@ -1117,6 +1147,7 @@ class AppConfig(BaseModel):
     analyst: AnalystRuleConfig = Field(default_factory=AnalystRuleConfig)
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     ops: OpsConfig = Field(default_factory=OpsConfig)
+    grounding_coverage: GroundingCoverageConfig = Field(default_factory=GroundingCoverageConfig)
 
 
 class Secrets(BaseSettings):

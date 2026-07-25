@@ -1,11 +1,11 @@
 "use strict";
 
-/* Pipeline-health page. Two panels:
+/* Pipeline-health page. Panels:
  *   - Data freshness — per-index doc count + max(@timestamp).
  *   - Recent pipeline runs — latest run_summary per cluster index.
- *
- * Command-grounding coverage was retired (console scan didn't scale);
- * it returns under Tune once the pipeline precomputes it.
+ *   - Command-grounding coverage — stat bar read from the single
+ *     precomputed report doc (spec-grounding-precompute), O(1); the full
+ *     worklist + block/unblock live under Tune.
  */
 
 // Stale thresholds (hours). Rows older than this flag amber. Tuned for
@@ -433,6 +433,46 @@ async function loadOpsRuns() {
   body.appendChild(table);
 }
 
+async function loadGroundingCoverage() {
+  const body = document.getElementById("grounding-stats");
+  if (!body) return;
+  let data;
+  try {
+    const r = await fetch("/api/health/grounding-coverage");
+    data = await r.json();
+  } catch (e) {
+    body.innerHTML = "";
+    body.appendChild(el("div", {class: "h-error"}, [`fetch failed: ${e.message}`]));
+    return;
+  }
+  if (data.error) {
+    body.innerHTML = "";
+    body.appendChild(el("div", {class: "h-error"}, [data.error]));
+    return;
+  }
+  body.innerHTML = "";
+  if (!data.available) {
+    body.appendChild(el("em", {class: "h-empty"},
+      ["pending first run — the track grounding-coverage pipeline job hasn't written a report yet"]));
+    return;
+  }
+  const stats = data.stats || {};
+  const cards = [
+    ["unique commands", stats.total_unique_cmds],
+    ["curated", stats.curated],
+    ["tldr only", stats.tldr_only],
+    ["needs definition", stats.needs_def],
+    ["denied", stats.denied],
+    ["total occurrences", stats.total_corpus_occurrences],
+  ];
+  for (const [label, value] of cards) {
+    body.appendChild(el("div", {class: "stat-card"}, [
+      el("div", {class: "s-label"}, [label]),
+      el("div", {class: "s-value"}, [fmtNum(value)]),
+    ]));
+  }
+}
+
 async function purgeCache() {
   const btn = document.getElementById("cfg-purge-cache");
   const status = document.getElementById("cfg-purge-status");
@@ -472,6 +512,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadFreshness();
   loadRuns();
   loadOpsRuns();
+  loadGroundingCoverage();
   const purgeBtn = document.getElementById("cfg-purge-cache");
   if (purgeBtn) purgeBtn.addEventListener("click", purgeCache);
 });

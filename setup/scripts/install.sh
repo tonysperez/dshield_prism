@@ -54,6 +54,12 @@
 #            periodic refresh) + prune-clusters (re-pools the long tail
 #            and refreshes the reference_centroid set the windowed 6h runs
 #            score against)
+#        dshield_prism-grounding-coverage.timer
+#          → daily `track grounding-coverage` (spec-grounding-precompute) —
+#            full `cowrie.commands` scan, classifies via
+#            enrich.command_grounding, overwrites the single report doc the
+#            console reads O(1) for the Health stat bar + Tune's Grounding
+#            tab. Own cadence, isolated from forward/backward.
 #        All timers serialise on /var/lib/dshield_prism/.lock via flock.
 #        `mine findings` is inlined into the backward chain so it always
 #        runs after `name playbooks` — the legacy
@@ -216,6 +222,8 @@ REQUIRED_FILES=(
     "${SRC_DIR}/systemd/dshield_prism-backward.timer"
     "${SRC_DIR}/systemd/dshield_prism-recluster-full.service"
     "${SRC_DIR}/systemd/dshield_prism-recluster-full.timer"
+    "${SRC_DIR}/systemd/dshield_prism-grounding-coverage.service"
+    "${SRC_DIR}/systemd/dshield_prism-grounding-coverage.timer"
     "${SRC_DIR}/systemd/dshield_prism-backfill.service"
     "${SRC_DIR}/setup/scripts/bootstrap-reference-corpus.sh"
 )
@@ -640,6 +648,10 @@ if (( INSTALL_SYSTEMD )); then
         dshield_prism-backward.timer
         dshield_prism-recluster-full.service
         dshield_prism-recluster-full.timer
+        # spec-grounding-precompute — own daily cadence, isolated from
+        # forward/backward so the full-corpus commands scan never blocks them.
+        dshield_prism-grounding-coverage.service
+        dshield_prism-grounding-coverage.timer
         # Installed but NOT enabled — a manual one-shot for historical backfill,
         # started on demand (`systemctl start dshield_prism-backfill`). No timer.
         dshield_prism-backfill.service
@@ -686,6 +698,7 @@ if (( INSTALL_SYSTEMD )); then
     systemctl enable --now dshield_prism-forward.timer
     systemctl enable --now dshield_prism-backward.timer
     systemctl enable --now dshield_prism-recluster-full.timer
+    systemctl enable --now dshield_prism-grounding-coverage.timer
 
     if (( INSTALL_CONSOLE )); then
         # `enable --now` starts it on a fresh install and is a no-op when
@@ -763,7 +776,12 @@ Scheduled services installed:
     → mine findings             (one card per playbook + per campaign;
                                  powers the console /findings page)
 
-  Both timers serialise on /var/lib/dshield_prism/.lock via flock.
+  dshield_prism-grounding-coverage.timer (daily at 02:15 UTC)
+    → track grounding-coverage  (full commands scan; precomputes the
+                                 Health/Tune command-grounding coverage
+                                 report — spec-grounding-precompute)
+
+  All timers serialise on /var/lib/dshield_prism/.lock via flock.
 
 The first forward pass will fire within 30 min. To kick off a run now:
 

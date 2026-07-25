@@ -1,0 +1,49 @@
+{
+  "_comment": "Command-grounding coverage report (spec-grounding-precompute). Single doc, fixed id 'latest', overwritten each `track grounding-coverage` cadence run by src/enrich/grounding_coverage_job.py. Classifies every command seen in cowrie.commands (needs_def / tldr_only / curated / denied via enrich.command_grounding), weighted by occurrence_count. `samples` in needs_def/tldr_only/denied are literal per-sensor command lines and are gated on classification.is_releasable at write time -- only public-classified docs may contribute a sample. Counts aggregate every classification. Strict-dynamic: the writer's field set is fixed.",
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "30s"
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "generated_at": { "type": "date" },
+      "stats": {
+        "properties": {
+          "total_unique_cmds":        { "type": "long" },
+          "curated":                  { "type": "long" },
+          "tldr_only":                { "type": "long" },
+          "needs_def":                { "type": "long" },
+          "denied":                   { "type": "long" },
+          "total_corpus_occurrences": { "type": "long" }
+        }
+      },
+      "needs_def": {
+        "type": "object",
+        "properties": {
+          "name":    { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 128 } } },
+          "count":   { "type": "long" },
+          "samples": { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 512 } } }
+        }
+      },
+      "tldr_only": {
+        "type": "object",
+        "properties": {
+          "name":    { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 128 } } },
+          "count":   { "type": "long" },
+          "samples": { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 512 } } }
+        }
+      },
+      "denied": {
+        "type": "object",
+        "properties": {
+          "name":      { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 128 } } },
+          "count":     { "type": "long" },
+          "samples":   { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 512 } } },
+          "rationale": { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 512 } } }
+        }
+      }
+    }
+  }
+}

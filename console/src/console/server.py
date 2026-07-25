@@ -98,6 +98,14 @@ class FindingNoteRequest(BaseModel):
     note: str
 
 
+class DenylistRequest(BaseModel):
+    """POST body for /api/tune/grounding-coverage/denylist
+    (spec-grounding-precompute). `token` is the command name to block;
+    `rationale` is the one-line reason recorded in `denylist.yaml`."""
+    token: str
+    rationale: str = ""
+
+
 class ArtifactRuleRequest(BaseModel):
     """POST body for /api/artifact-rule (ROADMAP #5)."""
     kind: str
@@ -270,10 +278,10 @@ def build_app(config_path: str | None = None) -> FastAPI:
 
     @app.get("/tune")
     def tune_page(request: Request):
-        # Extensible tuning surface. Sub-tab shell built to host many
-        # tuning types; today it carries a single tab — analyst artifact
-        # rules (ROADMAP #5). Curation's grounding worklist returns as a
-        # second tab once the pipeline precomputes it (spec-grounding-precompute).
+        # Extensible tuning surface. Sub-tab shell hosting analyst artifact
+        # rules (ROADMAP #5) and command-grounding curation
+        # (spec-grounding-precompute) — the latter reads the precomputed
+        # report doc O(1), no on-load scan.
         return _render(request, "tune.html", active_nav="tune")
 
     @app.get("/artifact-rules", include_in_schema=False)
@@ -782,6 +790,68 @@ def build_app(config_path: str | None = None) -> FastAPI:
         return JSONResponse({"kinds": kinds})
 
     # ------------------------------------------------------------------
+    # Command-grounding coverage (spec-grounding-precompute) — O(1) reads of
+    # the single report doc the `track grounding-coverage` pipeline job
+    # writes; no full-corpus scan on any of these request paths. Block/
+    # unblock writes `denylist.yaml` immediately via the same
+    # add_to_denylist/remove_from_denylist helpers the retired Curation page
+    # used — the report's bucket counts catch up on the next scheduled job
+    # run, not immediately (documented on the Tune tab, not a bug).
+    # ------------------------------------------------------------------
+    @app.get("/api/tune/grounding-coverage")
+    def tune_grounding_coverage_api() -> JSONResponse:
+        """Full needs_def/tldr_only/denied worklist for the Tune grounding
+        tab. Same O(1) doc read as /api/health/grounding-coverage."""
+        try:
+            return JSONResponse(queries.grounding_coverage_summary(es, cfg))
+        except Exception as e:  # pragma: no cover -- depends on ES state
+            return JSONResponse({"available": False, "error": f"{e.__class__.__name__}: {e}"})
+
+    @app.post("/api/tune/grounding-coverage/denylist")
+    def add_grounding_denylist_api(body: DenylistRequest) -> JSONResponse:
+        # Fast, clear 400 at the API boundary: a token containing '/' would
+        # be storable via this POST but unaddressable via the DELETE route's
+        # plain `{token}` path parameter (which can't match a literal '/'),
+        # permanently stranding the entry. `_normalise_token` downstream
+        # already rejects whitespace/quote/backslash tokens (and blanks) —
+        # mirror that same reject set here plus '/' so the caller gets an
+        # immediate, specific error instead of relying on the downstream
+        # rejection (which wouldn't explain the DELETE-unaddressability risk).
+        if "/" in body.token or any(c.isspace() or c in "\"'\\" for c in body.token) or not body.token.strip():
+            raise HTTPException(
+                400,
+                f"invalid token (must not be blank or contain '/', quotes, "
+                f"backslash, or whitespace): {body.token!r}",
+            )
+        try:
+            from enrich.command_grounding import add_to_denylist
+        except Exception:  # pragma: no cover — console-only install
+            raise HTTPException(503, "command grounding module not available on this install")
+        try:
+            ok, message = add_to_denylist(body.token, body.rationale)
+        except Exception as exc:  # pragma: no cover -- filesystem/YAML errors
+            log.exception("add_to_denylist failed")
+            raise HTTPException(500, f"denylist update failed: {exc}")
+        if not ok:
+            raise HTTPException(400, message)
+        return JSONResponse({"ok": True, "message": message})
+
+    @app.delete("/api/tune/grounding-coverage/denylist/{token}")
+    def remove_grounding_denylist_api(token: str) -> JSONResponse:
+        try:
+            from enrich.command_grounding import remove_from_denylist
+        except Exception:  # pragma: no cover — console-only install
+            raise HTTPException(503, "command grounding module not available on this install")
+        try:
+            ok, message = remove_from_denylist(token)
+        except Exception as exc:  # pragma: no cover -- filesystem/YAML errors
+            log.exception("remove_from_denylist failed")
+            raise HTTPException(500, f"denylist update failed: {exc}")
+        if not ok:
+            raise HTTPException(404, message)
+        return JSONResponse({"ok": True, "message": message})
+
+    # ------------------------------------------------------------------
     # Compare clusters (interactive: "why didn't these two playbooks merge?")
     # ------------------------------------------------------------------
     #
@@ -973,6 +1043,18 @@ def build_app(config_path: str | None = None) -> FastAPI:
             return JSONResponse(queries.sensor_freshness(es, cfg))
         except Exception as e:  # pragma: no cover -- depends on ES state
             return JSONResponse({"rows": [], "error": f"{e.__class__.__name__}: {e}"})
+
+    @app.get("/api/health/grounding-coverage")
+    def health_grounding_coverage_api() -> JSONResponse:
+        """Command-grounding coverage stat bar (spec-grounding-precompute) —
+        O(1) read of the report doc the `track grounding-coverage` pipeline
+        job precomputes; no full-corpus scan on this request path.
+        `available=False` with no doc yet is the expected "pending first
+        run" state, not an error."""
+        try:
+            return JSONResponse(queries.grounding_coverage_summary(es, cfg))
+        except Exception as e:  # pragma: no cover -- depends on ES state
+            return JSONResponse({"available": False, "error": f"{e.__class__.__name__}: {e}"})
 
     @app.get("/api/pipeline/status")
     def pipeline_status_api() -> JSONResponse:

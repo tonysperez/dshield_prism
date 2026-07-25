@@ -232,11 +232,17 @@ or CTI-facing egress path gates on it — see [reference.md](reference.md#data-c
 ## Console
 
 A read-only, browser-based investigation console (FastAPI + vanilla JS +
-Cytoscape). Pages around one analyst workflow:
+Cytoscape) — its one write path is the grounding denylist below, a local
+YAML file, never ES. Pages around one analyst workflow:
 **Inbox · Explore · Graph · Hunts · Tune**. Tune is an extensible tuning
-surface (a sub-tab shell): today it carries the analyst artifact-rules tab; a
-command-grounding curation tab returns once the pipeline precomputes coverage
-(the on-load full-corpus scan didn't scale). The topbar Health badge
+surface (a sub-tab shell) carrying the analyst artifact-rules tab and a
+command-grounding coverage tab (spec-grounding-precompute): the expensive
+full-corpus command scan moved off the console request path into a scheduled
+pipeline job (`track grounding-coverage`) that overwrites one summary doc;
+the console reads it O(1) for both Health's coverage stat bar and Tune's
+searchable/paginated needs_def/tldr_only/denied worklist. Block/unblock
+still writes `denylist.yaml` immediately; the report's counts catch up on
+the next scheduled job run. The topbar Health badge
 is a two-dot door to `/health` (ingestion freshness + pipeline-cycle health from
 `prism.ops`), so Health sits off the nav rather than in it; `/health` also carries
 a clustering-performance grid and an observability lane (ES-pressure and

@@ -1817,6 +1817,41 @@ def sensor_freshness(es: Elasticsearch, cfg: AppConfig) -> dict:
     return {"rows": _sensor_freshness_rows(buckets, now, cfg.ops.sensor_stale_min)}
 
 
+def grounding_coverage_summary(es: Elasticsearch, cfg: AppConfig) -> dict:
+    """Command-grounding coverage report — O(1) single-doc read
+    (spec-grounding-precompute). The full-corpus scan happens only in the
+    `track grounding-coverage` pipeline job; this reads the one `latest` doc
+    it overwrote into `cfg.grounding_coverage.indexes.default`.
+
+    Returns `{available, generated_at, stats, needs_def, tldr_only, denied}`
+    on success. `available=False` (with no error) is the expected "pending
+    first run" state — no doc has been written yet (fresh deploy) or the
+    index itself doesn't exist (`init-indexes --source metrics` not run).
+    Any other ES failure degrades the same way rather than raising, so both
+    Health's stat bar and Tune's grounding tab can render an empty state
+    instead of an error.
+    """
+    idx = cfg.grounding_coverage.indexes.default
+    doc_id = cfg.grounding_coverage.doc_id
+    try:
+        if not es.indices.exists(index=idx):
+            return {"available": False}
+        doc = es.get(index=idx, id=doc_id)["_source"]
+    except NotFoundError:
+        return {"available": False}
+    except Exception as exc:  # pragma: no cover -- depends on ES state
+        log.warning("grounding_coverage_summary failed: %s", exc)
+        return {"available": False, "error": f"{exc.__class__.__name__}: {exc}"}
+    return {
+        "available": True,
+        "generated_at": doc.get("generated_at"),
+        "stats": doc.get("stats") or {},
+        "needs_def": doc.get("needs_def") or [],
+        "tldr_only": doc.get("tldr_only") or [],
+        "denied": doc.get("denied") or [],
+    }
+
+
 # ----------------------------------------------------------------------------
 # Pipeline-cycle health for the topbar badge's second dot.
 #

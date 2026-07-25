@@ -2,11 +2,12 @@
 {% block title %}DShield Tune{% endblock %}
 {% block head_extra %}
   <style>
-    /* Tune — the console's tuning surface. A sub-tab shell built to host
-       many kinds of analyst tuning; today it carries a single tab
-       (artifact Rules, ROADMAP #5). A second tab (command-grounding
-       curation) returns once the pipeline precomputes it — see
-       spec-grounding-precompute. Adding a tab = one <button> + one
+    /* Tune — the console's tuning surface. A sub-tab shell hosting analyst
+       tuning surfaces: artifact Rules (ROADMAP #5) and command-grounding
+       curation (spec-grounding-precompute) — the latter reads a single
+       precomputed report doc O(1); block/unblock still writes
+       denylist.yaml live, and the report's counts catch up on the next
+       scheduled job run. Adding a tab = one <button> + one
        <div class="tune-panel"> + a panel-module script; the controller
        (tune.js) wires it automatically. */
 
@@ -123,12 +124,101 @@
     }
     .ar-badge-active { color: #4ade80; background: #064e3b; }
     .ar-badge-inactive { color: #94a3b8; background: #1a2440; }
+
+    /* --- Grounding panel (spec-grounding-precompute) — ported from the
+       retired Curation page's CSS (git show de42736^ --
+       console/src/console/templates/curation.html); the JS now fetches the
+       precomputed report doc instead of triggering a full-corpus scan. */
+    .gc-stat-bar {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .gc-stat-card {
+      background: #111827;
+      border: 1px solid #1e2540;
+      border-radius: 7px;
+      padding: 13px 15px;
+    }
+    .gc-stat-card .gc-stat-label {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+      color: #6b7494; margin-bottom: 4px;
+    }
+    .gc-stat-card .gc-stat-value { font-size: 22px; font-weight: 700; color: #e8edf7; }
+    .gc-stat-card .gc-stat-sub { font-size: 10px; color: #6b7494; margin-top: 2px; }
+    .gc-stat-card.warn .gc-stat-value { color: #f87171; }
+    .gc-stat-card.ok   .gc-stat-value { color: #4ade80; }
+    .gc-stat-card.info .gc-stat-value { color: #4cc1ff; }
+
+    .gc-section-title {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.8px; color: #6b7494; margin: 20px 0 12px;
+      display: flex; align-items: baseline; gap: 10px;
+    }
+    .gc-section-title:first-child { margin-top: 0; }
+    .gc-hint { font-size: 10px; text-transform: none; letter-spacing: 0; color: #414b62; font-weight: 400; }
+
+    .gc-list { display: flex; flex-direction: column; gap: 8px; }
+    .gc-item {
+      background: #0c1424; border: 1px solid #1e2540; border-radius: 6px;
+      padding: 10px 14px; display: grid;
+      grid-template-columns: 140px 1fr auto; gap: 12px; align-items: start;
+    }
+    .gc-item .gc-cmd {
+      font-family: ui-monospace, "SF Mono", Consolas, monospace;
+      font-size: 13px; font-weight: 600; color: #e8edf7;
+    }
+    .gc-item .gc-count { font-size: 10px; color: #6b7494; grid-column: 3; }
+    .gc-item .gc-samples {
+      grid-column: 2;
+      font-family: ui-monospace, "SF Mono", Consolas, monospace;
+      font-size: 11px; color: #8e9bbf;
+      display: flex; flex-direction: column; gap: 2px; overflow: hidden;
+    }
+    .gc-item .gc-sample { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .gc-item .gc-actions {
+      grid-column: 3; grid-row: 1 / span 2;
+      display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
+    }
+    .gc-btn {
+      font-size: 10px; font-weight: 600; background: #0e1e35;
+      border: 1px solid #4cc1ff28; color: #4cc1ff; border-radius: 4px;
+      padding: 3px 9px; cursor: pointer; white-space: nowrap;
+    }
+    .gc-btn:hover { background: #1a2d4e; }
+    .gc-btn.gc-btn-block { color: #f87171; border-color: #f8717128; }
+    .gc-btn.gc-btn-block:hover { background: #2a1414; }
+    .gc-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .gc-empty { font-size: 12px; color: #414b62; padding: 12px; font-style: italic; }
+    .gc-error {
+      font-size: 12px; color: #f87171; padding: 12px;
+      background: #1a0e0e; border: 1px solid #f8717128; border-radius: 6px;
+    }
+    .gc-search {
+      width: 100%; max-width: 320px; font: inherit; font-size: 12px;
+      padding: 5px 10px; margin-bottom: 12px;
+      background: #0e1e35; border: 1px solid #25324c; border-radius: 4px;
+      color: #e8edf7;
+    }
+    .gc-pager {
+      display: flex; align-items: center; gap: 10px; margin-top: 8px;
+      font-size: 11px; color: #6b7494;
+    }
+    .gc-pager button {
+      font-size: 11px; padding: 3px 10px; border-radius: 4px;
+      border: 1px solid #25324c; background: #0e1e35; color: #b9c2db; cursor: pointer;
+    }
+    .gc-pager button:hover:not(:disabled) { background: #1a2d4e; }
+    .gc-pager button:disabled { opacity: 0.4; cursor: not-allowed; }
   </style>
 {% endblock %}
 {% block content %}
   <main id="tune-main">
     <nav id="tune-tabs" class="tune-tabs" role="tablist">
       <button type="button" class="tune-tab active" data-tab="rules" role="tab" aria-selected="true">Rules</button>
+      <button type="button" class="tune-tab" data-tab="grounding" role="tab" aria-selected="false">Grounding</button>
     </nav>
 
     <div id="tune-body">
@@ -152,13 +242,45 @@
         </div>
       </div>
 
+      <!-- Grounding panel (spec-grounding-precompute) -->
+      <div id="tab-grounding" class="tune-panel" role="tabpanel">
+        <p class="gc-section-title">Command grounding
+          <span class="gc-hint">corpus coverage for the LLM-grounding block in <code>command_enrichment.txt</code> (ROADMAP #11) &mdash; precomputed by the <code>track grounding-coverage</code> pipeline job, read here O(1)</span>
+        </p>
+        <div id="grounding-stats" class="gc-stat-bar"><em class="gc-empty">loading…</em></div>
+
+        <p class="gc-section-title">Needs definition
+          <span class="gc-hint">commands seen in the corpus with NO curated YAML and NO tldr entry &mdash; curate the top of this list first</span>
+        </p>
+        <input type="search" id="grounding-search" class="gc-search" placeholder="filter by command name…">
+        <div id="grounding-needs-def" class="gc-list"><em class="gc-empty">loading…</em></div>
+        <div id="grounding-needs-def-pager" class="gc-pager"></div>
+
+        <p class="gc-section-title">Tldr-only
+          <span class="gc-hint">covered by the vendored tldr-pages bundle but no curated entry &mdash; analyst framing + per-flag descriptions would help here</span>
+        </p>
+        <div id="grounding-tldr-only" class="gc-list"><em class="gc-empty">loading…</em></div>
+        <div id="grounding-tldr-only-pager" class="gc-pager"></div>
+
+        <p class="gc-section-title">Denied (suppressed as not-a-command)
+          <span class="gc-hint">tokens the parser surfaces but the analyst flagged as payload names / prompt leakage / artifacts, via <code>src/enrich/data/commands/denylist.yaml</code></span>
+        </p>
+        <div id="grounding-denied" class="gc-list"><em class="gc-empty">loading…</em></div>
+
+        <p style="font-size:11px; color:#414b62; margin-top:16px;">
+          Block/unblock writes <code>denylist.yaml</code> immediately; the coverage
+          counts above catch up on the next scheduled <code>track grounding-coverage</code>
+          run, not instantly.
+        </p>
+      </div>
+
       <!-- Future tuning tabs slot in here as additional .tune-panel blocks,
-           each owned by its own panel-module script. Next up: command-grounding
-           curation (spec-grounding-precompute). -->
+           each owned by its own panel-module script. -->
     </div>
   </main>
 {% endblock %}
 {% block scripts %}
   <script src="/static/js/tune.js" defer></script>
   <script src="/static/js/artifact_rules.js" defer></script>
+  <script src="/static/js/grounding.js" defer></script>
 {% endblock %}

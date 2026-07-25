@@ -37,6 +37,7 @@ for how to run it see [operations.md](operations.md).
 | Findings | `prism.finding` |
 | Playbook / campaign / source-IP lifecycle | `lifecycle-dshield.cowrie.{playbook,campaign,source_ip}-default` |
 | Metrics snapshots (threshold distributions) | `prism.metrics` |
+| Command-grounding coverage report (single doc, id `latest`) | `prism.metrics.grounding_coverage` |
 | Run telemetry | `prism.ops` |
 
 Cluster indexes carry three `doc_type`s: `cluster` (per-run centroid),
@@ -58,6 +59,26 @@ newest within `ops.cycle_stale_min`, default 120 min, or a verb in-flight),
 `warn` (a latest run `failed`), `behind` (newest older than `cycle_stale_min`,
 none running), `unknown` (no telemetry / ES error). `cycle_stale_min` is distinct
 from `pipeline_running_window_min` (live-verb window).
+
+**Command-grounding coverage (`prism.metrics.grounding_coverage`,
+spec-grounding-precompute).** `track grounding-coverage` (own systemd timer,
+`dshield_prism-grounding-coverage.{timer,service}`, daily) walks the full
+`cowrie.commands` index, classifies every parsed command via
+`enrich.command_grounding` (`needs_def` / `tldr_only` / `curated` / `denied`,
+weighted by `occurrence_count`), and overwrites a single doc at fixed id
+`latest` (`src/enrich/grounding_coverage_job.py`,
+`GroundingCoverageConfig`/`GroundingCoverageIndexes` in `config.py`). `count`
+aggregates every classification; `samples` (literal command lines) are gated
+through `classification.is_releasable` — only `public`-tagged docs may
+contribute a sample. The console reads that one doc O(1)
+(`queries.grounding_coverage_summary`): `/api/health/grounding-coverage`
+feeds the Health stat bar, `/api/tune/grounding-coverage` feeds the Tune
+"Grounding" tab's searchable/paginated worklist. Block/unblock
+(`POST`/`DELETE /api/tune/grounding-coverage/denylist[/{token}]`) writes
+`denylist.yaml` immediately via `add_to_denylist`/`remove_from_denylist`; the
+report's bucket counts catch up on the next scheduled job run, not
+instantly. No doc yet (fresh deploy, before the first cadence run) renders an
+explicit "pending first run" empty state, never an error.
 
 Cross-index joins:
 
@@ -488,13 +509,25 @@ escalated to the cloud LLM and never queried against CTI feeds.** Central logic:
 
 ## Console
 
-Read-only FastAPI + vanilla-JS app; never writes to ES. Nav:
-**Inbox · Explore · Graph · Hunts · Tune** — Tune is a sub-tab shell built to
-host many tuning surfaces; today one tab, analyst artifact rules (the old
-`/artifact-rules` and `/curation` URLs 302 here). The Curation grounding-coverage
-report and its `/api/health/commands` scan were retired — the on-load full-corpus
-tokenize didn't scale (the parsed-token grouping key isn't an ES field); it
-returns as a Tune tab once the pipeline precomputes coverage. Health is off the nav;
+Read-only FastAPI + vanilla-JS app; never writes to ES (except the grounding
+denylist write below, which is a local YAML file, not ES). Nav:
+**Inbox · Explore · Graph · Hunts · Tune** — Tune is a sub-tab shell hosting
+two tabs (the old `/artifact-rules` and `/curation` URLs 302 here): **Rules**
+(analyst artifact rules) and **Grounding** (command-grounding coverage,
+spec-grounding-precompute). The retired Curation page's on-load full-corpus
+scan (`/api/health/commands`) didn't scale — the parsed-token grouping key
+isn't an ES field, so some process had to read + tokenize every command doc
+on every page load. Coverage is now precomputed by the `track
+grounding-coverage` pipeline job (own systemd timer, daily) into a single doc
+in `prism.metrics.grounding_coverage`; the console reads it O(1)
+(`queries.grounding_coverage_summary`). `/api/health/grounding-coverage`
+feeds the Health stat bar; `/api/tune/grounding-coverage` feeds the Tune tab's
+searchable/paginated needs_def/tldr_only/denied worklist. Block/unblock
+(`POST`/`DELETE /api/tune/grounding-coverage/denylist[/{token}]`) still
+writes `denylist.yaml` immediately via `enrich.command_grounding`'s
+`add_to_denylist`/`remove_from_denylist`; the report's counts catch up on the
+next scheduled job run, not instantly. No report doc yet (fresh deploy)
+renders an explicit "pending first run" empty state on both pages. Health is off the nav;
 its door is the topbar Health badge, a keyboard-focusable `<a href="/health">`
 carrying two signal dots (ingestion freshness from the rollup `@timestamp`;
 pipeline-cycle health inferred from `prism.ops`, see Run telemetry above) plus a

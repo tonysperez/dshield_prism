@@ -1,0 +1,42 @@
+[Unit]
+Description=DShield Prism command-grounding coverage precompute (spec-grounding-precompute)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=dshield_prism
+Group=dshield_prism
+WorkingDirectory=/opt/dshield_prism
+EnvironmentFile=/opt/dshield_prism/.env
+
+# Mutex with forward/backward — flock blocks (no -n) so this waits for an
+# in-flight pass rather than colliding on the commands index scan.
+ExecStartPre=/usr/bin/flock /var/lib/dshield_prism/.lock /bin/true
+
+# Full-corpus scan (`cowrie.commands`), classify via enrich.command_grounding,
+# overwrite the single `latest` summary doc in
+# prism.metrics.grounding_coverage. No LLM calls — pure ES read + one write,
+# so no LLM healthcheck gate. Hard-fail (no `-` prefix): a failed run leaves
+# last-good doc in place (console degrades gracefully), but the failure
+# should surface in prism.ops rather than be swallowed.
+ExecStart=/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml track grounding-coverage
+
+StandardOutput=journal
+StandardError=journal
+
+# 2h ceiling — a full commands-index walk with no LLM calls stays well
+# under this even at multi-million-doc scale; circuit-breaker against a
+# stuck process.
+TimeoutStartSec=2h
+Nice=10
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dshield_prism /var/log/dshield_prism
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

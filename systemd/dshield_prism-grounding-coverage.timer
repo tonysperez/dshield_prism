@@ -1,0 +1,19 @@
+[Unit]
+Description=Daily DShield Prism command-grounding coverage precompute
+Requires=dshield_prism-grounding-coverage.service
+
+[Timer]
+# Once a day, off the hour from every other timer (forward :00/:30, backward
+# 00/06/12/18, weekly recluster-full Mon 03:30) — this scan is a full
+# `cowrie.commands` walk (spec-grounding-precompute: ~15 min at 500k docs,
+# more at scale) and gets its own isolated cadence rather than folding into
+# forward/backward.
+OnCalendar=*-*-* 02:15:00
+# Stagger across nodes so they don't all hammer ES at once.
+RandomizedDelaySec=300
+# Catch up one missed run if the box was down across the firing.
+Persistent=true
+Unit=dshield_prism-grounding-coverage.service
+
+[Install]
+WantedBy=timers.target

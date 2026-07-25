@@ -109,7 +109,7 @@ count) so a degraded ES/LLM doesn't write millions of log lines at scale.
 
 ## systemd cadence
 
-Three timers, all serialised on `flock /var/lib/dshield_prism/.lock` (the manual
+Four timers, all serialised on `flock /var/lib/dshield_prism/.lock` (the manual
 `pipeline` verb takes the same lock, so an ad-hoc run can't collide):
 
 | Timer | Cadence | What it does | Failure mode |
@@ -117,14 +117,18 @@ Three timers, all serialised on `flock /var/lib/dshield_prism/.lock` (the manual
 | `dshield_prism-forward.timer` | every 30 min | `healthcheck --scope llm` → `enrich` → `rollup sessions` → `rollup ips` | LLM down → unit fails, retries next cycle |
 | `dshield_prism-backward.timer` | every 6 h | full-corpus recompute: re-enrich/reembed stale → conditional re-pool → rollups → `cluster commands` → `reference-heal` → `assign_sessions` → `cluster sessions --novel-pool` → `cluster ips` → `prune-clusters` → `escalate` → `name playbooks` → `name ip-clusters` → `mine campaigns` → `track lifecycles` → `intel refresh` → `mine findings` | most steps soft-fail (log and continue). `mine findings` runs **last** so names + lifecycle snapshots exist before findings reference them |
 | `dshield_prism-recluster-full.timer` | weekly (Mon 03:30 UTC) | full all-time re-cluster + reference refresh + retire dead anchors | a failed full pass marks the unit failed; aborts nothing else |
+| `dshield_prism-grounding-coverage.timer` | daily (02:15 UTC) | `track grounding-coverage` (spec-grounding-precompute) — full `cowrie.commands` scan, classifies via `enrich.command_grounding`, overwrites the single report doc in `prism.metrics.grounding_coverage` that the console reads O(1) | hard-fail (no `-` prefix); last-good report doc stays in place so Health/Tune degrade gracefully, not to an error |
 
 Forward verbs are watermark-driven and only touch new data; backward verbs do
 full-corpus recomputes. The weekly full pass is the other half of the windowed-
 clustering hybrid: the 6 h cycle clusters a rolling 30-day window
 (`session.cluster_window_days`), the weekly pass re-pools the long tail and
 refreshes the reference-centroid set the windowed runs score novelty against.
+The grounding-coverage timer is isolated on its own cadence rather than folded
+into forward/backward specifically because its full-corpus commands scan is
+expensive (spec-grounding-precompute; see `docs/decisions.md`).
 
-A fourth unit, **`dshield_prism-backfill.service`**, is installed but **not
+A fifth unit, **`dshield_prism-backfill.service`**, is installed but **not
 enabled** — a manual one-shot for ingesting a historical backlog (see below).
 
 ## CLI verbs
@@ -165,6 +169,7 @@ most-used verbs:
 | `mine campaigns [--kind behaviour\|infrastructure\|all] [--window-days N]` | FP-growth + shared-artifact campaign miners |
 | `mine findings [--dry-run]` | Emit coverage / drift / discovery findings into `prism.finding` |
 | `track lifecycles [--dry-run]` | Snapshot per-run lifecycle state; retire long-silent artifacts |
+| `track grounding-coverage [--dry-run]` | Full `cowrie.commands` scan; overwrites the single command-grounding coverage report doc the console reads O(1) (spec-grounding-precompute) |
 
 ### Intel
 | Verb | Does |

@@ -3,9 +3,10 @@
 {% block head_extra %}
   <style>
     /* Pipeline-health page (ROADMAP #17.10). Surfaces data freshness
-       per index and the latest run_summary per cluster verb. Command-
-       grounding coverage was retired (its console scan didn't scale); it
-       returns under Tune once the pipeline precomputes it. */
+       per index, the latest run_summary per cluster verb, and the
+       command-grounding coverage stat bar — the latter reads a single
+       precomputed report doc O(1) (spec-grounding-precompute); the
+       full worklist + block/unblock live under Tune. */
 
     #health-main {
       max-width: 1180px;
@@ -220,6 +221,13 @@
     </section>
 
     <section>
+      <p class="h-section-title">Command-grounding coverage
+        <span class="h-hint">precomputed by the <code>track grounding-coverage</code> pipeline job (spec-grounding-precompute) &mdash; O(1) read, no on-load scan; full worklist + block/unblock live under <a href="/tune" style="color:#4cc1ff; text-decoration:none;">Tune</a></span>
+      </p>
+      <div id="grounding-stats" class="stat-bar"><em class="h-empty">loading…</em></div>
+    </section>
+
+    <section>
       <p class="h-section-title">Recent pipeline runs
         <span class="h-hint">latest <code>run_summary</code> doc per cluster index</span>
       </p>
@@ -242,12 +250,6 @@
         <span id="cfg-purge-status" class="h-action-status"></span>
       </div>
     </section>
-
-    <p style="font-size:11px; color:#414b62; margin:0;">
-      Command-grounding coverage is being reworked into a precomputed pipeline
-      report; it will return under
-      <a href="/tune" style="color:#4cc1ff; text-decoration:none;">Tune</a>.
-    </p>
 
   </main>
 {% endblock %}

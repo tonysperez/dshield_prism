@@ -237,6 +237,9 @@ _LAYER_MAPPINGS = {
     # hardcoded bands when no metrics doc exists yet.
     "metrics": {
         "default": "setup/es-mappings/metrics/default.json",
+        # Single-doc command-grounding coverage report (spec-grounding-precompute).
+        # `track grounding-coverage` overwrites the one `latest` doc here.
+        "grounding_coverage": "setup/es-mappings/metrics/grounding_coverage.json",
     },
     # Per-run pipeline telemetry (P4.2). `init-indexes --source ops` creates it;
     # tracked verbs write one started→finished/failed doc per invocation.
@@ -838,7 +841,10 @@ def _resolve_index_for_layer(cfg, source: str, layer: str) -> str:
     if source == "analyst":
         return {"artifact_rules": cfg.analyst.indexes.artifact_rules}[layer]
     if source == "metrics":
-        return {"default": cfg.metrics.indexes.default}[layer]
+        return {
+            "default": cfg.metrics.indexes.default,
+            "grounding_coverage": cfg.grounding_coverage.indexes.default,
+        }[layer]
     if source == "ops":
         return {"default": cfg.ops.indexes.default}[layer]
     raise ValueError(f"Unknown source: {source}")
@@ -1350,6 +1356,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_td.add_argument("--dry-run", action="store_true",
                       help="Compute distributions without writing to prism.metrics")
+    # track grounding-coverage — spec-grounding-precompute. Scans the full
+    # commands index (expensive; ~15 min at 500k), classifies every command
+    # via enrich.command_grounding, and overwrites the single `latest` report
+    # doc the console reads O(1). Its own systemd cadence (never folded into
+    # forward/backward) isolates the full-corpus scan.
+    p_tg = track_sub.add_parser(
+        "grounding-coverage",
+        help="Precompute command-grounding coverage (needs_def/tldr_only/denied) into prism.metrics.grounding_coverage",
+    )
+    p_tg.add_argument("--dry-run", action="store_true",
+                      help="Compute the report without writing the summary doc")
 
     # intel — external threat-intel subsystem. `refresh` runs one pass:
     # discovers artifacts, priority-queues them, dispatches to every
@@ -2001,6 +2018,20 @@ def _dispatch_verb(args, cfg, secrets) -> int:
                 stats = write_threshold_distributions(es, cfg)
             print(json.dumps(stats, indent=2, default=str))
             return 0
+        if args.subject == "grounding-coverage":
+            from .es_client import make_client
+            from .grounding_coverage_job import (
+                compute_grounding_coverage,
+                write_grounding_coverage,
+            )
+            es = make_client(cfg.elasticsearch, secrets)
+            if args.dry_run:
+                doc = compute_grounding_coverage(es, cfg)
+                stats = {"dry_run": True, "stats": doc["stats"]}
+            else:
+                stats = write_grounding_coverage(es, cfg)
+            print(json.dumps(stats, indent=2, default=str))
+            return 0 if stats.get("error") is None else 1
         log.error("Unknown `track` subject: %r", args.subject)
         return 1
 

@@ -162,6 +162,20 @@ class OpsConfig(BaseModel):
     sensor_stale_min: int = 120
 
 
+class GroundingCoverageIndexes(BaseModel):
+    """Mirror of the parent GroundingCoverageIndexes (spec-grounding-precompute)."""
+    default: str = "prism.metrics.grounding_coverage"
+
+
+class GroundingCoverageConfig(BaseModel):
+    """Slim mirror — the console only reads the single `latest` report doc
+    (Health's coverage stat bar + Tune's grounding worklist). `doc_id` mirrors
+    the parent default; indexes are not YAML-overridden here (same posture as
+    `MetricsConfig`/`OpsConfig` above)."""
+    indexes: GroundingCoverageIndexes = GroundingCoverageIndexes()
+    doc_id: str = "latest"
+
+
 class SessionConfig(BaseModel):
     """Slim mirror — the console only needs the UI-facing knobs. Any
     pipeline-side `session.*` fields not declared here are silently ignored
@@ -181,6 +195,7 @@ class AppConfig(BaseModel):
     metrics: MetricsConfig = MetricsConfig()
     session: SessionConfig = SessionConfig()
     ops: OpsConfig = OpsConfig()
+    grounding_coverage: GroundingCoverageConfig = GroundingCoverageConfig()
 
 
 class Secrets(BaseSettings):
@@ -257,6 +272,16 @@ def load_config(path: Optional[str] = None) -> AppConfig:
         for k in ("cycle_stale_min", "sensor_stale_min")
         if k in raw_ops
     }
+    raw_grounding_coverage = data.get("grounding_coverage") or {}
+    # Same posture as ops_fields above: pluck only the YAML-overridable
+    # fields. `doc_id` mirrors the parent default (see GroundingCoverageConfig
+    # docstring); `indexes` is deliberately NOT read from YAML here (same
+    # posture as MetricsConfig/OpsConfig).
+    grounding_coverage_fields = {
+        k: raw_grounding_coverage[k]
+        for k in ("doc_id",)
+        if k in raw_grounding_coverage
+    }
     return AppConfig(
         elasticsearch=data["elasticsearch"],
         llm=LLMConfig(**raw_llm) if raw_llm else None,
@@ -264,6 +289,7 @@ def load_config(path: Optional[str] = None) -> AppConfig:
         findings=FindingsConfig(**raw_findings),
         session=SessionConfig(**session_fields),
         ops=OpsConfig(**ops_fields),
+        grounding_coverage=GroundingCoverageConfig(**grounding_coverage_fields),
     )
 
 
