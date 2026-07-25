@@ -110,6 +110,13 @@ annotated blocks.
   playbook_label:     "ssh_key_chattr_persistence"
   expected_findings:  []
   notes:              "Persistence playbook with recon padding."
+  # Optional label-schema v2 provenance + rare-class re-weighting.
+  # All four are optional and type-checked only when present; the
+  # renderer backfills these defaults (null / 1.0) on re-render.
+  annotator:          "ts"                       # who labeled it (null = unset)
+  labeled_at:         "2026-07-03"               # ISO-8601 date (YYYY-MM-DD)
+  rubric_version:     "v1"                        # rubric version applied
+  boost_weight:       1.0                         # >0; rare-class oversample weight (1.0 = no boost)
 
 d2ab2ca67303:
   annotated:          true
@@ -118,6 +125,11 @@ d2ab2ca67303:
   expected_findings:  []
   notes:              "HTTP request leaked into command-input field; reject."
 ```
+
+The four provenance/boost fields are **optional** — legacy blocks without
+them validate clean. When present they're typed: `boost_weight` a finite
+number `> 0`, `labeled_at` a real `YYYY-MM-DD` date, `annotator` /
+`rubric_version` non-empty strings (or `null`).
 
 ## Unlabeled JSONL schema (rebuildable, not tracked)
 

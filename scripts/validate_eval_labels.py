@@ -14,7 +14,10 @@ Run from the repo root via the console venv:
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
+import math
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -49,6 +52,58 @@ REQUIRED_LABEL_FIELDS = (
 )
 
 
+# Strict calendar-date shape: exactly `YYYY-MM-DD`, zero-padded. We anchor
+# the format with a regex *and* then parse for real-date validity, because
+# `datetime.date.fromisoformat` on Python 3.11+ also accepts ISO week dates
+# (`2026-W27-3`) and the compact form (`20260703`) — both of which would slip
+# a non-`YYYY-MM-DD` string past a bare `fromisoformat` guard.
+_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _check_provenance(sid: str, block: dict, errors: list[str]) -> None:
+    """Validate the optional label-schema v2 fields on an annotated block.
+
+    All four are optional: absent or ``None`` is always fine (that's how the
+    committed file stays valid). When a value *is* present it must be
+    well-typed. Appends to ``errors``; never raises.
+    """
+    def err(msg: str) -> None:
+        errors.append(f"{sid}: {msg}")
+
+    bw = block.get("boost_weight")
+    if bw is not None:
+        # bool first: isinstance(True, int) is True, so an unguarded numeric
+        # check would let `boost_weight: true` slip through as 1.0.
+        if isinstance(bw, bool):
+            err("boost_weight must be a number, not a boolean")
+        elif not isinstance(bw, (int, float)):
+            err(f"boost_weight must be a number, got {bw!r}")
+        # isfinite only on float: an int is always finite, and passing a huge
+        # YAML int to math.isfinite raises OverflowError (int too big to cast
+        # to float) — which would escape this "never raises" helper.
+        elif isinstance(bw, float) and not math.isfinite(bw):
+            err(f"boost_weight must be finite, got {bw!r}")
+        elif bw <= 0:
+            err(f"boost_weight must be > 0 (a weight of 0 drops the sample), got {bw!r}")
+
+    labeled_at = block.get("labeled_at")
+    if labeled_at is not None:
+        if not isinstance(labeled_at, str) or not _ISO_DATE_RE.fullmatch(labeled_at):
+            err(f"labeled_at must be null or a YYYY-MM-DD date string, got {labeled_at!r}")
+        else:
+            try:
+                datetime.date.fromisoformat(labeled_at)
+            except ValueError:
+                err(f"labeled_at must be a real calendar date (YYYY-MM-DD), got {labeled_at!r}")
+
+    for f in ("annotator", "rubric_version"):
+        v = block.get(f)
+        # str check short-circuits before .strip(), so a non-string errors
+        # cleanly; .strip() rejects whitespace-only ("   ") as effectively empty.
+        if v is not None and (not isinstance(v, str) or not v.strip()):
+            err(f"{f} must be null or a non-empty string, got {v!r}")
+
+
 def _check_block(sid: str, block: object, errors: list[str]) -> tuple[bool, str | None]:
     """Validate one label block. Returns (counts_as_filled, playbook_label_value).
 
@@ -76,6 +131,12 @@ def _check_block(sid: str, block: object, errors: list[str]) -> tuple[bool, str 
         # Not yet labeled — leave the rest alone. The analyst flips this
         # flag to true after filling in the block.
         return False, None
+
+    # Optional provenance + rare-class re-weighting (label-schema v2).
+    # Type-checked only when present, so legacy blocks (and the committed
+    # answer key, which carries none of these) validate clean. These append
+    # errors but do not change the (filled, playbook_label) return contract.
+    _check_provenance(sid, block, errors)
 
     is_real = block.get("is_real")
     if not isinstance(is_real, bool):

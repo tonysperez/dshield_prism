@@ -340,6 +340,17 @@ _EMPTY_LABEL_BLOCK = {
     "playbook_label":   None,
     "expected_findings": [],
     "notes":            "",
+    # Optional provenance + rare-class re-weighting (label-schema v2).
+    # These MUST live in the skeleton: `_merge_labels` projects each block
+    # to skeleton keys only (see the `{k: block[k] for k in skel}` merge
+    # below), so a field absent here would be silently stripped on
+    # re-render. The validator type-checks them only when present, so the
+    # committed file (which has none) keeps validating clean until an
+    # operator deliberately re-renders to backfill these defaults.
+    "annotator":        None,
+    "labeled_at":       None,
+    "rubric_version":   None,
+    "boost_weight":     1.0,
 }
 
 
