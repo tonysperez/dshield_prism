@@ -2153,14 +2153,24 @@ def run_cluster(
         novel_pool_only=effective_novel_pool,
     )
     if scfg.clustering_mode == "late_fusion":
+        import numpy as np
+
         from ...clustering import compute_lexical_features, fusion_cluster_labels
-        pre_materialized = list(iter_session_docs_with_text(
+        # Narrow embeddings to float32 rows (~3KB) as we stream, instead of the
+        # raw list[float] (~25KB/doc) the old list() held — the same ~8x embedding
+        # bloat the assignment path OOM'd on. Partial for this (dormant) path: the
+        # lexical view needs every text, so session_texts stays fully resident, and
+        # run_layer_clustering re-buffers the embeddings; it is NOT the chunk-flush
+        # of clustering.py:1162. Enough to keep late_fusion off the OOM cliff at
+        # today's scale; full chunking tracked in deferred-work if it's ever enabled.
+        session_texts: list = []
+        _core_docs: list = []
+        for doc_id, emb, sid, sc, text in iter_session_docs_with_text(
             es, sessions_idx, scfg.page_size, window_days=effective_window,
-        ))
-        session_texts = [t for _, _, _, _, t in pre_materialized]
-        docs_iter_for_core = (
-            (doc_id, emb, sid, sc) for doc_id, emb, sid, sc, _ in pre_materialized
-        )
+        ):
+            session_texts.append(text)
+            _core_docs.append((doc_id, np.asarray(emb, dtype=np.float32), sid, sc))
+        docs_iter_for_core = iter(_core_docs)
         log.info(
             "[%s] late_fusion mode: pre-materialized %d sessions (%d with text)",
             layer_label, len(session_texts),

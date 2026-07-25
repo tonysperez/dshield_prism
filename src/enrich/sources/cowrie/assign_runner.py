@@ -101,10 +101,14 @@ def _load_anchors(es, anch_idx):
     return ids, m / np.where(n == 0.0, 1.0, n)
 
 
-def _scan(es, idx, filt, fields, page=2000, limit=None):
+def _iter_scan(es, idx, filt, fields, page=2000):
+    """Stream hits via search_after — never materializes the full result set.
+    Bounded callers wrap this in `_scan`; the full-corpus window scan in
+    `run_assignment` consumes it directly so embeddings never pile up as a
+    corpus-wide list[list[float]] (mirrors the chunked fix in clustering.py)."""
     body = {"size": page, "_source": fields, "query": {"bool": {"filter": filt}},
             "sort": [{"_doc": "asc"}]}
-    out, sa = [], None
+    sa = None
     while True:
         if sa:
             body["search_after"] = sa
@@ -112,11 +116,52 @@ def _scan(es, idx, filt, fields, page=2000, limit=None):
         hits = r["hits"]["hits"]
         if not hits:
             break
-        out.extend(hits)
-        if limit and len(out) >= limit:
-            return out[:limit]
+        yield from hits
         sa = hits[-1]["sort"]
+
+
+def _scan(es, idx, filt, fields, page=2000, limit=None):
+    out = []
+    for h in _iter_scan(es, idx, filt, fields, page=page):
+        out.append(h)
+        if limit and len(out) >= limit:
+            break
     return out
+
+
+def _scan_window_embeddings(es, idx, window_filter, src_fields, chunk=50_000):
+    """Stream the full-corpus window scan, returning (win_ids, win_sets, W) with W
+    an L2-normalized float32 matrix (None when empty). Embeddings accumulate in
+    float32 chunks so the whole corpus never sits in RAM as list[list[float]] —
+    the OOM the backfill hit at scale. Docs without an embedding are dropped (the
+    old `keep` filter). Mirrors the chunked-flush pattern in clustering.py:1162."""
+    import numpy as np
+    win_ids: list[str] = []
+    win_sets: list[list[str]] = []
+    emb_chunks: list = []
+    emb_buf: list[list[float]] = []
+
+    def _flush() -> None:
+        if emb_buf:
+            emb_chunks.append(np.asarray(emb_buf, dtype=np.float32))
+            emb_buf.clear()
+
+    for h in _iter_scan(es, idx, window_filter, src_fields):
+        s = _sb(h["_source"])
+        e = s.get("embedding")
+        if not e:
+            continue
+        win_ids.append(h["_id"])
+        win_sets.append(list(s.get("command_set") or []))
+        emb_buf.append(e)
+        if len(emb_buf) >= chunk:
+            _flush()
+    _flush()
+    if not win_ids:
+        return win_ids, win_sets, None
+    W = np.vstack(emb_chunks) if len(emb_chunks) > 1 else emb_chunks[0]
+    norms = np.linalg.norm(W, axis=1, keepdims=True)
+    return win_ids, win_sets, W / np.where(norms == 0.0, 1.0, norms)
 
 
 def _resolve_names(es, idx, filt, playbook_ids):
@@ -153,17 +198,11 @@ def run_assignment(es, cfg, *, window_filter: list[dict], anchor_sample_filter: 
         return {"error": "no anchors", "authoritative": authoritative}
 
     src_fields = [_EMB_FIELD, _CMDSET_FIELD]
-    win = _scan(es, idx, window_filter, src_fields)
-    win_ids = [h["_id"] for h in win]
-    win_emb_raw = [_sb(h["_source"]).get("embedding") for h in win]
-    keep = [i for i, e in enumerate(win_emb_raw) if e]
-    if not keep:
+    # Full-corpus window scan, streamed as float32 chunks (see _scan_window_embeddings)
+    # so the whole corpus of 768-d embeddings never sits in RAM as list[list[float]].
+    win_ids, win_sets, W = _scan_window_embeddings(es, idx, window_filter, src_fields)
+    if not win_ids:
         return {"error": "no sessions in window", "authoritative": authoritative}
-    win_ids = [win_ids[i] for i in keep]
-    win_sets = [list(_sb(win[i]["_source"]).get("command_set") or []) for i in keep]
-    W = np.array([win_emb_raw[i] for i in keep], dtype=np.float32)
-    W = W / np.where(np.linalg.norm(W, axis=1, keepdims=True) == 0.0, 1.0,
-                     np.linalg.norm(W, axis=1, keepdims=True))
 
     # per-anchor sample → anchor TF-IDF centroids; one fit over (anchors + window)
     anc_sets, anc_pb = [], []
