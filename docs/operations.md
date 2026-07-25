@@ -59,6 +59,47 @@ Kibana → Fleet, set each sensor's Cowrie integration `pipeline:` field to
 The **console** installs alongside — self-contained, no dependency on the
 `enrich` package. See [`console/README.md`](../console/README.md).
 
+### Exposing the console on the LAN
+
+The console has **no built-in authentication**, so the systemd unit binds it to
+`127.0.0.1:8765` (loopback only). Serving it directly on `0.0.0.0` would leave
+honeypot-derived data readable by anyone on the network. To reach it from other
+machines, front it with a reverse proxy that terminates auth on the LAN
+interface and forwards to the loopback port. Caddy is the shortest path (auto
+HTTPS + basic auth in a few lines):
+
+```
+# /etc/caddy/Caddyfile — reachable at https://<server-lan-ip>
+prism.internal.example {
+    basicauth {
+        analyst <bcrypt-hash>   # caddy hash-password --plaintext '...'
+    }
+    reverse_proxy 127.0.0.1:8765
+}
+```
+
+The console unit stays loopback-bound and unchanged; only the proxy listens on
+the LAN. Prefer this over binding the app directly — it gives you auth, TLS,
+and access logs the app doesn't provide.
+
+If you understand the exposure and still want the app itself on the LAN (e.g.
+an already-authenticated segment), override the bind with a systemd drop-in so
+it survives reinstall — never edit the shipped unit:
+
+```bash
+sudo systemctl edit dshield_prism-console   # writes …/override.conf
+```
+```ini
+[Service]
+ExecStart=
+ExecStart=/opt/dshield_prism/console/.venv/bin/python -m console.cli serve \
+    --host 0.0.0.0 --port 8765 --config /opt/dshield_prism/config/default.yaml
+```
+
+(The empty `ExecStart=` clears the unit's value before the override — systemd
+requires this for `Type=simple`.) This bypasses auth entirely; only do it on a
+trusted segment.
+
 ## Configuration
 
 | File | Role |

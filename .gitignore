@@ -16,10 +16,6 @@ dist/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
-
-# Claude
-.claude
-
 .ruff_cache
 
 # Eval: generated output, never committed (rebuildable from the corpus + scripts).
@@ -30,3 +26,11 @@ eval/results/*
 !eval/results/.gitkeep
 eval/sessions-v1/
 eval/confidential/
+
+# Claude
+.claude
+
+# Spec-driven development
+_bmad
+_bmad-output
+.agents

@@ -10,11 +10,15 @@ Group=dshield_prism
 WorkingDirectory=/opt/dshield_prism/console
 EnvironmentFile=/opt/dshield_prism/.env
 
-# Binds 0.0.0.0:8765 by default — the systemd-managed deploy is meant to be
-# reachable from the analyst LAN. If you want loopback-only, override the
-# --host flag here (or override the whole ExecStart via a drop-in at
-# /etc/systemd/system/dshield_prism-console.service.d/override.conf).
-ExecStart=/opt/dshield_prism/console/.venv/bin/python -m console.cli serve --host 0.0.0.0 --port 8765 --config /opt/dshield_prism/config/default.yaml
+# Binds 127.0.0.1:8765 (loopback) by default. The console ships with NO
+# built-in authentication, so it must not face the LAN directly. To serve
+# analysts on the LAN, put it behind a reverse proxy that terminates auth on
+# the LAN interface and forwards to this loopback port — see
+# docs/operations.md ("Exposing the console on the LAN"). Do NOT edit this
+# file; override via a drop-in at
+# /etc/systemd/system/dshield_prism-console.service.d/override.conf so the
+# change survives reinstall.
+ExecStart=/opt/dshield_prism/console/.venv/bin/python -m console.cli serve --host 127.0.0.1 --port 8765 --config /opt/dshield_prism/config/default.yaml
 
 Restart=on-failure
 RestartSec=5s

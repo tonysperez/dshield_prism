@@ -125,7 +125,7 @@ From a raw command line to a tracked behavior, in six steps:
 
 ## Console
 
-Seven pages, one analyst workflow: **Inbox · Explore · Graph · Hunts · Tune**.
+Five pages, one analyst workflow: **Inbox · Explore · Graph · Hunts · Tune**.
 
 **Findings inbox.** Every drift, novel pattern, and coverage gap surfaces here. The facet rail narrows on score, age, IP-count band, intent, or intel verdict; status flows from new → ack → confirmed as the analyst works the queue.
 
