@@ -19,7 +19,8 @@
 #        - allow out to ES host:port (parsed from local.yaml, skipped if loopback)
 #        - allow out to LLM host:port (parsed from local.yaml, skipped if loopback)
 #        - allow out 443/tcp (intel feeds + Anthropic cloud API)
-#        - (opt-in via --ufw-console) allow in 8765/tcp for console web UI
+#       The console binds loopback only, so no inbound rule is added — front
+#       it with a reverse proxy for LAN access (see docs/operations.md).
 #       No-op if ufw is not installed or not active. Idempotent — ufw skips
 #       rules that already exist.
 #   E. Apply ES templates + ingest pipelines + raw data stream from setup/:
@@ -73,9 +74,10 @@
 #   - Builds a separate venv at /opt/dshield_prism/console/.venv
 #     (FastAPI/uvicorn/jinja2 — not in the parent package).
 #   - Installs dshield_prism-console.service from setup/../systemd/.
-#   - Enables + starts the unit. Binds 0.0.0.0:8765 — make sure your
-#     perimeter firewall blocks WAN, or use --no-console and run it
-#     manually with --host 127.0.0.1 behind an ssh tunnel.
+#   - Enables + starts the unit. Binds 127.0.0.1:8765 (loopback) — the
+#     console has no auth, so it is not exposed on the network. For LAN
+#     access front it with a reverse proxy that terminates auth (see
+#     "Exposing the console on the LAN" in docs/operations.md).
 #
 # Skipped on purpose (first run can take hours on a backlog):
 #   - Initial enrichment + clustering pass. Trigger manually after setup:
@@ -87,7 +89,7 @@
 #
 # Usage:
 #   sudo bash setup/scripts/install.sh [--no-systemd] [--skip-healthcheck] [--skip-init-index]
-#                            [--no-console] [--ufw] [--ufw-console]
+#                            [--no-console] [--ufw]
 #
 # Environment overrides:
 #   SERVICE_USER   default: dshield_prism
@@ -113,8 +115,6 @@ RUN_HEALTHCHECK=1
 RUN_INIT_INDEX=1
 INSTALL_CONSOLE=1
 INSTALL_UFW=0
-OPEN_CONSOLE_PORT=0
-CONSOLE_PORT="${CONSOLE_PORT:-8765}"
 
 # ---- argv ------------------------------------------------------------------
 
@@ -125,7 +125,6 @@ while [[ $# -gt 0 ]]; do
         --skip-init-index)  RUN_INIT_INDEX=0 ;;
         --no-console)       INSTALL_CONSOLE=0 ;;
         --ufw)              INSTALL_UFW=1 ;;
-        --ufw-console)      INSTALL_UFW=1; OPEN_CONSOLE_PORT=1 ;;
         -h|--help)
             sed -n '1,55p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
@@ -137,15 +136,6 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
-
-# When both --ufw is enabled AND the console is being installed, auto-open
-# the console port. The systemd-managed console binds 0.0.0.0:8765, so
-# closing UFW on that port would silently break LAN access — make the
-# rule track the install rather than requiring a second flag. Users who
-# want the rule WITHOUT the service can still pass --no-console + --ufw-console.
-if (( INSTALL_UFW && INSTALL_CONSOLE )); then
-    OPEN_CONSOLE_PORT=1
-fi
 
 # ---- helpers ---------------------------------------------------------------
 
@@ -337,13 +327,13 @@ run_cli() {
         --config "${INSTALL_DIR}/config/default.yaml" "$@"
 }
 
-# ---- D2. UFW rules (opt-in via --ufw / --ufw-console) ----------------------
+# ---- D2. UFW rules (opt-in via --ufw) --------------------------------------
 # Add outbound allows for the endpoints this deploy actually talks to:
 #   - ES host:port            (parsed from local.yaml; skipped if loopback)
 #   - LLM host:port           (parsed from local.yaml; skipped if loopback)
 #   - 443/tcp                 (intel feeds + Anthropic cloud API)
-# And, only if --ufw-console was passed, allow inbound on the console port.
-# Idempotent: `ufw allow` is a no-op when the rule already exists.
+# No inbound rule for the console: it binds loopback only. Idempotent:
+# `ufw allow` is a no-op when the rule already exists.
 
 if (( INSTALL_UFW )); then
     log "Configuring UFW rules"
@@ -471,12 +461,6 @@ PYEOF
         # to pin by IP.
         log "  intel + cloud: out 443/tcp"
         ufw allow out 443/tcp
-
-        if (( OPEN_CONSOLE_PORT )); then
-            log "  console: in ${CONSOLE_PORT}/tcp"
-            ufw allow in "${CONSOLE_PORT}"/tcp
-            warn "  console will be reachable from any host that can route to this box on ${CONSOLE_PORT}/tcp — ensure your perimeter firewall blocks WAN"
-        fi
     fi
 fi
 
@@ -807,14 +791,15 @@ sudo + service-user + config; works from any cwd in any shell):
 
 Browser console:
 
-  dshield_prism-console.service        (binds 0.0.0.0:8765 on boot)
+  dshield_prism-console.service        (binds 127.0.0.1:8765 on boot)
     journalctl -fu dshield_prism-console.service   # tail logs
     systemctl restart dshield_prism-console.service
-  open  http://<this-host>:8765/        (redirects to /findings)
+  open  http://127.0.0.1:8765/         (on this host; redirects to /inbox)
 
+  The console has no auth, so it is bound to loopback. For LAN access,
+  front it with a reverse proxy that terminates auth — see "Exposing the
+  console on the LAN" in docs/operations.md.
   To skip the console install / unit, re-run install.sh with --no-console.
-  To bind loopback only, drop in /etc/systemd/system/dshield_prism-console.service.d/override.conf
-  with [Service] / ExecStart= overriding the --host flag.
 
 Import the Kibana dashboards (Saved Objects → Import):
   ${INSTALL_DIR}/es-dashboards/session-analysis.ndjson

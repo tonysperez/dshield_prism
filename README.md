@@ -125,7 +125,13 @@ From a raw command line to a tracked behavior, in six steps:
 
 ## Console
 
-Five pages, one analyst workflow: **Inbox · Explore · Graph · Hunts · Tune**.
+The console turns the findings queue into an investigation. Every drift and
+novelty lands in an **inbox**; from any card you pivot into a **graph** of the
+behavior's neighborhood, **compare** it against a peer, pull the artifacts into a
+**report**, watch the behavior **drift over time**, **ask** the corpus questions
+in plain language, and **teach** it what you learn. Read-only against ES; the
+Q&A runs on the same local model config as the pipeline, so nothing leaves the
+box.
 
 **Findings inbox.** Every drift, novel pattern, and coverage gap surfaces here. The facet rail narrows on score, age, IP-count band, intent, or intel verdict; status flows from new → ack → confirmed as the analyst works the queue.
 
@@ -143,7 +149,12 @@ Five pages, one analyst workflow: **Inbox · Explore · Graph · Hunts · Tune**
 
 <p align="center"><img src=".github/screenshots/hunt.png" alt="Hypothesis-driven hunts" width="900"></p>
 
-**Curation.** The console is also where the operator teaches Prism — define what an unusual command does, pin a meaning to an attributed IOC (say, an RSA key), or leave a note on a specific attack. That knowledge folds straight back into clustering and labeling, so corrections made once sharpen every run that follows.
+Four more surfaces round out the workflow:
+
+- **Track behavior over time.** A longitudinal view with one row per playbook, cluster, campaign, or operation — each with its own activity band on a shared timeline, a live-period strip, and an `interest` ranking — so a behavior going dormant and returning is something you *see*, not something you have to query for.
+- **Ask in plain language.** A natural-language Q&A box answers questions over the enriched corpus using the local LLM — no query syntax, no data leaving the box.
+- **Operational visibility.** A health page shows corpus stats, index freshness, recent run and ops telemetry, ES heap pressure, per-sensor breakdown, and command-grounding coverage — so you know the pipeline is actually keeping up.
+- **Teach it.** Define what an unusual command does, pin a meaning to an attributed IOC (say, an RSA key), or leave a note on a specific attack. That knowledge folds straight back into clustering and labeling, so a correction made once sharpens every run that follows.
 
 ## Data governance & egress control
 

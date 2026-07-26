@@ -14,50 +14,99 @@ field schemas, see [reference.md](reference.md); for how it works, see
 - [Smoke testing](#smoke-testing)
 - [Troubleshooting — is anything actually wrong](#troubleshooting--is-anything-actually-wrong)
 
-## Install (WIP)
+## Install
 
-Requires:
-- ElasticStack + Fleet
-   - Tested using SecurityOnion's managed ES. This is a very easy way to get a managed ES + Fleet.
-   - Recommended 16GB RAM and 4 CPU cores
-- Elastic Agent installed on whatever device you want to ingest DShield logs from
-- Local AI hosting to provide Nomic embedding and a small LLM. 8GB V/RAM tested/recommended to host the default Qwen3:8B
-- Server to host the Prism pipeline and Prism Console. ES, Prism, and Prism Console can all be hosted on separate servers.
-   - Tested running Prism on Ubuntu 24.04 LTS
-   - Recommended 2GB RAM and 2 CPU cores for a small deployment, up to 8GB RAM and 6 CPU cores for larger deployments with frequent backfilling
+Prism has three components — ElasticStack + Fleet, local AI hosting, and the
+Prism pipeline + console. They can share one box or run on separate hosts.
 
-One command. An interactive wizard writes `.env` + `config/local.yaml` for you
-(no manual editing), then installs everything:
+### Requirements
+
+- **ElasticStack + Fleet** — tested against SecurityOnion's managed ES (the
+  easiest way to get both). 16 GB RAM / 4 CPU.
+- **Elastic Agent** on whatever device houses the DShield/Cowrie logs (the
+  sensor itself, or wherever the logs are shipped).
+- **Local AI hosting** for the Nomic embedding model + a small LLM. 8 GB VRAM
+  hosts the default Qwen3:8B (Ollama or an OpenAI-compatible server such as LM
+  Studio).
+- **A host for the Prism pipeline + console** — tested on Ubuntu 24.04 LTS.
+  ~2 GB RAM / 2 CPU for a small deployment, up to ~8 GB / 6 CPU for larger ones
+  with frequent backfilling.
+
+### One command
+
+An interactive wizard writes `.env` + `config/local.yaml` (no hand-editing),
+validates them live, then installs everything. Idempotent — safe to re-run;
+existing config is kept unless you pass `--reconfigure`.
 
 ```bash
 sudo bash setup/setup.sh
 ```
 
-It prompts for the ES URL + credentials, the local LLM endpoint + models, your
-sensor name(s) + `public`/`confidential` classification, and optional cloud /
-intel API keys — **validating live that the ES credentials authenticate and that
-the chosen models are actually loaded on the LLM box** (retry / continue / abort
-on failure; `--no-verify` skips these checks) — then creates the service user,
-installs to `/opt/dshield_prism`,
-applies the ES templates + ingest pipelines + indices (created manually rather
-than letting Fleet manage them, so Fleet can't wipe them), and installs the
-systemd units. Idempotent — safe to re-run; existing config is kept unless you
-pass `--reconfigure`.
+### What it does, in order
 
-- Just (re)write config without installing: `bash setup/setup.sh --configure-only`.
-- Installer flags pass straight through, e.g. `sudo bash setup/setup.sh --no-console --ufw`.
+1. **Config wizard.** Prompts for the ES URL + credentials, the local-LLM
+   provider / `base_url` / models, an optional cloud (`ANTHROPIC_API_KEY` →
+   sets `cloud.enabled: true`), and optional intel-provider keys (→
+   `intel.enabled: true`). It **validates live** that the ES credentials
+   authenticate and that the chosen models are actually loaded on the LLM box
+   (retry / continue / abort on failure; `--no-verify` skips these checks).
+   Writes `.env` (mode 600) + a minimal `config/local.yaml`.
+2. **Sensor pipelines.** Prompts for your sensor(s) as
+   `name:classification` (`public` | `confidential`) and runs
+   [`create-sensor-pipelines.sh`](../setup/scripts/create-sensor-pipelines.sh) —
+   one per-sensor ingest pipeline that stamps `observer.name` +
+   `dshield.classification` on every record. At least one sensor is required on
+   a fresh install. See [reference.md](reference.md#data-classification-privacy-gate).
+3. **Install** (needs root; runs [`install.sh`](../setup/scripts/install.sh)).
+   Creates the `dshield_prism` service user, deploys to `/opt/dshield_prism`,
+   builds the venv and installs the package with the `[cluster]` extra, applies
+   the ES templates + ingest pipelines + the raw data stream, initializes the
+   project-owned indices (cowrie / intel / findings / lifecycle / ops / metrics
+   — created manually rather than letting Fleet manage them, so Fleet can't
+   wipe them), runs the healthcheck, best-effort bootstraps the Atomic Red Team
+   reference corpus (Tradecraft Matches), installs + enables the [systemd
+   timers](#systemd-cadence), installs the **console** as its own service +
+   venv, and drops a `/usr/local/bin/prism` wrapper.
 
-The underlying steps stay runnable standalone under `setup/scripts/`:
-`create-sensor-pipelines.sh`, `install.sh`, and `bootstrap-reference-corpus.sh`
-(the external reference corpus is optional + best-effort — `install.sh` runs it
-for you). Teardown lives at [`setup/destroy.sh`](../setup/destroy.sh).
+### Final manual step (Fleet)
 
-**Final manual step** (Security Onion / Fleet, not scriptable from here): in
-Kibana → Fleet, set each sensor's Cowrie integration `pipeline:` field to
-`prism.cowrie.session.<sensor-name>` (printed at the end of setup).
+Not scriptable from here: in Kibana → Fleet, set each sensor's Cowrie
+integration `pipeline:` field to `prism.cowrie.session.<sensor-name>` (printed
+at the end of setup). Nothing enriches until this points at the pipeline.
 
-The **console** installs alongside — self-contained, no dependency on the
-`enrich` package. See [`console/README.md`](../console/README.md).
+### First run
+
+The forward timer fires within 30 min. To kick it off now:
+
+```bash
+sudo systemctl start dshield_prism-forward.service   # enrich + rollups
+sudo systemctl start dshield_prism-backward.service  # cluster + name + mine
+journalctl -fu dshield_prism-backward.service
+```
+
+The first backward pass takes a while on any real backlog (enrich + cluster).
+For a multi-month/-year archive, use the [backfill
+runbook](#backfilling-a-new-sensor) instead of the normal timers.
+
+### Reach the console
+
+The console is loopback-bound at `http://127.0.0.1:8765` (redirects to
+`/inbox`). It has **no authentication** — for LAN access, front it with a
+reverse proxy that terminates auth (see [Exposing the console on the
+LAN](#exposing-the-console-on-the-lan)). See [`console/README.md`](../console/README.md).
+
+### Optional / variants
+
+- Import the Kibana dashboards (Saved Objects → Import):
+  `es-dashboards/session-analysis.ndjson`,
+  `es-dashboards/command-enrichment-dashboard.ndjson`.
+- **Flags:** `--configure-only` (write config, don't install), `--reconfigure`
+  (redo the wizard, backs up `*.bak`), `--no-verify` (skip live checks). Any
+  other flag forwards to `install.sh`, e.g. `--no-console`, `--ufw`.
+- The underlying steps stay runnable standalone under `setup/scripts/`:
+  `create-sensor-pipelines.sh`, `install.sh`,
+  `bootstrap-reference-corpus.sh`. Teardown lives at
+  [`setup/destroy.sh`](../setup/destroy.sh).
 
 ### Exposing the console on the LAN
 

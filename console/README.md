@@ -65,32 +65,44 @@ The single search box accepts any of:
   YAML + .env loader (reads the parent repo's `config/default.yaml` by
   default, but has no Python dependency on `enrich`). Strips 768-dim
   embeddings server-side; they never reach the browser.
-* **Frontend**: vanilla JS + Cytoscape.js (vendored) with the fcose layout. No
-  build step, no framework. Loads from `web/`.
+* **Frontend**: vanilla JS with a custom `<canvas>` graph renderer — no
+  framework, no build step, no CDN. Loads from `web/` (`css/`, `js/`).
 * **State**: read-only. The console never writes to ES.
 
 Pages:
 
 | Path | Page |
 |---|---|
-| `/` | Search → graph investigation view (the default landing page) |
-| `/explore` | Longitudinal lifecycle list: one row per **playbook / session-cluster / IP-cluster / campaign / operation** (entity selector), its own activity band (time-flipped — now on the left) on a shared adaptive axis, with a live-period strip and an `interest` composite ranking. Window selector (30/90/180d · all · custom, default 90d), all/recurring filter, alive/dead state filter, sort lens; row name has a hover tooltip; click a row to open it in the graph |
+| `/inbox` | **Findings inbox** — the default landing (`/` redirects here). Drift, novel-behavior, and coverage findings with a facet rail (score / age / IP-count band / intent / intel verdict) and a new → ack → confirmed status flow |
+| `/graph` | **Investigation graph** — search any IOC and pivot through its first-degree behavioral neighborhood as a node-link graph; detail panel with inline **compare** and a copy-ready **write-up** builder |
+| `/explore` | **Longitudinal lifecycle list** — one row per **playbook / session-cluster / IP-cluster / campaign / operation** (entity selector), each with its own time-flipped activity band on a shared adaptive axis, a live-period strip, and an `interest` composite ranking. Window selector (30/90/180d · all · custom, default 90d), all/recurring + alive/dead filters, sort lens; click a row to open it in the graph |
+| `/hunts` | **Hunts** — YAML-defined AND-combined session filters, plus a **Tradecraft Matches** view ranking sessions against the Atomic Red Team reference corpus |
+| `/tune` | **Tune** — command-grounding coverage, the artifact-rule curation surface, and the grounding denylist |
+| `/health` | **Health** — corpus-summary stat bar, index freshness, recent run + ops telemetry, ES heap pressure, and per-sensor breakdown |
+| `/artifact/{ip,url,hash}/…` | Standalone artifact detail pages |
 
-API endpoints:
+Legacy deep links still resolve as 302s: `/findings` → `/inbox`; `/history`,
+`/browse`, `/insights` → `/explore`; `/compare` → `/graph` (compare is now an
+inline panel); `/curation` → `/tune`.
+
+API endpoints (representative — see `server.py` for the full set):
 
 ```
-GET  /api/health
-GET  /api/history?entity=playbook&window=90d&sort=interest&filter=all&state=all   # entity∈{playbook,session_cluster,ip_cluster,campaign,operation}; window∈{30d,90d,180d,all,custom} (+&start=&end= ISO for custom); state∈{all,live,dead}
-GET  /api/search?q=...
-GET  /api/ioc/{type}/{id}
+GET  /api/health                         # ES / LLM / SQLite / cloud / intel status
+GET  /api/health/overview                # corpus-summary stat bar (IPs / Sessions / Commands / Playbooks / Clusters / Outliers)
+GET  /api/findings                       # findings inbox (faceted)
+GET  /api/finding/{id}/detail            # one finding + its evidence
+POST /api/finding/{id}/status            # new → ack → confirmed
+GET  /api/history?entity=playbook&window=90d&sort=interest   # entity∈{playbook,session_cluster,ip_cluster,campaign,operation}; window∈{30d,90d,180d,all,custom} (+&start=&end= ISO); state∈{all,live,dead}
+GET  /api/search?q=...                    # IOC / free-text resolver
+GET  /api/ioc/{type}/{id}                 # IOC detail
 GET  /api/ioc/{type}/{id}/neighbors?limit=50&require_login=&require_commands=
-GET  /api/ioc/ip/{ip}/sessions
-GET  /api/ioc/session/{sid}/commands
-GET  /api/ioc/command/{sha}/sessions
 GET  /api/cluster/{kind}/{cid}/members
-GET  /api/timeline?kind=ip|session_cluster|playbook&id=...
-GET  /api/health/overview          # corpus-summary stat bar (Total IPs / Sessions / Commands / Playbooks / Clusters / Outliers)
-POST /api/ask                      # natural-language Q&A backed by the parent project's LLM config
+GET  /api/hunts   ·   POST /api/hunts/run
+GET  /api/tune/grounding-coverage
+POST /api/compare/explain                 # inline cluster / playbook / campaign compare
+POST /api/ask                             # natural-language Q&A (parent LLM config)
+POST /api/writeup                         # copy-ready report (defanged; txt / md / csv / json)
 ```
 
 Where `type` ∈ `ip session command command_hash playbook campaign
@@ -112,16 +124,19 @@ console/
     server.py               -- FastAPI app, routes, detail builders
     ioc.py                  -- IOC type detection from query string
     queries.py              -- ES query functions
-    graph.py                -- ES rows -> Cytoscape nodes/edges
+    graph.py                -- ES rows -> graph nodes/edges
     models.py               -- pydantic response shapes
     _config.py              -- self-contained YAML + .env loader
     _es.py                  -- Elasticsearch client factory
+    templates/              -- Jinja2 pages: _base, findings, index (graph),
+                               explore, hunts, tune, health,
+                               artifact_{ip,url,hash}
     web/
-      index.html            -- search + graph investigation view
-      explore.html          -- longitudinal lifecycle list page
-      css/                  -- vanilla CSS, no framework
-      js/{app.js,graph.js,explore.js,timeline.js}
-      js/vendor/{cytoscape,layout-base,cose-base,cytoscape-fcose}.js
+      css/app.css           -- vanilla CSS, no framework
+      js/                   -- app, graph, timeline, explore, findings, hunts,
+                               tune, health, grounding, copy, topbar,
+                               artifact_{ip,url,hash}, artifact_rule[s|_modal]
+      tour/                 -- guided-tour JSON (detail / row / writeup)
 ```
 
 ## Duplicated code

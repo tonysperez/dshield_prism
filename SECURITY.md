@@ -2,7 +2,7 @@
 
 DShield Prism processes adversarial honeypot capture and can call out to a
 cloud LLM and external threat-intel feeds. Its security model is therefore part
-of the product. This document states that model,the known limits,
+of the product. This document states that model, the known limits,
 and how to report a problem.
 
 ## Reporting a vulnerability
