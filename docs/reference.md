@@ -49,11 +49,48 @@ invisible everywhere. `prune-clusters` keeps the newest few runs and deletes the
 rest; every `reference_centroid` generation is preserved.
 
 **Run telemetry (`prism.ops`).** Every tracked verb writes a `status=started`
-doc on entry, patched to `finished`/`failed` on exit (`verb`, `host`, timings,
-`rc`, `error`). Best-effort (never breaks the verb). The console reads it for
-the `/health` "Pipeline activity" panel, the site-wide "pipeline running"
-banner, and the topbar Health badge's cycle dot — `queries.pipeline_cycle_health`
-takes the latest `verb_run` per verb (same `by_verb` agg as the panel) and
+doc on entry, patched to `finished`/`failed` on exit (`verb`, `unit`, `host`,
+timings, `rc`, `error`). Best-effort (never breaks the verb). `unit` is the
+owning systemd unit, copied from `PRISM_SYSTEMD_UNIT`, which each unit file sets
+to `%n`; it is absent for a manual CLI run. The index is `dynamic: strict`, so
+the mapping must be applied (`init-indexes --update-mapping --source ops`)
+*before* a writer stamps a new field — otherwise ES rejects every doc and the
+best-effort writer swallows it, silently losing all telemetry.
+
+**`verb` is coarse.** It holds the top-level argparse verb only — `mine`,
+`cluster`, `rollup`, `name`, `track`, `intel` — so one bucket can cover several
+steps (`backward` stamps `verb="mine"` for `mine campaigns`, `operations`,
+`findings` and `hunts`). Any consumer that reduces to "latest doc per verb"
+therefore loses an earlier sibling's outcome.
+
+The console reads it for the `/health` "Pipeline & schedule" panel, the
+site-wide "pipeline running" banner, and the topbar Health badge's cycle dot.
+The panel groups runs by unit via `queries._unit_rows` off a unit-then-verb agg
+(`unit.keyword` terms with `missing: "manual / ad-hoc"`, then `verb`), bounded to
+`_UNIT_LOOKBACK_DAYS` (30). Bucketing by unit first is load-bearing, since
+`rollup` runs under both forward and backward, and `cluster`/`prune-clusters`
+under both backward and recluster-full — a verb-only agg keeps one doc and makes
+the other unit look like it never ran the step. Because `verb` is coarse, unit
+state comes from a **separate windowed `status=failed` filter**, not from the
+latest doc per verb: otherwise a failed `mine findings` followed by a successful
+`mine hunts` would render the unit green. A `status=started` doc counts as live
+only inside `ops.pipeline_running_window_min`; past that it is a ghost, since
+`running` outranks `failed` and would mask a real failure. Unit state ranks
+`running` > `failed` > `ok` > `never`.
+
+The window matters: without it, a verb removed from a unit's `ExecStart` chain
+keeps its last doc forever and can pin that unit red permanently.
+
+Each unit's tooltip text and cadence come from the static
+`queries._UNIT_CATALOG` — cadence is the timer's `OnCalendar` string verbatim.
+`scripts/smoke/smoke_test_unit_catalog.py` guards it: the build fails when a
+`systemd/*.service` is added or removed without a matching catalog entry, when a
+unit stops setting `PRISM_SYSTEMD_UNIT`, when a cadence diverges from its timer,
+or when `unit` disappears from the ops mapping.
+
+The badge's cycle dot is separate: `queries.pipeline_cycle_health` takes the
+latest `verb_run` per verb via its own flat `by_verb` agg — unrelated to the
+panel's unit-then-verb agg, so changing one does not change the other — and
 classifies via the pure `_derive_cycle_state`: `ok` (all latest runs finished and
 newest within `ops.cycle_stale_min`, default 120 min, or a verb in-flight),
 `warn` (a latest run `failed`), `behind` (newest older than `cycle_stale_min`,
@@ -446,6 +483,76 @@ the spotlight toggle, and the `/api/{ip,command,playbook}` activity endpoints.
 Drift-finding LLM narratives are gated on classification — a confidential or
 untagged playbook is never narrated.
 
+**Status mutations.** `mutate_status`, `add_note` and `bulk_mutate_status`
+([`src/enrich/findings/writer.py`](../src/enrich/findings/writer.py)) index with
+`refresh=False`; the caller owns visibility and forces exactly one
+`es.indices.refresh()` per HTTP request — and only when something was written.
+`prism.finding` is declared `refresh_interval: 5s`, so no *finding* mutation
+path may use `refresh="wait_for"`. `POST /api/findings/status` costs one `mget`
++ one `_bulk` per 500 ids (`_BULK_STATUS_CHUNK`, matching `helpers.bulk`'s own
+chunking so a failure is attributable to its chunk) plus one refresh for the
+whole request. It returns `{"n_updated", "errors": [{"id","error"}]}` at HTTP
+200 on partial failure — a missing id fails only itself — but rejects an invalid
+`status` once with HTTP 400 before touching ES, and 400s on empty `ids`. A
+`prev == new_status` transition writes nothing and still counts in `n_updated`;
+duplicate ids collapse to one transition; a doc that comes back from `mget`
+found-but-sourceless is refused rather than overwritten with a stub. The
+batch-invariant latest cluster run resolves once through `latest_cluster_run_id`
+([`lifecycle.py`](../src/enrich/findings/lifecycle.py)) and is passed into every
+anchor build — an explicit `None` means "already looked, there is none", and
+`RUN_ID_UNSET` is the only value that makes `build_anchor_payload` search for
+itself. Lifecycle side effects stay per-finding and logged-and-swallowed, never
+failing a status write, and are skipped for any id the bulk write did not land.
+
+## Hunts
+
+Analyst-authored YAML in `cfg.findings.hunts.config_dir` (default
+`config/hunts/`), one file per hunt. `mine hunts` AND-combines a hunt's filters
+into one query over the session rollup and emits `kind=analyst_hunt` — one
+finding per (hunt, session), with `delta_signature = hunt:<hunt_id>` so two
+hunts matching the same session stay distinct findings. Cap:
+`findings.hunts.max_findings_per_hunt` (default 500). Code:
+[`src/enrich/findings/hunts.py`](../src/enrich/findings/hunts.py).
+
+Filter kinds: `artifact_set_contains_any` / `artifact_set_contains_all` /
+`intent_in` (`values: [...]`), `command_count_gte` / `login_fail_count_gte`
+(`threshold: int`), `external_match_cosine_gte` (`threshold: 0..1`), `window`
+(`last_days: int`, 1–3650). `values` members must be non-empty strings and a
+`bool` is never accepted where a number belongs. One malformed file aborts the
+whole directory load.
+
+**`enabled` gates writing, not loading.** Every valid hunt is loaded, listed and
+executable regardless of the flag; a disabled one simply never contributes to
+`prism.finding`. That is what lets the console list a hunt in order to switch it
+back on. The four shipped seed hunts are all `enabled: false`. A hunt file that
+omits the key defaults to `true`, so an operator's hand-written hunts survive an
+upgrade unchanged.
+
+| Surface | Behavior |
+|---|---|
+| `mine hunts` | runs enabled hunts only; disabled ids returned under `skipped`, `loaded` counts every hunt on disk |
+| `mine hunts --dry-run --include-disabled` | executes disabled hunts too (naming them under `ran_disabled`); writes nothing. Rejected with a JSON error and exit 2 without `--dry-run` — a flag must never write for a hunt the operator switched off |
+| `POST /api/hunts/{id}/preview?limit=` (1–100, default 100) | executes one hunt and returns matching sessions; **no** finding write, no `init_index`, no refresh, no `run_id`. Works on disabled hunts. Returns `total` (true `_count`, i.e. how many findings enabling it would write), `shown` (page size) and `truncated` = `total > shown` |
+| `POST /api/hunts/{id}/toggle` | `{"enabled": <bool>}` flips `enabled` in the hunt's own YAML. Non-bool body is a 400 with no file touched. Surgical single-line rewrite (replace the first top-level bare-or-quoted `enabled:` key, else append) preserving trailing comments and the file's line endings; the candidate content is parsed *before* it replaces anything and swapped in via `os.replace`, so a torn write can't leave the directory unloadable |
+| `POST /api/hunts` | `{id,name,description,filters}` writes `<config_dir>/<id>.yaml` and 201s. Always `enabled: false` — a hunt authored from a half-formed hypothesis must be previewed before it writes findings. 409 when the id is already loaded *or* the filename already exists; 400 (never 422) on a bad id, name or filter clause, carrying `validate_hunt_doc`'s own message |
+| `PUT /api/hunts/{id}` | `{name,description,filters}` rewrites the hunt's existing `_source_path` — which may be `.yml` or named off-id — never a second file. The file's current `enabled` and any top-level keys the console doesn't know (`owner:`, `tags:`) are carried through untouched; `id` in the body must match the path or it's a 400, since rename is out of scope. Full `yaml.safe_dump` rewrite: comments and `description: \|` blocks do not survive. The id regex is enforced only when the id *names* a new file, so a legacy hand-written id stays editable |
+| `DELETE /api/hunts/{id}` | Unlinks `_source_path`. The `analyst_hunt` findings the hunt already wrote are deliberately left in the inbox — findings outlive their definition; deleting only stops future writes |
+
+Every write re-runs `validate_hunt_doc` — the loader's own per-document rules,
+factored out of `load_hunts` so a hunt that saves can never fail to load — and
+re-parses the candidate text before `os.replace` installs it. Console-authored
+ids must match `^[a-z0-9][a-z0-9-]{0,63}$` and the resolved target must still be
+inside `config_dir`; the existing file's mode is restored after the swap, since
+`mkstemp` creates `0600` and `os.replace` keeps the temp file's mode (new files
+get `0o644 & ~umask`). Hunt ids arriving over HTTP are resolved against the ids
+`load_hunts` returned, never interpolated into a path; unknown id is a 404.
+`load_hunts` refuses a directory with duplicate hunt ids, or any file resolving
+outside `config_dir` (a symlink would otherwise redirect the toggle's write). `enabled` accepts
+YAML bools and the usual string spellings (`"true"`/`"no"`/`"off"`/…); anything
+else aborts the load rather than guessing — `bool("false")` is `True`, and a
+hunt that fires when the operator switched it off is the failure mode this
+whole contract exists to prevent.
+
 ## Intel subsystem
 
 Opt-in (`intel.enabled: true`, off by default). Re-query cadence is
@@ -509,8 +616,9 @@ escalated to the cloud LLM and never queried against CTI feeds.** Central logic:
 
 ## Console
 
-Read-only FastAPI + vanilla-JS app; never writes to ES (except the grounding
-denylist write below, which is a local YAML file, not ES). Nav:
+Read-only FastAPI + vanilla-JS app; never writes to ES. Every write it makes is
+to a local YAML file: the grounding denylist below, and hunt files — created,
+edited, deleted and toggled from the Hunts page (see [Hunts](#hunts)). Nav:
 **Inbox · Explore · Graph · Hunts · Tune** — Tune is a sub-tab shell hosting
 two tabs (the old `/artifact-rules` and `/curation` URLs 302 here): **Rules**
 (analyst artifact rules) and **Grounding** (command-grounding coverage,
@@ -594,7 +702,7 @@ What each gate measures, the eval-scale-vs-production-scale distinction, and the
 snapshot refresh cadence are in [evaluation.md](evaluation.md).
 
 **Reliability diagnostic (not a gate).** `scripts/eval_agreement.py` scores
-annotator agreement over the overlap of two `labels-v1.yaml`-schema files —
+annotator agreement over the overlap of two `labels.yaml`-schema files —
 intra-annotator (an operator's original vs a delayed blind re-label) or
 inter-annotator (two annotators). It reports Cohen's κ, PABAK, and overall +
 per-label percent agreement, each with a bootstrap CI, over a **three-way**
@@ -607,5 +715,5 @@ yet, and κ has no code-regression semantics.
 
 ```bash
 console/.venv/bin/python scripts/eval_agreement.py \
-  --labels-a eval/labels-v1.yaml --labels-b eval/labels-v1-relabel.yaml
+  --labels-a eval/labels.yaml --labels-b eval/labels-relabel.yaml
 ```

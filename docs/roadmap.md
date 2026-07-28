@@ -12,17 +12,10 @@ Remove an item from this file when it ships; add new open items as they surface.
   built source-agnostic (`prism.*.cowrie.*` naming, per-source loaders).
 - **DShield firewall ingestion** — TBD, pending a value decision. Scaffolding for
   it exists but is parked.
-- **Multi-sensor backlog** — ingest 3 sensors × ~2 years each (append-only) to
-  finally settle the semantic-vs-textual question on a corpus large and diverse
-  enough. Scale-hardening for this is substantially in place (windowed
-  clustering, SVD-reduced fits, incremental IP assign, sensor-namespaced ids);
-  the [backfill runbook](operations.md#backfilling-a-new-sensor) is the entry
-  point. Remaining: upstream instrumentation for a second live sensor.
 
 ## Enrichment + correlation
 
-- **Domain artifact kind** + domain-age / passive-DNS grounding — "registered
-  <72 h ago" is higher signal than most LLM inference. Adds a `domain` artifact
+- **Domain artifact kind** + domain-age / passive-DNS grounding. Adds a `domain` artifact
   end-to-end alongside the existing ip/url/hash kinds.
 - **Embedding-based functional clustering** — follow-up to the exact-shape dedup:
   group commands that are functionally equivalent but not shape-identical.
@@ -30,8 +23,6 @@ Remove an item from this file when it ships; add new open items as they surface.
   nearest neighbors into its LLM prompt as additional grounding.
 - **Command lineage / sequence features** in the session embedding — today's
   IDF mean-pool is bag-of-unique-commands; command order is lost.
-- **Cross-session file→command association** — file drops with no in-session
-  command remain unattributed.
 - **IP-layer IDF weighting** — revisit if boilerplate dilution shows up in the IP
   mean-pool.
 - **IP-layer clustering window / incremental re-cluster** — unlike sessions
@@ -103,3 +94,25 @@ normalization. These live next to the code they touch; `scripts/diagnose_*.py`
 track several of them against the live corpus. (The IP-layer noise-rescue gap —
 70% of command-bearing IPs flagged as noise with no rescue — shipped: augmented-
 space rescue, `scripts/diagnose_ip_rescue.py` tunes the percentile.)
+- **Retire `eval_clustering.py`'s CLI/CI surface** — diagnostic-only since the
+  Option-A cutover (raw HDBSCAN-vs-label ARI/NMI, a geometry the shipped
+  nearest-prototype assign path doesn't use); already demoted out of every
+  "the gate" framing in docs (`eval/README.md`, `docs/evaluation.md`). Full
+  removal isn't a doc fix, though: 6 scripts (`sweep_hdbscan.py`,
+  `sweep_embedding_model_prod.py`, `eval_production_scale.py`,
+  `prod_corpus.py`, `sweep_embed_input_order.py`,
+  `inspect_small_clusters.py`) import its metric-core functions as shared
+  utilities, and it's wired into `.github/workflows/eval.yml:37` +
+  CLAUDE.md's CI checklist. Split the reusable cores out before deleting the
+  CLI/report/baseline/CI step, so the 6 dependents don't break.
+- **Prompt paths are CWD-relative, not install-root-anchored** — `cfg.prompts.*`
+  (`playbook_name`, `command_deep_dive`, `cluster_pair_explanation`,
+  `playbook_disambiguate`) are bare relative strings, loaded via plain
+  `Path(...).read_text()` with no anchor to the install dir. Works when CWD is
+  the install dir (every scripted call `cd`s first — systemd units,
+  `install.sh`'s `run_cli`), but a manual verb invocation from any other CWD
+  raises `FileNotFoundError` on the first prompt load. Fix: resolve these paths
+  at config-load time relative to the config file's directory (or the package
+  install root) instead of leaving them CWD-relative — one change in the config
+  loader instead of four call sites. See
+  `_bmad-output/implementation-artifacts/investigations/no-playbooks-after-reinstall-investigation.md`.

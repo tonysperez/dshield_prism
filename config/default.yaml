@@ -61,7 +61,7 @@ llm:
   # provider: "ollama" (Ollama API) or "openai_compat" (LM Studio, vLLM, llama.cpp server)
   provider: "ollama"
   # base_url MUST be overridden in local.yaml.
-  generation_model: "qwen/qwen3.5-9b"
+  generation_model: "qwen/qwen3-8b"
   embedding_model: "text-embedding-nomic-embed-text-v1.5@q8_0"
   request_timeout: 600
   max_retries: 2

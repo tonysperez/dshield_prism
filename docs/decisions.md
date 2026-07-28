@@ -177,6 +177,87 @@ note: nearest-centroid distance uses the `‖a-b‖²` matmul identity batched o
 — the naive 3-D broadcast needed 46 GiB at IP scale and would have OOM'd the live
 run.)
 
+- **Daily write-leaves split out of the 6h backward chain** — `intel refresh`,
+  `apply-artifact-rules`, `track threshold-distributions`, and `mine file-crossref`
+  are write-leaves (nothing in the pipeline reads their output *same-cycle*), so
+  they moved to `dshield_prism-analytics.service` (daily 04:15, all soft-fail).
+  Under the single shared flock this buys **cadence-reduction** (the lock is held
+  for these 1×/day, not 4×) and an **honest soft-fail exit status** separate from
+  backward's hard-fail model core — *not* parallelism (the mutex is unchanged).
+  `escalate` stayed in backward: it is a write-leaf but reads *this-cycle*
+  clustering novelty, so its cadence must equal the model's. Consequence to keep
+  in mind: `intel refresh` is now daily, so the `intel_verdict_flip` finding's
+  resolution is daily-grained (was 6h). Detection stays correct and single-count
+  because both timers are wall-clock (`OnCalendar`) and phase-stable — the ~06:00
+  backward pass always snapshots the fresh 04:15 verdict first; that guarantee
+  breaks if either timer is switched to `OnUnitActiveSec`.
+
+- **Unit attribution for run telemetry is stamped by systemd, not mapped by the
+  console.** Each unit sets `Environment=PRISM_SYSTEMD_UNIT=%n`, which
+  `enrich.ops.run_start` copies onto every `prism.ops` doc, so the console groups
+  runs by unit with a pure ES read. The alternative — a console-side unit→verb
+  table — was rejected because it is hand-maintained against `ExecStart` lines
+  that do change (the analytics split moved four verbs in one commit), and it
+  cannot distinguish a scheduled run from an operator's manual one. Cost: the
+  field must be added to the `dynamic: strict` ops mapping *before* the writer
+  deploys, so `run_start` retries once without `unit` on rejection — otherwise a
+  wrong deploy order silently voids all telemetry, including the running banner
+  and the health badge.
+- **A unit's health cannot be read off "latest run per verb".** `prism.ops.verb`
+  holds only the top-level argparse verb, so `backward` stamps `verb="mine"` for
+  four distinct steps; the newest doc overwrites an earlier sibling's failure and
+  the unit renders green. The `/health` unit panel therefore derives state from a
+  separate windowed `status=failed` filter, and treats a `status=started` doc
+  outside the heartbeat window as a ghost rather than a live run. Making `verb`
+  finer-grained would fix this at the source but changes an established field's
+  values mid-corpus, breaking `pipeline_cycle_health`'s latest-per-verb read.
+  Everything in that panel is bounded to a 30-day window: unbounded, a verb
+  dropped from a unit's chain keeps its final doc forever and pins the unit red.
+- **A hunt's `enabled` flag gates writing findings, not loading it**, and hunts
+  stay YAML files rather than moving into ES. Dropping disabled hunts inside
+  `load_hunts` made the flag one-way — a hunt you cannot list is a hunt you
+  cannot switch back on. Filtering only on the write path makes the toggle
+  symmetric and lets an analyst *preview* a hunt (run the query, persist
+  nothing) before committing it to the inbox; hence all shipped hunts are off
+  by default. An absent `enabled` key still means `true`, so an upgrade never
+  silently disables an operator's hand-written hunts. Keeping the definitions as
+  files keeps `load_hunts` the single source of truth for CLI and console, so
+  the console's toggle rewrites one line and swaps it in via `os.replace`
+  instead of a `yaml.safe_dump` round-trip that would flatten the seeds'
+  `description: |` blocks and inline comments — and because one unparseable
+  file aborts the whole directory load, a torn write would take out the very
+  page you'd use to fix it.
+- **Console hunt edits re-dump the whole YAML; only the toggle stays
+  surgical.** Create / edit / delete write the same `config/hunts/*.yaml`
+  files the loader reads, so hunts stay git-diffable and `load_hunts` stays
+  the single source of truth — but a full-document edit cannot preserve
+  comments or `description: |` blocks, so `write_hunt` uses `yaml.safe_dump`
+  and the UI warns before every save. Top-level keys the console doesn't
+  know (`owner:`, `tags:`) are carried through rather than dropped. The loss
+  is bounded to the rare, explicit case (a human saving from the builder)
+  while `set_hunt_enabled` — the frequent one — keeps its byte-faithful
+  single-line path. The authoring surface is a structured filter builder,
+  never a raw-YAML textarea. An id from HTTP becomes a filename, so it is
+  regex-sanitised whenever it *names* the file; an edit writing back to an
+  existing path is gated on containment in `config_dir` instead, which is
+  what keeps a legacy hand-written id editable. Every write re-runs the
+  loader's own `validate_hunt_doc` before `os.replace` installs it.
+
+- **Finding status mutations force one refresh per request rather than
+  `wait_for` per document.** `prism.finding` is declared `refresh_interval: 5s`,
+  so `es.index(..., refresh="wait_for")` paid up to 5 s *per document* — a
+  31-item bulk inbox action measured 2m30s. Lowering the index's
+  `refresh_interval` was rejected: it taxes every miner write to serve a
+  read-your-write need that only the console's post-action reload has. An
+  explicit `es.indices.refresh()` after the write gives the identical guarantee
+  at one payment per request — sub-100 ms on a 1-shard, 0-replica index — and
+  leaves the interval free to serve indexing throughput. The bulk path
+  additionally collapses `2N` round-trips into one `mget` plus one `_bulk`. Two
+  consequences are deliberate: a refresh failure is logged and swallowed
+  (the write is already committed, and reporting a successful mutation as failed
+  is worse than a briefly stale list), and an invalid `status` in a bulk request
+  is now one HTTP 400 instead of N identical per-id errors under HTTP 200.
+
 ## Dead-ends — measured and rejected
 
 Don't re-attempt these without new evidence; each was tried against the live

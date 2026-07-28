@@ -50,7 +50,7 @@
 # llm:
 #   provider: ollama
 #   base_url: null   # <-- REQUIRED per deploy (Ollama http://host:11434 | LM Studio http://host:1234)
-#   generation_model: qwen/qwen3.5-9b   # <-- must match a model loaded on your LLM server
+#   generation_model: qwen/qwen3-8b   # <-- must match a model loaded on your LLM server
 #   embedding_model: text-embedding-nomic-embed-text-v1.5@q8_0   # <-- must match an embedding model on your LLM server
 #   request_timeout: 600
 #   max_retries: 2

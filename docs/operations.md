@@ -199,15 +199,16 @@ count) so a degraded ES/LLM doesn't write millions of log lines at scale.
 
 ## systemd cadence
 
-Four timers, all serialised on `flock /var/lib/dshield_prism/.lock` (the manual
+Five timers, all serialised on `flock /var/lib/dshield_prism/.lock` (the manual
 `pipeline` verb takes the same lock, so an ad-hoc run can't collide):
 
 | Timer | Cadence | What it does | Failure mode |
 |---|---|---|---|
 | `dshield_prism-forward.timer` | every 30 min | `healthcheck --scope llm` → `enrich` → `rollup sessions` → `rollup ips` | LLM down → unit fails, retries next cycle |
-| `dshield_prism-backward.timer` | every 6 h | full-corpus recompute: re-enrich/reembed stale → conditional re-pool → rollups → `cluster commands` → `reference-heal` → `assign_sessions` → `cluster sessions --novel-pool` → `cluster ips` → `prune-clusters` → `escalate` → `name playbooks` → `name ip-clusters` → `mine campaigns` → `track lifecycles` → `intel refresh` → `mine findings` | most steps soft-fail (log and continue). `mine findings` runs **last** so names + lifecycle snapshots exist before findings reference them |
-| `dshield_prism-recluster-full.timer` | weekly (Mon 03:30 UTC) | full all-time re-cluster + reference refresh + retire dead anchors | a failed full pass marks the unit failed; aborts nothing else |
+| `dshield_prism-backward.timer` | every 6 h | full-corpus recompute: re-enrich/reembed stale → conditional re-pool → rollups → `cluster commands` → `reference-heal` → `assign_sessions` → `cluster sessions --novel-pool` → `cluster ips` → `prune-clusters` → `escalate` → `name playbooks` → `name ip-clusters` → `mine campaigns` → `track lifecycles` → `mine findings` | most steps soft-fail (log and continue). `mine findings` runs **last** so names + lifecycle snapshots exist before findings reference them |
+| `dshield_prism-recluster-full.timer` | weekly (Mon 03:30 UTC) | full all-time `assign_sessions` sweep (catches sessions that fell outside the 6h pass's 30-day window) → novel-pool re-cluster + reference refresh + retire dead anchors | a failed full pass marks the unit failed; aborts nothing else |
 | `dshield_prism-grounding-coverage.timer` | daily (02:15 UTC) | `track grounding-coverage` (spec-grounding-precompute) — full `cowrie.commands` scan, classifies via `enrich.command_grounding`, overwrites the single report doc in `prism.metrics.grounding_coverage` that the console reads O(1) | hard-fail (no `-` prefix); last-good report doc stays in place so Health/Tune degrade gracefully, not to an error |
+| `dshield_prism-analytics.timer` | daily (04:15 UTC) | daily write-leaves split out of the 6h backward chain: `intel refresh` → `apply-artifact-rules` → `track threshold-distributions` → `mine file-crossref` — nothing reads their output same-cycle | all soft-fail (log and continue); failures surface in `prism.ops` |
 
 Forward verbs are watermark-driven and only touch new data; backward verbs do
 full-corpus recomputes. The weekly full pass is the other half of the windowed-
@@ -218,8 +219,24 @@ The grounding-coverage timer is isolated on its own cadence rather than folded
 into forward/backward specifically because its full-corpus commands scan is
 expensive (spec-grounding-precompute; see `docs/decisions.md`).
 
-A fifth unit, **`dshield_prism-backfill.service`**, is installed but **not
+A sixth unit, **`dshield_prism-backfill.service`**, is installed but **not
 enabled** — a manual one-shot for ingesting a historical backlog (see below).
+
+Every unit sets `Environment=PRISM_SYSTEMD_UNIT=%n`, which the pipeline stamps
+onto each `prism.ops` run doc so the console's `/health` **Pipeline & schedule**
+panel can show one row per unit — what it does, its cadence, when it last ran,
+and whether it is running now. Verbs you run by hand carry no unit and group
+under "manual / ad-hoc". After upgrading to a build that adds this field, apply
+the mapping once before the next cycle:
+
+```bash
+dshield_prism init-indexes --update-mapping --source ops
+```
+
+`prism.ops` is `dynamic: strict`: until that runs, ES rejects the stamped docs
+and the best-effort writer swallows the error, so run telemetry goes silent
+rather than erroring. Units already-run before the upgrade keep no `unit` field,
+so the panel shows them under "manual / ad-hoc" until each unit fires again.
 
 ## CLI verbs
 
@@ -285,7 +302,8 @@ The pipeline is built for steady-state forward operation. A historical backlog
 no safe forward path — so `pipeline --backfill` quarantines the temporal steps:
 it full-rescans `enrich` (the per-command cache skips re-LLM on already-enriched
 commands), clears the rollup watermarks for a full re-pool, forces an all-time
-re-cluster, and **drops** `track lifecycles` + `mine findings` (they'd stamp
+re-cluster and all-time campaign mining (both otherwise default to a rolling
+30-day window), and **drops** `track lifecycles` + `mine findings` (they'd stamp
 backfill wall-clock onto old activity and flood the inbox).
 
 **Before any data lands**
@@ -322,6 +340,11 @@ don't auto-restart by design. Re-run the unit as more of the archive lands.
 **After the backfill completes**
 
 ```bash
+# sweep the FULL corpus against current anchors before switching to the windowed
+# steady-state cadence — the 6h backward pass only ever assigns the trailing 30
+# days, so without this, any session outside that window at cutover-time is
+# never revisited by a scheduled job.
+python scripts/assign_sessions.py --window-days 0 --apply --yes --allow-unclassified
 # refresh references from the final corpus (forward novelty scores against these)
 cluster sessions --window-days 0 --refresh-reference
 cluster ips --window-days 0 --refresh-reference

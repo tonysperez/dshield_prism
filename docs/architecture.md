@@ -219,6 +219,15 @@ source population is suppressed that run). Code:
 vocabulary is in [reference.md](reference.md#findings) and the eval
 [RUBRIC](../eval/RUBRIC.md).
 
+A third, analyst-driven stream comes from **hunts** — AND-combined YAML filters
+over the session rollup, one `analyst_hunt` finding per matching session. Hunts
+are opt-in: a hunt's `enabled` flag gates whether it *writes* findings, and
+every shipped hunt is off. Analysts iterate on a hypothesis with **preview**,
+which runs the query and shows matching sessions while persisting nothing, then
+switch the hunt on from the console once it earns a place in the inbox. Code:
+[`src/enrich/findings/hunts.py`](../src/enrich/findings/hunts.py); contract in
+[reference.md](reference.md#hunts).
+
 ## Privacy boundary
 
 Per-sensor data is tagged `dshield.classification` (`public` | `confidential`)
@@ -232,8 +241,9 @@ or CTI-facing egress path gates on it — see [reference.md](reference.md#data-c
 ## Console
 
 A read-only, browser-based investigation console (FastAPI + vanilla JS +
-Cytoscape) — its one write path is the grounding denylist below, a local
-YAML file, never ES. Pages around one analyst workflow:
+Cytoscape) — it never writes to ES. Its only write paths are local YAML files:
+the grounding denylist below, and hunt files, which the Hunts page creates,
+edits, deletes and toggles. Pages around one analyst workflow:
 **Inbox · Explore · Graph · Hunts · Tune**. Tune is an extensible tuning
 surface (a sub-tab shell) carrying the analyst artifact-rules tab and a
 command-grounding coverage tab (spec-grounding-precompute): the expensive

@@ -11,23 +11,31 @@ rule book is [`eval/RUBRIC.md`](../eval/RUBRIC.md); the eval-set mechanics are i
 
 ## The labeled set
 
-A **stratified random sample** of cowrie sessions, hand-labeled with the
+A **variety-first sample** of cowrie sessions, hand-labeled with the
 *behavior* each session expresses (independent of textual command form — two
 sessions doing the same job through different commands get the same label).
-Stratified across size band × intent × intel verdict so the sample isn't all
-commodity brute-force.
+Bucketed by `playbook_id` (each unattributed session its own bucket) with a
+per-playbook cap, so a single dominant behavior can't crowd out the rest —
+not a stratified-random draw. `dshield.classification: public`-gated and
+defanged at sample time (`scripts/build_eval_set.py`), so it's safe to
+publish.
 
-- `eval/labels-v1.yaml` — the labels, one block per `session_id` (tracked; the
+- `eval/labels.yaml` — the labels, one block per `session_id` (tracked; the
   deliverable).
-- `eval/RUBRIC.md`, `eval/labeling-prompt-v1.md` — the labeling rule book and a
+- `eval/sessions.unlabeled.jsonl` — the sampled, public-only, defanged
+  session data the labels join against (tracked — safe to publish post-defang;
+  rebuildable from the corpus via `scripts/build_eval_set.py`).
+- `eval/RUBRIC.md`, `eval/labeling-prompt.md` — the labeling rule book and a
   self-contained prompt to automate it (tracked).
 - `eval/baseline*.json` — metric snapshots the gates diff against (tracked).
-- The rendered per-session markdown and the unlabeled JSONL are **generated**
-  (rebuildable from the corpus via `scripts/build_eval_set.py` +
-  `render_eval_set.py`); they are not committed.
+- The rendered per-session markdown is **generated**, not committed
+  (rebuildable via `scripts/render_eval_set.py`).
 
-Labels join against an unlabeled JSONL by `session_id` at load time — no labeled
-JSONL ever materializes on disk.
+Labels join against the unlabeled JSONL by `session_id` at load time — no
+labeled JSONL ever materializes on disk. Session embeddings are frozen in the
+unlabeled JSONL at sample time, not recomputed per eval run —
+`scripts/refresh_eval_embeddings.py` is the only supported refresh path after
+a production re-embed.
 
 ## The gates
 
@@ -41,6 +49,7 @@ The gates run in CI; run them all locally before any commit.
 | Command-scale | `eval_command_scale.py` | command-layer clustering at production scale |
 | Clustering (diagnostic) | `eval_clustering.py` | partition metrics (ARI/NMI/homogeneity/completeness/v_measure) — **prints, does not gate** |
 | Assignment (diagnostic) | `eval_assignment.py` | accuracy / macro-F1 / mean_auc_novel — **prints, does not gate** |
+| Reliability (diagnostic) | `eval_agreement.py` | intra/inter-annotator agreement (Cohen's κ, PABAK, per-label percent agreement) against `eval/baseline-agreement.json`, plus an `expected_findings` precision/recall diagnostic — **prints, does not gate** |
 
 The operational gate is the semantic gate: each metric maps to a named operator
 failure (a wrong label, a missed novel, an incoherent minted playbook), and every

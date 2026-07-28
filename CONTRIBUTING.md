@@ -1,10 +1,9 @@
 # Contributing
 
 Thanks for the interest. DShield Prism is currently a personal research and portfolio
-project rather than a community-driven product. As such, focused bug reports, 
-correctness fixes, and documentation improvements are welcome. If you're thinking of 
-something bigger than a small fix, open an issue first so we can agree on scope 
-before you write code.
+project. As such, focused bug reports, correctness fixes, and documentation improvements
+are welcome, but if you're thinking of something bigger than a small fix, open an issue
+first so we can agree on scope before you write code.
 
 For anything security-related, follow [SECURITY.md](SECURITY.md) instead of
 opening a public issue.
