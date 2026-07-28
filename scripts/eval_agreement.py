@@ -1,6 +1,6 @@
 """Annotator-agreement scorer for the eval label set (quality-metrics Slice B).
 
-Publishes the *reliability ceiling* of `eval/labels-v1.yaml`: how consistently
+Publishes the *reliability ceiling* of `eval/labels.yaml`: how consistently
 the same behavior is labeled. The number bounds how good any downstream metric
 (assignment macro-F1, novel P/R) can honestly claim to be — a model at 0.84
 against labels that agree 0.80 is at ceiling, and chasing higher is chasing
@@ -80,6 +80,50 @@ def overlap_pairs(a: dict[str, str], b: dict[str, str]) -> list[tuple[str, str]]
     """(cat_a, cat_b) for every session_id annotated in BOTH files, sorted by id
     for determinism."""
     return [(a[sid], b[sid]) for sid in sorted(a.keys() & b.keys())]
+
+
+def _expected_findings_of(block: object) -> set[str] | None:
+    """The analyst's `expected_findings` set for one block, or None if the
+    block isn't annotated / doesn't carry the field."""
+    if not (isinstance(block, dict) and block.get("annotated")):
+        return None
+    ef = block.get("expected_findings")
+    return set(ef) if isinstance(ef, list) else None
+
+
+def load_expected_findings(path: Path) -> dict[str, set[str]]:
+    """`session_id -> {finding_kind, ...}` for every annotated block that
+    carries `expected_findings` (CAP-5)."""
+    raw = yaml.safe_load(path.read_text()) or {}
+    out: dict[str, set[str]] = {}
+    for sid, block in raw.items():
+        ef = _expected_findings_of(block)
+        if ef is not None:
+            out[sid] = ef
+    return out
+
+
+def expected_findings_precision_recall(a: dict[str, set[str]], b: dict[str, set[str]]) -> dict:
+    """CAP-5 — the `expected_findings` axis was inert (recorded, never scored).
+    Treats A as reference and B as the comparison pass, micro-averaged over
+    every (session, finding_kind) pair in the overlap. Diagnostic only: this
+    scores *labeling* consistency, not the findings pipeline against ES, so it
+    stays offline and never gates."""
+    overlap = sorted(a.keys() & b.keys())
+    if not overlap:
+        return {"n_overlap": 0, "precision": None, "recall": None, "tp": 0, "fp": 0, "fn": 0}
+    tp = fp = fn = 0
+    for sid in overlap:
+        ref, cmp_ = a[sid], b[sid]
+        tp += len(ref & cmp_)
+        fp += len(cmp_ - ref)
+        fn += len(ref - cmp_)
+    return {
+        "n_overlap": len(overlap),
+        "precision": tp / (tp + fp) if (tp + fp) else None,
+        "recall": tp / (tp + fn) if (tp + fn) else None,
+        "tp": tp, "fp": fp, "fn": fn,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +253,42 @@ def render(report: dict) -> list[str]:
         lines.append("  top disagreements (a -> b : count):")
         for d in report["disagreements"][:10]:
             lines.append(f"    {d['a']} -> {d['b']} : {d['count']}")
+    ef = report.get("expected_findings_diagnostic")
+    if ef and ef["n_overlap"]:
+        lines.append(
+            "  expected_findings diagnostic (A=reference, B=comparison; "
+            "never gates):"
+        )
+        lines.append(
+            f"    overlap:{ef['n_overlap']}  precision:{_fmt(ef['precision'], 6)}"
+            f"  recall:{_fmt(ef['recall'], 6)}"
+            f"  (tp:{ef['tp']} fp:{ef['fp']} fn:{ef['fn']})"
+        )
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# Baseline (CAP-3) — diagnostic snapshot only: no tolerance/direction/gating
+# fields, unlike eval_operational's baseline shape. Never read to fail a
+# build; `render_baseline_diff` is informational.
+# ---------------------------------------------------------------------------
+def build_baseline(report: dict) -> dict:
+    return {
+        "n_overlap": report["n_overlap"],
+        "metrics": report["metrics"],
+        "captured_from": "eval_agreement.py --write-baseline",
+    }
+
+
+def render_baseline_diff(report: dict, baseline: dict) -> list[str]:
+    lines = ["  vs committed baseline (diagnostic only — never gates):"]
+    bm = baseline.get("metrics", {})
+    m = report["metrics"]
+    lines.append(f"  {'metric':20}{'baseline':>10}{'current':>10}{'delta':>10}")
+    for name in ("percent_agreement", "cohen_kappa", "pabak"):
+        cur, bl = m.get(name), bm.get(name)
+        delta = None if cur is None or bl is None else cur - bl
+        lines.append(f"  {name:20}{_fmt(bl, 10)}{_fmt(cur, 10)}{_fmt(delta, 10)}")
     return lines
 
 
@@ -218,7 +298,7 @@ def render(report: dict) -> list[str]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--labels-a", default="eval/labels-v1.yaml",
+    ap.add_argument("--labels-a", default="eval/labels.yaml",
                     help="first labels YAML (original, or annotator A)")
     ap.add_argument("--labels-b", required=True,
                     help="second labels YAML (delayed re-label, or annotator B)")
@@ -226,6 +306,10 @@ def main() -> int:
                     help="warn when the annotated overlap is smaller than this")
     ap.add_argument("--bootstrap-n", type=int, default=2000)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--baseline", default="eval/baseline-agreement.json",
+                    help="reliability baseline JSON to write, or diff current against")
+    ap.add_argument("--write-baseline", action="store_true",
+                    help="write --baseline from this run's point estimates and exit")
     ap.add_argument("--no-json", action="store_true")
     args = ap.parse_args()
 
@@ -241,6 +325,9 @@ def main() -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     report = evaluate(a, b, bootstrap=args.bootstrap_n, seed=args.seed)
+    ef_a = load_expected_findings(Path(args.labels_a))
+    ef_b = load_expected_findings(Path(args.labels_b))
+    report["expected_findings_diagnostic"] = expected_findings_precision_recall(ef_a, ef_b)
 
     if report["n_overlap"] == 0:
         print("error: no overlapping annotated sessions between the two files.",
@@ -250,11 +337,23 @@ def main() -> int:
         print(f"warning: overlap {report['n_overlap']} < --min-overlap "
               f"{args.min_overlap}; agreement estimates are unstable.", file=sys.stderr)
 
+    if args.write_baseline:
+        baseline_path = Path(args.baseline)
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        baseline_path.write_text(json.dumps(build_baseline(report), indent=2) + "\n")
+        print(f"wrote baseline {args.baseline}")
+        return 0
+
     if not args.no_json:
         print(json.dumps(report, indent=2))
     print()
     for line in render(report):
         print(line)
+    if Path(args.baseline).is_file():
+        baseline = json.loads(Path(args.baseline).read_text())
+        print()
+        for line in render_baseline_diff(report, baseline):
+            print(line)
     return 0
 
 

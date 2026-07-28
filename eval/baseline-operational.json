@@ -1,36 +1,35 @@
 {
   "metrics": {
     "macro_f1": {
-      "baseline": 0.8332,
-      "tolerance": 0.0987,
+      "baseline": 0.7515,
+      "tolerance": 0.1223,
       "direction": "floor",
       "basis": "ci"
     },
     "minted_purity": {
-      "baseline": 1.0,
-      "tolerance": 0.02,
+      "baseline": null,
       "direction": "floor",
-      "basis": "ci"
+      "basis": "diagnostic"
     },
     "minted_distinct": {
-      "baseline": 2,
+      "baseline": null,
       "direction": "floor",
       "basis": "diagnostic"
     },
     "novel_precision": {
-      "baseline": 0.6316,
-      "tolerance": 0.0813,
+      "baseline": 0.5804,
+      "tolerance": 0.0608,
       "direction": "floor",
       "basis": "ci"
     },
     "novel_recall": {
-      "baseline": 0.84,
-      "tolerance": 0.0718,
+      "baseline": 0.8904,
+      "tolerance": 0.0509,
       "direction": "floor",
       "basis": "ci"
     },
     "false_familiar": {
-      "baseline": 0.16,
+      "baseline": 0.1096,
       "direction": "ceiling",
       "basis": "diagnostic"
     }

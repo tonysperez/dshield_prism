@@ -1,7 +1,7 @@
 """Operational quality gate — the post-partition CI gate (quality-metrics Slice A).
 
-Grades the operator jobs on the committed eval geometry (`eval/labels-v1.yaml` +
-`eval/sessions-v1.unlabeled.jsonl`), offline and deterministic — no live ES:
+Grades the operator jobs on the committed eval geometry (`eval/labels.yaml` +
+`eval/sessions.unlabeled.jsonl`), offline and deterministic — no live ES:
 
   * **assign**       — macro-F1 + per-label accuracy (nearest-prototype).
   * **mint-novel**   — novel precision/recall + false-familiar via a whole-label
@@ -41,8 +41,9 @@ from enrich.sources.cowrie.assignment import NOVEL, assign_batch  # noqa: E402
 from eval_assignment import (  # noqa: E402  (reuse the smoke-tested metric cores)
     build_prototypes,
     classification_metrics,
+    fold_ci_half_width,
     load_labeled,
-    stratified_split,
+    repeated_stratified_kfold,
 )
 
 # Degeneracy floor: if measured novel-recall is at/below this at write-baseline
@@ -72,27 +73,49 @@ def _macro_f1_from(pred: list[str], truth: list[str]) -> float:
 # ---------------------------------------------------------------------------
 # Novelty block — leave-one-label-out holdout scored at the shipped tau
 # ---------------------------------------------------------------------------
+def _normalize_vec(v: np.ndarray) -> np.ndarray:
+    n = np.linalg.norm(v)
+    return v if n == 0.0 else v / n
+
+
 def novelty_records(labels: list[str], embs: np.ndarray, *, tau: float,
                     confident_tau: float, min_label_size: int = 4) -> list[tuple[bool, bool]]:
     """One (truth_novel, pred_novel) record per session, each session counted once
     per role — so precision's base rate is honest and the records are independent
     for the bootstrap:
 
-      * negatives (should-read-familiar): every session assigned ONCE against the
-        FULL prototype set (its own behavior present) — a novel flag here is a
-        false alarm (false positive).
-      * positives (should-read-novel): leave-one-label-out — each eligible label's
-        sessions assigned against the prototypes with THAT label withheld, so the
-        behavior genuinely has no home. A novel flag is a true positive.
+      * negatives (should-read-familiar): every session assigned against a
+        prototype set where its OWN label's prototype is leave-one-out — the
+        mean of that label's *other* members, excluding itself (CAP-7 / A1).
+        Without this, every session sits inside its own label-mean and its
+        nearest cosine is inflated by a 1/label_size self-contribution,
+        suppressing false alarms. Other-label prototypes are untouched (they
+        were already leakage-free). A size-1 label has no LOO prototype — that
+        session is excluded from the negative base rather than forced into a
+        synthetic self-comparison. A novel flag here is a false alarm (FP).
+      * positives (should-read-novel): leave-one-label-out — each eligible
+        label's sessions assigned against the prototypes with THAT label
+        withheld, so the behavior genuinely has no home. Already leakage-free
+        (unchanged by CAP-7). A novel flag is a true positive.
     """
     by = defaultdict(list)
     for i, lb in enumerate(labels):
         by[lb].append(i)
     records: list[tuple[bool, bool]] = []
-    # negatives: full prototypes, each session once.
+    # negatives: leave-one-out own-label prototype, other labels unchanged.
     all_ids, all_mat = build_prototypes(embs, labels)
-    neg = assign_batch(embs, all_mat, all_ids, tau=tau, confident_tau=confident_tau)
-    records.extend((False, a.status == NOVEL) for a in neg)
+    label_row = {lb: idx for idx, lb in enumerate(all_ids)}
+    for lb, idxs in by.items():
+        n = len(idxs)
+        if n < 2:
+            continue  # size-1 label: no LOO prototype exists, excluded
+        lb_sum = embs[idxs].sum(axis=0)
+        for i in idxs:
+            loo_proto = all_mat.copy()
+            loo_proto[label_row[lb]] = _normalize_vec((lb_sum - embs[i]) / (n - 1))
+            res = assign_batch(embs[i:i + 1], loo_proto, all_ids,
+                               tau=tau, confident_tau=confident_tau)
+            records.append((False, res[0].status == NOVEL))
     # positives: leave-one-label-out.
     for held in sorted(by):
         if len(by[held]) < min_label_size:
@@ -191,36 +214,45 @@ def bootstrap_half_width(values: list[float], stat, *, n: int, seed: int = 0) ->
 # Evaluate
 # ---------------------------------------------------------------------------
 def evaluate(labels: list[str], embs: np.ndarray, *, tau: float, confident_tau: float,
-             holdout_k: int, bootstrap: int, per_label_floor: float) -> dict:
-    # One stratified split, reused for the point estimate AND the bootstrap, so
-    # the CI protects exactly the estimator it reports (no train/test drift, no
-    # second split call).
-    train, test = stratified_split(labels)
-    proto_ids, proto_mat = build_prototypes(embs[train], [labels[i] for i in train])
-    test_embs, test_truth = embs[test], [labels[i] for i in test]
-    cls = classification_metrics(test_embs, test_truth, proto_ids, proto_mat)
-    per_label_acc = {lb: m["recall"] for lb, m in cls["per_label"].items()}
+             holdout_k: int, bootstrap: int, per_label_floor: float,
+             k_folds: int = 5, repeats: int = 3, seed: int = 0) -> dict:
+    # Repeated stratified k-fold (CAP-8 / A2), replacing the single alternating
+    # 50/50 split: every label with >=1 member reaches a test fold, and the CI
+    # is the across-fold spread (captures split variance, not just
+    # test-resampling noise). Point estimate = mean over folds.
+    folds = repeated_stratified_kfold(labels, k=k_folds, repeats=repeats, seed=seed)
+    fold_f1: list[float] = []
+    per_label_recall: dict[str, list[float]] = defaultdict(list)
+    n_test_total = 0
+    for train, test in folds:
+        proto_ids, proto_mat = build_prototypes(embs[train], [labels[i] for i in train])
+        test_embs, test_truth = embs[test], [labels[i] for i in test]
+        cls = classification_metrics(test_embs, test_truth, proto_ids, proto_mat)
+        fold_f1.append(cls["macro_f1"])
+        n_test_total += cls["n_test"]
+        for lb, m in cls["per_label"].items():
+            per_label_recall[lb].append(m["recall"])
+    macro_f1 = round(float(np.mean(fold_f1)), 4) if fold_f1 else 0.0
+    per_label_acc = {lb: round(float(np.mean(v)), 4) for lb, v in per_label_recall.items()}
+    f1_hw = fold_ci_half_width(fold_f1)
 
     nov_records = novelty_records(labels, embs, tau=tau, confident_tau=confident_tau)
     nov = _pr_from_records(nov_records)
     mint = minted_block(labels, embs, holdout_k=holdout_k)
 
-    # CIs. macro-F1 over the resampled test set; novelty/minted over their records.
-    test_pred = [r.playbook_id for r in assign_batch(test_embs, proto_mat, proto_ids,
-                                                      tau=0.0, confident_tau=0.0)]
-    paired = list(zip(test_pred, test_truth))
-    f1_hw = bootstrap_half_width(
-        paired, lambda s: _macro_f1_from([p for p, _ in s], [t for _, t in s]),
-        n=bootstrap)
+    # Novelty/minted CIs are unrelated to CAP-8 (not split-derived) — unchanged
+    # deterministic bootstrap over their own record lists.
     rec_hw = bootstrap_half_width(nov_records, lambda s: _pr_from_records(s)["novel_recall"], n=bootstrap)
     prec_hw = bootstrap_half_width(nov_records, lambda s: _pr_from_records(s)["novel_precision"], n=bootstrap)
     pur_hw = bootstrap_half_width(mint["records"], purity_of, n=bootstrap)
 
     return {
-        "n_labeled": len(labels), "n_labels": len(set(labels)), "n_test": cls["n_test"],
+        "n_labeled": len(labels), "n_labels": len(set(labels)),
+        "n_test": n_test_total, "n_folds": k_folds, "n_repeats": repeats,
+        "n_folds_run": len(folds),
         "tau": tau, "confident_tau": confident_tau, "holdout_k": holdout_k,
         "metrics": {
-            "macro_f1": cls["macro_f1"],
+            "macro_f1": macro_f1,
             "novel_precision": nov["novel_precision"],
             "novel_recall": nov["novel_recall"],
             "false_familiar": nov["false_familiar"],
@@ -231,6 +263,7 @@ def evaluate(labels: list[str], embs: np.ndarray, *, tau: float, confident_tau: 
                           "novel_precision": prec_hw, "minted_purity": pur_hw},
         "per_label_accuracy": per_label_acc,
         "per_label_floor": per_label_floor,
+        "label_counts": dict(Counter(labels)),
         "novelty_degenerate": (nov["novel_recall"] is None or nov["novel_recall"] <= _DEGENERATE_RECALL),
         "n_flagged_novel": nov["n_flagged_novel"],
         "minted_skip": mint.get("skip"),
@@ -270,7 +303,10 @@ def build_baseline(report: dict, *, epsilon: float) -> dict:
     }
     note = ("Per-metric thresholds: macro-F1 / minted purity / novelty use a bootstrap-CI "
             "floor (baseline - half-width); per-label accuracy uses a hard absolute floor "
-            "(collapse detector); minted-distinct + false-familiar are diagnostics; novelty is "
+            "(collapse detector), except singleton labels (n<2), which are reported but "
+            "excluded from the floor — no k-fold prototype is possible for them, so a "
+            "0.0 there is structural, not a regression; minted-distinct + false-familiar "
+            "are diagnostics; novelty is "
             + ("DIAGNOSTIC (label-mean geometry pinned novel-recall <= "
                f"{_DEGENERATE_RECALL} at tau — honest gating deferred to Slice E's "
                "real anchors)" if degen else "a CI floor (non-degenerate at tau)")
@@ -310,9 +346,21 @@ def gate(report: dict, baseline: dict) -> tuple[list[str], bool]:
         lines.append(f"  {name:18}{basis:>11}{bl:>10.4f}{cur:>10.4f}{tol:>8.3f}  "
                      f"{'PASS' if passed else 'FAIL'}")
     # per-label accuracy: hard absolute floor — catches a single label collapsing.
+    # Singleton labels (n<2, matching CAP-7's LOO threshold — a size-1 label has
+    # no held-out prototype either) can never train a k-fold prototype, so they
+    # score 0.0 by construction, not by regression. Reported for visibility but
+    # excluded from the hard floor — the label stays in the eval set (real,
+    # rare behavior is exactly the signal novelty detection cares about), it's
+    # just not held to a floor that no amount of prototype quality could clear.
     floor = baseline["per_label_floor"]
+    counts = report.get("label_counts", {})
     worst = None
     for lb, acc in sorted(report["per_label_accuracy"].items()):
+        n = counts.get(lb)
+        if n is not None and n < 2:
+            lines.append(f"  {('per_label:' + lb):18}{'floor':>11}{floor:>10.3f}{acc:>10.4f}"
+                         f"{'':>8}  (info, n=1 excluded)")
+            continue
         passed = acc >= floor
         ok = ok and passed
         if worst is None or acc < worst[1]:
@@ -324,8 +372,8 @@ def gate(report: dict, baseline: dict) -> tuple[list[str], bool]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--labels", default="eval/labels-v1.yaml")
-    ap.add_argument("--unlabeled", default="eval/sessions-v1.unlabeled.jsonl")
+    ap.add_argument("--labels", default="eval/labels.yaml")
+    ap.add_argument("--unlabeled", default="eval/sessions.unlabeled.jsonl")
     ap.add_argument("--baseline", default="eval/baseline-operational.json")
     ap.add_argument("--tau", type=float, default=0.94)
     ap.add_argument("--confident-tau", type=float, default=0.98)
@@ -333,6 +381,11 @@ def main() -> int:
     ap.add_argument("--per-label-floor", type=float, default=0.3)
     ap.add_argument("--bootstrap", type=int, default=1000)
     ap.add_argument("--epsilon", type=float, default=0.02)
+    ap.add_argument("--k-folds", type=int, default=5,
+                    help="repeated stratified k-fold: folds per repeat (CAP-8)")
+    ap.add_argument("--repeats", type=int, default=3,
+                    help="repeated stratified k-fold: number of repeats (CAP-8)")
+    ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--write-baseline", action="store_true")
     ap.add_argument("--no-json", action="store_true")
     args = ap.parse_args()
@@ -343,7 +396,8 @@ def main() -> int:
         return 1
     report = evaluate(labels, embs, tau=args.tau, confident_tau=args.confident_tau,
                       holdout_k=args.holdout_k, bootstrap=args.bootstrap,
-                      per_label_floor=args.per_label_floor)
+                      per_label_floor=args.per_label_floor,
+                      k_folds=args.k_folds, repeats=args.repeats, seed=args.seed)
 
     if args.write_baseline:
         baseline = build_baseline(report, epsilon=args.epsilon)

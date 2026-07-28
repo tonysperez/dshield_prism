@@ -24,14 +24,18 @@ import tempfile
 from eval_agreement import (
     NOVEL,
     REJECT,
+    build_baseline,
     category_of,
     cohen_kappa,
     evaluate,
+    expected_findings_precision_recall,
     load_categories,
+    load_expected_findings,
     overlap_pairs,
     pabak,
     per_label_agreement,
     percent_agreement,
+    render_baseline_diff,
 )
 
 PASSED: list[str] = []
@@ -134,6 +138,74 @@ if r1["ci_half_width"] is None:
 else:
     check("bootstrap deterministic (same seed -> identical CIs)",
           r1["ci_half_width"] == r2["ci_half_width"], str(r1["ci_half_width"]))
+
+
+# --- CAP-3: baseline snapshot + diagnostic diff (never gates) ---------------
+r = evaluate(a, b, bootstrap=50, seed=0)
+bl = build_baseline(r)
+check("build_baseline captures n_overlap + point-estimate metrics",
+      bl["n_overlap"] == r["n_overlap"] and bl["metrics"] == r["metrics"], str(bl))
+check("build_baseline carries no tolerance/direction/gating fields",
+      "tolerance" not in bl and "direction" not in bl, str(bl))
+diff_lines = render_baseline_diff(r, bl)
+metric_lines = diff_lines[2:]  # [0]=title, [1]=header, rest=one per metric
+check("render_baseline_diff against its own baseline -> zero deltas",
+      len(metric_lines) == 3 and all(line.rstrip().endswith("0.0000") for line in metric_lines),
+      str(diff_lines))
+
+
+# --- CAP-5: expected_findings precision/recall (inert axis, now diagnostic) -
+with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as _fh:
+    _fh.write(
+        "s1:\n"
+        "  annotated: true\n"
+        "  is_real: true\n"
+        "  playbook_label: host_recon\n"
+        "  expected_findings: [new_playbook, outlier_burst]\n"
+        "  notes: \"\"\n"
+        "s2:\n"
+        "  annotated: true\n"
+        "  is_real: true\n"
+        "  playbook_label: host_recon\n"
+        "  expected_findings: []\n"
+        "  notes: \"\"\n"
+    )
+    _ef_a_path = _fh.name
+with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as _fh:
+    _fh.write(
+        "s1:\n"
+        "  annotated: true\n"
+        "  is_real: true\n"
+        "  playbook_label: host_recon\n"
+        "  expected_findings: [new_playbook, campaign_convergence]\n"
+        "  notes: \"\"\n"
+        "s2:\n"
+        "  annotated: true\n"
+        "  is_real: true\n"
+        "  playbook_label: host_recon\n"
+        "  expected_findings: []\n"
+        "  notes: \"\"\n"
+    )
+    _ef_b_path = _fh.name
+try:
+    ef_a = load_expected_findings(Path(_ef_a_path))
+    ef_b = load_expected_findings(Path(_ef_b_path))
+    check("load_expected_findings reads the set per session",
+          ef_a["s1"] == {"new_playbook", "outlier_burst"} and ef_a["s2"] == set(), str(ef_a))
+    pr = expected_findings_precision_recall(ef_a, ef_b)
+    # A={new_playbook, outlier_burst} vs B={new_playbook, campaign_convergence}
+    # -> tp=1 (new_playbook), fp=1 (campaign_convergence), fn=1 (outlier_burst)
+    check("expected_findings P/R: tp/fp/fn counted correctly",
+          pr == {"n_overlap": 2, "precision": 0.5, "recall": 0.5, "tp": 1, "fp": 1, "fn": 1},
+          str(pr))
+finally:
+    Path(_ef_a_path).unlink()
+    Path(_ef_b_path).unlink()
+
+empty_ef = expected_findings_precision_recall({}, {})
+check("expected_findings P/R: empty overlap -> None, never raises",
+      empty_ef == {"n_overlap": 0, "precision": None, "recall": None, "tp": 0, "fp": 0, "fn": 0},
+      str(empty_ef))
 
 
 print(f"\n{len(PASSED)} passed, {len(FAILED)} failed")

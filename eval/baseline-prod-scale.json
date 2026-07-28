@@ -1,5 +1,5 @@
 {
-  "captured_at": "2026-06-02T00:46:40.073309+00:00",
+  "captured_at": "2026-07-27T16:31:30.542709+00:00",
   "captured_from": "scripts/eval_production_scale.py --write-baseline",
   "snapshot_at_capture": "eval/production-snapshot-v1.jsonl.gz",
   "snapshot_metadata": {
@@ -28,62 +28,68 @@
     "cooccurrence_embedded": false,
     "embed_context": [
       "intent",
-      "tactics",
-      "techniques",
       "description"
     ],
     "clustering_mode": "hdbscan"
   },
   "rollups_at_capture": 4064,
-  "eval_sessions_at_capture": 108,
-  "embedding_pipeline_at_capture": "embed_context=['intent', 'tactics', 'techniques', 'description'] cooccurrence.embed_cooccurrence=False merge_threshold=0.94 merged=True",
+  "eval_sessions_at_capture": 40,
+  "embedding_pipeline_at_capture": "embed_context=['intent', 'description'] cooccurrence.embed_cooccurrence=False merge_threshold=0.94 merged=True",
   "tolerance_semantic": "Each gated metric fails when current < baseline - tolerance. Per-label table fails when a label's cluster count exceeds baseline by more than 1. small_cluster_* are informational only.",
   "metrics": {
     "ari": {
-      "baseline": 0.4345,
+      "baseline": 0.0879,
       "tolerance": 0.05
     },
     "nmi": {
-      "baseline": 0.7021,
+      "baseline": 0.4846,
       "tolerance": 0.05
     },
     "homogeneity": {
-      "baseline": 0.864,
+      "baseline": 0.508,
       "tolerance": 0.05
     },
     "completeness": {
-      "baseline": 0.5913,
+      "baseline": 0.4632,
       "tolerance": 0.05
     },
     "v_measure": {
-      "baseline": 0.7021,
+      "baseline": 0.4846,
       "tolerance": 0.05
     }
   },
   "per_label": {
     "botnet_loader": {
-      "n_sessions": 15,
-      "n_hdbscan_clusters_assigned": 4
+      "n_sessions": 1,
+      "n_hdbscan_clusters_assigned": 1
+    },
+    "dropped_binary_exec": {
+      "n_sessions": 1,
+      "n_hdbscan_clusters_assigned": 1
     },
     "host_recon": {
-      "n_sessions": 7,
-      "n_hdbscan_clusters_assigned": 2
+      "n_sessions": 23,
+      "n_hdbscan_clusters_assigned": 4
     },
-    "mirai_busybox_probe": {
-      "n_sessions": 11,
-      "n_hdbscan_clusters_assigned": 2
+    "iot_cli_probe": {
+      "n_sessions": 1,
+      "n_hdbscan_clusters_assigned": 1
     },
-    "shell_wrapper_only": {
-      "n_sessions": 10,
-      "n_hdbscan_clusters_assigned": 2
+    "payload_fetch_exec": {
+      "n_sessions": 2,
+      "n_hdbscan_clusters_assigned": 1
+    },
+    "scp_upload": {
+      "n_sessions": 1,
+      "n_hdbscan_clusters_assigned": 1
     },
     "single_command_probe": {
-      "n_sessions": 35,
+      "n_sessions": 6,
       "n_hdbscan_clusters_assigned": 2
     },
     "ssh_key_chattr_persistence": {
-      "n_sessions": 30,
-      "n_hdbscan_clusters_assigned": 5
+      "n_sessions": 5,
+      "n_hdbscan_clusters_assigned": 2
     }
   },
   "small_cluster_informational": {

@@ -2,15 +2,17 @@
 counterpart to eval_clustering.py, which now covers only the novel-pool HDBSCAN).
 
 Validates `enrich.sources.cowrie.assignment.assign_batch` against the analyst labels
-(`eval/labels-v1.yaml` + `eval/sessions-v1.unlabeled.jsonl`) — no live ES, so it runs in
+(`eval/labels.yaml` + `eval/sessions.unlabeled.jsonl`) — no live ES, so it runs in
 CI. Builds per-label prototypes from the labelled embeddings (a stand-in for the live
 anchors — a production-scale anchor snapshot is a follow-up) and measures the two things
 the assignment era cares about:
 
-  * **classification** — stratified train/test split: prototypes from train, 1-NN
-    nearest-prototype assignment of test. Reports overall accuracy + macro-F1 + per-label
-    precision/recall. Threshold-free (the metric of record), since label-prototypes are
-    coarser than the 155 fine anchors so absolute cosines differ from production τ.
+  * **classification** — deterministic repeated stratified k-fold (CAP-8 / A2):
+    prototypes from each fold's train split, 1-NN nearest-prototype assignment of its
+    test split. Point estimate = mean accuracy/macro-F1/per-label recall over all folds;
+    CI = the across-fold spread. Threshold-free (the metric of record), since
+    label-prototypes are coarser than the 155 fine anchors so absolute cosines differ
+    from production τ.
   * **novelty (OOD)** — Exp-2 offline: hold out one label's prototype, assign that label's
     sessions against the rest, and check their nearest-surviving cosine is *lower* than
     in-distribution sessions' nearest cosine. Reports a rank-AUC of "held-out reads as
@@ -68,17 +70,68 @@ def _l2(m: np.ndarray) -> np.ndarray:
     return m / np.where(n == 0.0, 1.0, n)
 
 
-def stratified_split(labels: list[str], seed: int = 0) -> tuple[list[int], list[int]]:
-    """Deterministic per-label split: alternating members → (train, test)."""
+def _fold_assignment(labels: list[str], k: int, seed: int, rotation: int) -> list[int]:
+    """Deterministic per-label round-robin fold index for one repeat. Each
+    label's members are shuffled (seeded) then assigned folds
+    `(index + rotation) % k` in rotation, so a label with fewer members than
+    `k` still lands each member in a distinct fold, and a size-1 label always
+    lands in exactly one fold — which one varies across repeats via
+    `rotation`, rather than being pinned to the same fold forever."""
+    rng = np.random.default_rng(seed)
     by = defaultdict(list)
     for i, lb in enumerate(labels):
         by[lb].append(i)
-    train, test = [], []
+    fold_of = [-1] * len(labels)
     for lb in sorted(by):
-        members = by[lb]
-        for k, i in enumerate(members):
-            (train if k % 2 == 0 else test).append(i)
-    return sorted(train), sorted(test)
+        order = list(by[lb])
+        rng.shuffle(order)
+        for j, i in enumerate(order):
+            fold_of[i] = (j + rotation) % k
+    return fold_of
+
+
+def repeated_stratified_kfold(
+    labels: list[str], *, k: int = 5, repeats: int = 3, seed: int = 0,
+) -> list[tuple[list[int], list[int]]]:
+    """Deterministic repeated stratified k-fold (CAP-8 / A2), replacing the
+    single alternating 50/50 split (`stratified_split`, retired). That split
+    had three coupled defects: singleton labels went train-only and vanished
+    from macro-F1 and the per-label floor; size-2 labels trained a
+    1-example prototype tested on 1 example; and its bootstrap resampled one
+    fixed test half with prototypes frozen, so the reported CI captured only
+    test-resampling noise, not split variance.
+
+    Every label with >=1 member reaches a test fold at least once per
+    repeat (`_fold_assignment`'s rotation) — including singletons, which a
+    plain scikit `StratifiedKFold` would reject outright (it requires
+    `n_splits <= smallest class size`). Returns one `(train_idx, test_idx)`
+    pair per (repeat, fold); the caller's point estimate is the mean over all
+    of them, and the CI is the across-fold/repeat spread — which, unlike the
+    retired split's bootstrap, actually captures split variance. Deterministic
+    under a fixed `seed`: same seed -> bit-identical folds.
+    """
+    n = len(labels)
+    folds: list[tuple[list[int], list[int]]] = []
+    for r in range(repeats):
+        fold_of = _fold_assignment(labels, k, seed=seed + r, rotation=r % k)
+        for f in range(k):
+            test = [i for i in range(n) if fold_of[i] == f]
+            if not test:
+                continue
+            train = [i for i in range(n) if fold_of[i] != f]
+            folds.append((train, test))
+    return folds
+
+
+def fold_ci_half_width(values: list[float]) -> float:
+    """Half-width of the 95% percentile spread of a per-fold metric list —
+    the across-fold/repeat variance CAP-8 makes visible (vs. the retired
+    split's single-test-half bootstrap). 0.0 when too few folds exist to form
+    a spread."""
+    if len(values) < 2:
+        return 0.0
+    lo, hi = np.percentile(values, [2.5, 97.5])
+    return round(float(hi - lo) / 2.0, 4)
 
 
 # ---------------------------------------------------------------------------
@@ -173,27 +226,51 @@ _GATED = {"accuracy": "classification", "macro_f1": "classification",
           "mean_auc_novel": "novelty"}
 
 
-def evaluate(labels: list[str], embs: np.ndarray) -> dict:
-    train, test = stratified_split(labels)
-    proto_ids, proto_mat = build_prototypes(embs[train], [labels[i] for i in train])
-    cls = classification_metrics(embs[test], [labels[i] for i in test], proto_ids, proto_mat)
+_DEFAULT_K, _DEFAULT_REPEATS = 5, 3
+
+
+def evaluate(labels: list[str], embs: np.ndarray, *,
+             k: int = _DEFAULT_K, repeats: int = _DEFAULT_REPEATS, seed: int = 0) -> dict:
+    folds = repeated_stratified_kfold(labels, k=k, repeats=repeats, seed=seed)
+    fold_acc, fold_f1 = [], []
+    per_label_recall: dict[str, list[float]] = defaultdict(list)
+    for train, test in folds:
+        proto_ids, proto_mat = build_prototypes(embs[train], [labels[i] for i in train])
+        cls = classification_metrics(embs[test], [labels[i] for i in test], proto_ids, proto_mat)
+        if cls["accuracy"] is not None:
+            fold_acc.append(cls["accuracy"])
+        fold_f1.append(cls["macro_f1"])
+        for lb, m in cls["per_label"].items():
+            per_label_recall[lb].append(m["recall"])
+    accuracy = round(float(np.mean(fold_acc)), 4) if fold_acc else None
+    macro_f1 = round(float(np.mean(fold_f1)), 4) if fold_f1 else 0.0
+    per_label = {lb: {"recall_mean": round(float(np.mean(v)), 4), "n_folds": len(v)}
+                 for lb, v in sorted(per_label_recall.items())}
     nov = novelty_metrics(embs, labels)
     return {
-        "n_labeled": len(labels), "n_train": len(train), "n_test": len(test),
+        "n_labeled": len(labels), "n_folds": k, "n_repeats": repeats, "n_folds_run": len(folds),
         "n_labels": len(set(labels)),
-        "metrics": {"accuracy": cls["accuracy"], "macro_f1": cls["macro_f1"],
+        "metrics": {"accuracy": accuracy, "macro_f1": macro_f1,
                     "mean_auc_novel": nov["mean_auc_novel"]},
-        "classification": cls, "novelty": nov,
+        "ci_half_width": {"accuracy": fold_ci_half_width(fold_acc),
+                          "macro_f1": fold_ci_half_width(fold_f1)},
+        "classification": {"per_label": per_label},
+        "novelty": nov,
     }
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--labels", default="eval/labels-v1.yaml")
-    ap.add_argument("--unlabeled", default="eval/sessions-v1.unlabeled.jsonl")
+    ap.add_argument("--labels", default="eval/labels.yaml")
+    ap.add_argument("--unlabeled", default="eval/sessions.unlabeled.jsonl")
     ap.add_argument("--baseline", default="eval/baseline-assignment.json")
     ap.add_argument("--write-baseline", action="store_true")
     ap.add_argument("--tolerance", type=float, default=0.05)
+    ap.add_argument("--k-folds", type=int, default=_DEFAULT_K,
+                    help="repeated stratified k-fold: folds per repeat (CAP-8)")
+    ap.add_argument("--repeats", type=int, default=_DEFAULT_REPEATS,
+                    help="repeated stratified k-fold: number of repeats (CAP-8)")
+    ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-json", action="store_true")
     args = ap.parse_args()
 
@@ -201,7 +278,7 @@ def main() -> int:
     if not labels:
         print("No labelled sessions with embeddings found.", file=sys.stderr)
         return 1
-    report = evaluate(labels, embs)
+    report = evaluate(labels, embs, k=args.k_folds, repeats=args.repeats, seed=args.seed)
 
     if args.write_baseline:
         Path(args.baseline).write_text(json.dumps(

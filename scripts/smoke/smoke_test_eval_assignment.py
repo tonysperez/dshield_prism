@@ -1,6 +1,6 @@
 """Smoke test for the assignment-eval pure cores
 (`scripts/eval_assignment.py`): build_prototypes, classification_metrics,
-_rank_auc, novelty_metrics, stratified_split. No ES, no eval files.
+_rank_auc, novelty_metrics, repeated_stratified_kfold. No ES, no eval files.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from eval_assignment import (
     build_prototypes,
     classification_metrics,
     novelty_metrics,
-    stratified_split,
+    repeated_stratified_kfold,
 )
 
 PASSED: list[str] = []
@@ -43,11 +43,18 @@ B = [_u([0, 1, 0.05, 0]), _u([0, 1, -0.05, 0]), _u([0.03, 1, 0, 0]), _u([-0.03, 
 embs = np.array(A + B, dtype=np.float32)
 labels = ["A"] * 4 + ["B"] * 4
 
-# --- stratified_split: alternating per label ---
-tr, te = stratified_split(labels)
-check("split covers all, disjoint", sorted(tr + te) == list(range(8)) and not set(tr) & set(te))
-check("each label split ~half (2 train / 2 test for A)",
-      sum(1 for i in tr if labels[i] == "A") == 2, str(tr))
+# --- repeated_stratified_kfold: each fold covers all, disjoint train/test ---
+folds = repeated_stratified_kfold(labels, k=2, repeats=2, seed=0)
+check("k=2 x repeats=2 -> 4 folds", len(folds) == 4, str(len(folds)))
+for tr, te in folds:
+    check("fold covers all, disjoint", sorted(tr + te) == list(range(8)) and not set(tr) & set(te),
+          str((tr, te)))
+    check("each label present in test (k=2, size 4 -> 2 per fold)",
+          sum(1 for i in te if labels[i] == "A") == 2
+          and sum(1 for i in te if labels[i] == "B") == 2, str(te))
+folds_a = repeated_stratified_kfold(labels, k=2, repeats=2, seed=0)
+folds_b = repeated_stratified_kfold(labels, k=2, repeats=2, seed=0)
+check("deterministic under fixed seed", folds_a == folds_b, str((folds_a, folds_b)))
 
 # --- build_prototypes ---
 pids, pmat = build_prototypes(embs, labels)
