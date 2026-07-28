@@ -13,8 +13,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      # The eval is pure-function: it reads eval/sessions-v1.unlabeled.jsonl
-      # + eval/labels-v1.yaml from HEAD and re-runs the production
+      # The eval is pure-function: it reads eval/sessions.unlabeled.jsonl
+      # + eval/labels.yaml from HEAD and re-runs the production
       # clustering math (L2-normalize + scalar augment + HDBSCAN) on the
       # pinned eval set. No ES connection needed.
       - name: Install deps

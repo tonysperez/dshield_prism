@@ -3,11 +3,11 @@
 Companion to `scripts/build_eval_set.py` (brutal-review phase 1.2). The
 JSONL file the build script emits is dense and not analyst-readable;
 this script turns it into one markdown file per session under
-``eval/sessions-v1/<session_id>.md`` plus an index and a fresh-or-
-preserved ``eval/labels-v1.yaml`` skeleton the analyst fills in.
+``eval/sessions/<session_id>.md`` plus an index and a fresh-or-
+preserved ``eval/labels.yaml`` skeleton the analyst fills in.
 
 Idempotent: re-rendering preserves any labels already present in
-``labels-v1.yaml`` and only adds empty blocks for newly-introduced
+``labels.yaml`` and only adds empty blocks for newly-introduced
 session ids. Re-rendering overwrites the markdown files (cheap; they
 are pure projections of the JSONL).
 
@@ -363,7 +363,7 @@ def _render_index(records: list[dict]) -> str:
     out = ["# Eval set index", "",
            f"Total sessions: **{len(records)}**.",
            "", "Click a session_id to open its rendered view; label "
-           "decisions go into [`labels-v1.yaml`](labels-v1.yaml) "
+           "decisions go into [`labels.yaml`](labels.yaml) "
            "per [`RUBRIC.md`](RUBRIC.md).", ""]
     seen_bands = set(by_band.keys())
     for band in bands_order + [b for b in seen_bands if b not in bands_order]:
@@ -382,7 +382,7 @@ def _render_index(records: list[dict]) -> str:
             fe = len(enr.get("file_events") or [])
             art = len(enr.get("artifact_set") or [])
             out.append(
-                f"| [{sid}](sessions-v1/{sid}.md) "
+                f"| [{sid}](sessions/{sid}.md) "
                 f"| `{strat.get('intent') or '?'}` "
                 f"| `{strat.get('intel') or '?'}` "
                 f"| {cc} | {fe} | {art} |"
@@ -392,7 +392,7 @@ def _render_index(records: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# labels-v1.yaml round-trip
+# labels.yaml round-trip
 # ---------------------------------------------------------------------------
 
 # Default skeleton block. Order matters: `annotated` is first so the
@@ -461,8 +461,8 @@ def _write_labels_yaml(path: Path, data: dict) -> None:
         "# The renderer preserves your edits and backfills any new fields.\n"
         "# Validate every ~25 entries with:\n"
         "#   console/.venv/bin/python scripts/validate_eval_labels.py \\\n"
-        "#     --labels eval/labels-v1.yaml \\\n"
-        "#     --unlabeled eval/sessions-v1.unlabeled.jsonl\n"
+        "#     --labels eval/labels.yaml \\\n"
+        "#     --unlabeled eval/sessions.unlabeled.jsonl\n"
         "# Rubric: ./RUBRIC.md\n"
     )
     for sid, block in data.items():
@@ -493,7 +493,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--input", type=Path,
-        default=Path("eval/sessions-v1.unlabeled.jsonl"),
+        default=Path("eval/sessions.unlabeled.jsonl"),
         help="Unlabeled JSONL from scripts/build_eval_set.py",
     )
     ap.add_argument(
@@ -508,7 +508,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--labels-yaml", type=Path,
-        default=Path("eval/labels-v1.yaml"),
+        default=Path("eval/labels.yaml"),
         help="Round-tripped YAML labels file (idempotent merge)",
     )
     args = ap.parse_args()

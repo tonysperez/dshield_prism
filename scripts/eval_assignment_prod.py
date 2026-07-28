@@ -84,8 +84,8 @@ _GATED = ("assigned_rate", "homogeneity", "anchor_label_purity")
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--labels", default="eval/labels-v1.yaml")
-    ap.add_argument("--unlabeled", default="eval/sessions-v1.unlabeled.jsonl")
+    ap.add_argument("--labels", default="eval/labels.yaml")
+    ap.add_argument("--unlabeled", default="eval/sessions.unlabeled.jsonl")
     ap.add_argument("--snapshot", default="eval/anchor-snapshot-v1.jsonl.gz")
     ap.add_argument("--baseline", default="eval/baseline-assignment-prod.json")
     ap.add_argument("--tau", type=float, default=0.94)

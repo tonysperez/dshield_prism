@@ -1,4 +1,4 @@
-"""Schema validator for `eval/labels-v1.yaml`.
+"""Schema validator for `eval/labels.yaml`.
 
 Companion to `eval/RUBRIC.md` (brutal-review phase 1.2). Reads the
 hand-edited YAML labels file, enforces the schema, and cross-references
@@ -8,8 +8,8 @@ caught. Run after every ~25 labels to catch drift early.
 Run from the repo root via the console venv:
     /home/styx/git/dshield_prism/console/.venv/bin/python \\
       scripts/validate_eval_labels.py \\
-      --labels eval/labels-v1.yaml \\
-      --unlabeled eval/sessions-v1.unlabeled.jsonl
+      --labels eval/labels.yaml \\
+      --unlabeled eval/sessions.unlabeled.jsonl
 """
 from __future__ import annotations
 
@@ -61,11 +61,14 @@ _ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def _check_provenance(sid: str, block: dict, errors: list[str]) -> None:
-    """Validate the optional label-schema v2 fields on an annotated block.
+    """Validate the label-schema v2 fields on an annotated block.
 
-    All four are optional: absent or ``None`` is always fine (that's how the
-    committed file stays valid). When a value *is* present it must be
-    well-typed. Appends to ``errors``; never raises.
+    Called only once the caller has already confirmed ``annotated: true``
+    (see ``_check_block``). ``annotator``, ``labeled_at``, and
+    ``rubric_version`` are required-if-annotated (CAP-2) — a missing/null
+    value here means provenance was never captured at label time, so it
+    fails closed. ``boost_weight`` stays optional: absent/``None`` is fine,
+    well-typed when present. Appends to ``errors``; never raises.
     """
     def err(msg: str) -> None:
         errors.append(f"{sid}: {msg}")
@@ -87,21 +90,24 @@ def _check_provenance(sid: str, block: dict, errors: list[str]) -> None:
             err(f"boost_weight must be > 0 (a weight of 0 drops the sample), got {bw!r}")
 
     labeled_at = block.get("labeled_at")
-    if labeled_at is not None:
-        if not isinstance(labeled_at, str) or not _ISO_DATE_RE.fullmatch(labeled_at):
-            err(f"labeled_at must be null or a YYYY-MM-DD date string, got {labeled_at!r}")
-        else:
-            try:
-                datetime.date.fromisoformat(labeled_at)
-            except ValueError:
-                err(f"labeled_at must be a real calendar date (YYYY-MM-DD), got {labeled_at!r}")
+    if labeled_at is None:
+        err("labeled_at is required when annotated is true, got null/missing")
+    elif not isinstance(labeled_at, str) or not _ISO_DATE_RE.fullmatch(labeled_at):
+        err(f"labeled_at must be a YYYY-MM-DD date string, got {labeled_at!r}")
+    else:
+        try:
+            datetime.date.fromisoformat(labeled_at)
+        except ValueError:
+            err(f"labeled_at must be a real calendar date (YYYY-MM-DD), got {labeled_at!r}")
 
     for f in ("annotator", "rubric_version"):
         v = block.get(f)
+        if v is None:
+            err(f"{f} is required when annotated is true, got null/missing")
         # str check short-circuits before .strip(), so a non-string errors
         # cleanly; .strip() rejects whitespace-only ("   ") as effectively empty.
-        if v is not None and (not isinstance(v, str) or not v.strip()):
-            err(f"{f} must be null or a non-empty string, got {v!r}")
+        elif not isinstance(v, str) or not v.strip():
+            err(f"{f} must be a non-empty string, got {v!r}")
 
 
 def _check_block(sid: str, block: object, errors: list[str]) -> tuple[bool, str | None]:
@@ -132,10 +138,9 @@ def _check_block(sid: str, block: object, errors: list[str]) -> tuple[bool, str 
         # flag to true after filling in the block.
         return False, None
 
-    # Optional provenance + rare-class re-weighting (label-schema v2).
-    # Type-checked only when present, so legacy blocks (and the committed
-    # answer key, which carries none of these) validate clean. These append
-    # errors but do not change the (filled, playbook_label) return contract.
+    # Provenance (required-if-annotated, CAP-2) + rare-class re-weighting
+    # (boost_weight, still optional) — label-schema v2. These append errors
+    # but do not change the (filled, playbook_label) return contract.
     _check_provenance(sid, block, errors)
 
     is_real = block.get("is_real")
@@ -228,12 +233,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--labels", type=Path,
-        default=Path("eval/labels-v1.yaml"),
+        default=Path("eval/labels.yaml"),
         help="Hand-edited YAML labels file",
     )
     ap.add_argument(
         "--unlabeled", type=Path,
-        default=Path("eval/sessions-v1.unlabeled.jsonl"),
+        default=Path("eval/sessions.unlabeled.jsonl"),
         help=(
             "Unlabeled JSONL — used to detect orphan labels (in YAML "
             "but not in JSONL) and missing labels (in JSONL but not "

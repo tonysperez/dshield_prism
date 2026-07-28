@@ -238,7 +238,7 @@ def _run_prod_sweep(output_dir: Path) -> int:
     corpus = pull_session_corpus(es, index, cfg.session.page_size)
     print(f"  {len(corpus)} sessions", flush=True)
     sid_to_label, pair_to_sessions = _load_eval_session_ids_and_labels(
-        Path("eval/labels-v1.yaml"), Path("eval/labels-v2.yaml"),
+        Path("eval/labels.yaml"), Path("eval/labels-v2.yaml"),
     )
     merge_threshold = cfg.session.playbook_merge_threshold
 
@@ -285,10 +285,10 @@ def main() -> int:
                          "8-point (mcs,ms) grid, 7 binding metrics) instead "
                          "of the eval-scale sweep.")
     ap.add_argument("--labels", type=Path,
-                    default=Path("eval/labels-v1.yaml"),
+                    default=Path("eval/labels.yaml"),
                     help="Analyst-labeled YAML")
     ap.add_argument("--jsonl", type=Path,
-                    default=Path("eval/sessions-v1.unlabeled.jsonl"),
+                    default=Path("eval/sessions.unlabeled.jsonl"),
                     help="Unlabeled eval JSONL")
     ap.add_argument("--output", type=Path,
                     default=Path("eval/results/hdbscan-sweep.json"),

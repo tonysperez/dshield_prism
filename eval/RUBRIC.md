@@ -1,8 +1,8 @@
-# Labeling rubric — `eval/labels-v1.yaml`
+# Labeling rubric — `eval/labels.yaml`
 
-The rule book for filling in `eval/labels-v1.yaml` (the stratified
+The rule book for filling in `eval/labels.yaml` (the stratified
 analyst sample) against the per-session markdown files under
-`eval/sessions-v1/`. The clustering-quality CI gate
+`eval/sessions/`. The clustering-quality CI gate
 ([`scripts/eval_clustering.py`](../scripts/eval_clustering.py)) joins
 this YAML against the unlabeled JSONL by `session_id`. Garbage labels
 here become garbage measurements downstream.
@@ -26,22 +26,22 @@ once and is consulted dozens of times.
    ```bash
    console/.venv/bin/python scripts/render_eval_set.py
    ```
-   Produces `eval/sessions-v1/<session_id>.md` (one file per session)
-   and `eval/labels-v1.yaml` (one empty block per session, preserves
+   Produces `eval/sessions/<session_id>.md` (one file per session)
+   and `eval/labels.yaml` (one empty block per session, preserves
    existing entries on re-render).
-3. Walk `eval/sessions-v1/*.md` in any order — they're independent.
-4. Fill in the matching block in `eval/labels-v1.yaml`.
+3. Walk `eval/sessions/*.md` in any order — they're independent.
+4. Fill in the matching block in `eval/labels.yaml`.
 5. After every ~25 entries, validate:
    ```bash
    console/.venv/bin/python scripts/validate_eval_labels.py \
-     --labels eval/labels-v1.yaml \
-     --unlabeled eval/sessions-v1.unlabeled.jsonl
+     --labels eval/labels.yaml \
+     --unlabeled eval/sessions.unlabeled.jsonl
    ```
    Catches schema mistakes early, before you make the same mistake 200
    times. Use `--min-records 200` once you're done to gate the final
    commit.
 
-Only `RUBRIC.md`, `labels-v1.yaml`, `README.md`, and `baseline.json` are
+Only `RUBRIC.md`, `labels.yaml`, `README.md`, and `baseline.json` are
 tracked. The rendered session markdown and the unlabeled JSONL are
 local-only — anyone can rebuild them from the corpus.
 
@@ -62,13 +62,13 @@ the LLM's opinions don't anchor your judgement:
    `dominant_intent`, `file_events`, `artifact_set`, intel). Use as a
    cross-check, **not** as your label source. The `playbook_id` and
    `dominant_intent` are exactly what the eval is grading.
-4. **Your label** — copy/paste hint for `labels-v1.yaml`.
+4. **Your label** — copy/paste hint for `labels.yaml`.
 
 ---
 
 ## YAML schema
 
-Each entry in `eval/labels-v1.yaml` is keyed by `session_id`. The
+Each entry in `eval/labels.yaml` is keyed by `session_id`. The
 renderer pre-creates one block per sampled session — you edit the
 existing block, you don't create new ones.
 
@@ -127,6 +127,12 @@ Which finding kinds *should* fire on this session, if we lined up
 adjacent pipeline runs and let the discovery/drift miners look at it.
 The vocabulary is closed; the validator rejects unknown values.
 
+Scored as a **diagnostic only** — `eval_agreement.py` reports set-level
+precision/recall of one labeling pass's `expected_findings` against
+another's over the annotated overlap. It never gates CI; it's a signal for
+how crisply this axis is being labeled, not a pipeline-correctness check
+(it doesn't run the discovery/drift miners against ES).
+
 | Kind | Source | When it should fire |
 |---|---|---|
 | `new_playbook` | `discovery.py` | First-ever observation of a stable behavior |
@@ -168,7 +174,7 @@ when:
 ## Worked examples
 
 The rendered markdown for each smoke-test session lives under
-`eval/sessions-v1/<session_id>.md` after `render_eval_set.py` runs.
+`eval/sessions/<session_id>.md` after `render_eval_set.py` runs.
 Walk through these with the rubric:
 
 ## Anti-patterns

@@ -127,7 +127,7 @@ def main() -> int:
         for sid in corpus.session_ids
     ]).astype(np.float32)
     sid_to_label, pairs = _load_eval_session_ids_and_labels(
-        Path("eval/labels-v1.yaml"), Path("eval/labels-v2.yaml"))
+        Path("eval/labels.yaml"), Path("eval/labels-v2.yaml"))
 
     # Baseline: production hdbscan + rescue + merge.
     base, _ = cluster_hdbscan(

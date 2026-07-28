@@ -1,6 +1,6 @@
 """Export cowrie sessions for offline labeling.
 
-Stratified random sample of cowrie sessions → ``eval/sessions-v1.unlabeled.jsonl``,
+Stratified random sample of cowrie sessions → ``eval/sessions.unlabeled.jsonl``,
 the labeled-clustering eval set (`eval_clustering.py`).
 
 Stratification axes (recorded on every record):
@@ -18,9 +18,18 @@ Per session we emit one JSON record:
       "command_enrichments": [{...}, ...],     # one per unique command line
     }
 
-No embeddings — those get recomputed at eval time from the embedding model
-of the day. Output file is gitignored; the analyst-labeled YAML sibling
-(``eval/labels-v1.yaml``) is the deliverable that ships.
+The session ``embedding`` field, when present on the rollup doc, is written
+into ``rollup_doc`` verbatim and frozen in the JSONL — it is NOT recomputed at
+eval time. ``scripts/refresh_eval_embeddings.py`` is the only supported way to
+refresh a stale embedding after a production re-embed. Output file is
+gitignored; the analyst-labeled YAML sibling (``eval/labels.yaml``) is the
+deliverable that ships.
+
+Only sessions whose rollup carries ``dshield.classification: public`` are
+sampled (``is_releasable`` gate); confidential and untagged rollups are
+skipped. Attacker-side artifacts (IPs, file hashes, URL schemes) are defanged
+in place and ``cowrie.password`` is masked before write — see
+``_defang_record``.
 
 Run from the repo root via the console venv:
     /home/styx/git/dshield_prism/console/.venv/bin/python \\
@@ -39,6 +48,7 @@ from typing import Iterable, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from enrich.classification import is_releasable
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
 
@@ -205,6 +215,104 @@ def _redact_record(rec: dict) -> dict:
         _redact_event(ev)
     for ev in rec.get("command_enrichments") or []:
         _redact_event(ev)
+    return rec
+
+
+def _is_releasable_rollup(rollup: dict, cfg) -> bool:
+    """Gate a rollup on `dshield.classification` before it's ever sampled.
+    Fail-safe: confidential AND untagged rollups are excluded (mirrors
+    `is_releasable`'s default posture — see `src/enrich/classification.py`)."""
+    classification = (rollup.get("dshield") or {}).get("classification")
+    return is_releasable(classification, cfg)
+
+
+# --- Defang: neuter attacker-side artifacts so the eval set is safe to
+# publish. Distinct from `_redact_record` above, which strips sensor/ingest
+# metadata — this targets the attacker's own IPs/hashes/URLs/credentials.
+# Bracket/scheme substitution only: no whitespace or token is added or
+# removed, so command-text token structure survives unchanged (asserted by
+# smoke_test_build_eval_set.py). No repo precedent for a defang convention
+# existed before this, so the form below is new and documented here:
+#   IPv4      1.2.3.4       -> 1[.]2[.]3[.]4
+#   URL       http://...    -> hxxp://...   (https -> hxxps)
+#   hash      <hex string>  -> first half + "[.]" + second half
+#   password  <any>         -> "<redacted>"  (masked outright, not defanged)
+_IPV4_RE = re.compile(
+    r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b"
+)
+_HASH_RE = re.compile(r"\b[a-fA-F0-9]{64}\b|\b[a-fA-F0-9]{40}\b|\b[a-fA-F0-9]{32}\b")
+_URL_SCHEME_RE = re.compile(r"\bhttps?://", re.IGNORECASE)
+_PASSWORD_MASK = "<redacted>"
+
+
+def _defang_ip(ip: str) -> str:
+    return ip.replace(".", "[.]")
+
+
+def _defang_hash(h: str) -> str:
+    mid = len(h) // 2
+    return f"{h[:mid]}[.]{h[mid:]}"
+
+
+def _defang_text(s: str) -> str:
+    """Defang every inline IP / hash / URL-scheme occurrence in free text
+    (command lines, IOC values). Structure-preserving — substitution only,
+    never adds/removes whitespace, so token count is unchanged."""
+    s = _URL_SCHEME_RE.sub(lambda m: m.group(0).replace("http", "hxxp"), s)
+    s = _IPV4_RE.sub(lambda m: _defang_ip(m.group(0)), s)
+    s = _HASH_RE.sub(lambda m: _defang_hash(m.group(0)), s)
+    return s
+
+
+def _defang_walk(obj):
+    """Recursively defang every string value in place — including bare
+    strings inside a list (e.g. `artifact_set: ["ip:1.2.3.4", "url:http://..."]`,
+    an LLM-extracted IOC summary; a naive dict-only walk misses these).
+    `cowrie.password` is masked outright (not pattern-defanged) regardless of
+    its value shape."""
+    if isinstance(obj, dict):
+        for k in list(obj):
+            v = obj[k]
+            if k == "password" and isinstance(v, str):
+                obj[k] = _PASSWORD_MASK
+            elif isinstance(v, (dict, list)):
+                _defang_walk(v)
+            elif isinstance(v, str):
+                obj[k] = _defang_text(v)
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            if isinstance(item, (dict, list)):
+                _defang_walk(item)
+            elif isinstance(item, str):
+                obj[i] = _defang_text(item)
+    return obj
+
+
+def _defang_keyed_iocs(d: dict) -> dict:
+    """`hash_intel` / `url_intel` are dicts keyed by the raw IOC value
+    itself (sha256 or URL) — rekey to the defanged form, and defang the
+    joined intel doc's own fields (e.g. `artifact.value` duplicates the key)."""
+    out: dict = {}
+    for k, v in d.items():
+        _defang_walk(v)
+        out[_defang_text(k)] = v
+    return out
+
+
+def _defang_record(rec: dict) -> dict:
+    """Neuter attacker-side artifacts across every part of an eval record:
+    the rollup doc, raw events, command enrichments, and the joined
+    hash/URL intel. Applied alongside `_redact_record`, not in place of it."""
+    if isinstance(rec.get("rollup_doc"), dict):
+        _defang_walk(rec["rollup_doc"])
+    for ev in rec.get("raw_events") or []:
+        _defang_walk(ev)
+    for ev in rec.get("command_enrichments") or []:
+        _defang_walk(ev)
+    if isinstance(rec.get("hash_intel"), dict):
+        rec["hash_intel"] = _defang_keyed_iocs(rec["hash_intel"])
+    if isinstance(rec.get("url_intel"), dict):
+        rec["url_intel"] = _defang_keyed_iocs(rec["url_intel"])
     return rec
 
 
@@ -381,6 +489,7 @@ def _sample_stratified(
     playbook_sizes: dict[str, int],
     target_n: int,
     per_playbook_cap: int,
+    cfg,
 ) -> tuple[list[dict], dict]:
     """Variety-first sampler keyed on ``playbook_id``.
 
@@ -399,19 +508,24 @@ def _sample_stratified(
     by_stratum: dict[tuple, list[dict]] = defaultdict(list)
     scanned = 0
     skipped_no_commands = 0
+    skipped_non_releasable = 0
     for rollup in rollups:
         scanned += 1
+        if not _is_releasable_rollup(rollup, cfg):
+            skipped_non_releasable += 1
+            continue
         if not _has_commands(rollup):
             skipped_no_commands += 1
             continue
         by_stratum[_sampling_key(rollup)].append(rollup)
     if not by_stratum:
         return [], {
-            "scanned":             scanned,
-            "skipped_no_commands": skipped_no_commands,
-            "active_strata":       0,
-            "named_playbooks":     0,
-            "unattributed":        0,
+            "scanned":                scanned,
+            "skipped_no_commands":    skipped_no_commands,
+            "skipped_non_releasable": skipped_non_releasable,
+            "active_strata":          0,
+            "named_playbooks":        0,
+            "unattributed":           0,
         }
 
     # Smallest buckets first so unattributed singletons pass through
@@ -430,12 +544,13 @@ def _sample_stratified(
     named = sum(1 for k in by_stratum if k[0] == "pb")
     unattr = sum(1 for k in by_stratum if k[0] == "unattributed")
     stats = {
-        "scanned":             scanned,
-        "skipped_no_commands": skipped_no_commands,
-        "active_strata":       len(by_stratum),
-        "named_playbooks":     named,
-        "unattributed":        unattr,
-        "per_playbook_cap":    per_playbook_cap,
+        "scanned":                scanned,
+        "skipped_no_commands":    skipped_no_commands,
+        "skipped_non_releasable": skipped_non_releasable,
+        "active_strata":          len(by_stratum),
+        "named_playbooks":        named,
+        "unattributed":           unattr,
+        "per_playbook_cap":       per_playbook_cap,
     }
     return out, stats
 
@@ -479,9 +594,10 @@ def _build_record(es, *, raw_index: str, cmd_index: str,
         "hash_intel":          hash_intel,
         "url_intel":           url_intel,
     }
-    # Strip sensor / Filebeat / Elastic-agent metadata. The eval set
-    # ships publicly; this is the last gate before write.
-    return _redact_record(rec)
+    # Strip sensor / Filebeat / Elastic-agent metadata, then neuter
+    # attacker-side artifacts (IP/hash/URL/password). The eval set ships
+    # publicly; these are the last two gates before write.
+    return _defang_record(_redact_record(rec))
 
 
 def main() -> int:
@@ -497,7 +613,7 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=20260531,
                     help="random_score seed; reproducible per (corpus, seed)")
     ap.add_argument("--output", type=Path,
-                    default=Path("eval/sessions-v1.unlabeled.jsonl"),
+                    default=Path("eval/sessions.unlabeled.jsonl"),
                     help="Output JSONL path.")
     ap.add_argument("--scan-cap", type=int, default=20000,
                     help="Hard ceiling on rollup docs scanned to fill the sample.")
@@ -540,16 +656,28 @@ def main() -> int:
     # one behaviour can't dominate. Login-only rollups are dropped at
     # the gate — they have no command-stream signal.
     sampled, sample_stats = _sample_stratified(
-        _stream(), playbook_sizes, args.n, args.per_playbook_cap,
+        _stream(), playbook_sizes, args.n, args.per_playbook_cap, cfg,
     )
     if not sampled:
-        print("[ERROR] no rollup docs scanned — is the index empty?",
-              file=sys.stderr)
+        scanned = sample_stats.get("scanned", 0)
+        skipped_non_releasable = sample_stats.get("skipped_non_releasable", 0)
+        if scanned and skipped_non_releasable == scanned:
+            print(
+                f"[ERROR] scanned {scanned} rollups, all {skipped_non_releasable} "
+                "were non-releasable (no dshield.classification=public tag). "
+                "The classification gate is fail-safe: untagged rollups are "
+                "treated as confidential and excluded. Backfill/re-ingest with "
+                "classification tagging before sampling.", file=sys.stderr,
+            )
+        else:
+            print("[ERROR] no rollup docs scanned — is the index empty?",
+                  file=sys.stderr)
         return 1
     print(
         f"sampled           : {len(sampled)} rollups "
         f"(scanned {sample_stats['scanned']}, "
         f"skipped {sample_stats['skipped_no_commands']} login-only, "
+        f"skipped {sample_stats['skipped_non_releasable']} non-releasable, "
         f"{sample_stats['named_playbooks']} named playbooks + "
         f"{sample_stats['unattributed']} unattributed sessions)",
         file=sys.stderr,

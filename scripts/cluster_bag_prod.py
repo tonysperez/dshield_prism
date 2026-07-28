@@ -166,7 +166,7 @@ def main() -> int:
         labels = _apply_merge(labels, norm_block, merge_threshold)
 
     sid_to_label, pairs = _load_eval_session_ids_and_labels(
-        Path("eval/labels-v1.yaml"), Path("eval/labels-v2.yaml"),
+        Path("eval/labels.yaml"), Path("eval/labels-v2.yaml"),
     )
     scored = score_full(labels, corpus, sid_to_label, pairs,
                         merge_threshold=merge_threshold)

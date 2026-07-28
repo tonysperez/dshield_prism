@@ -660,6 +660,7 @@ def _fetch_session_events(
             "destination.ip", "destination.port",
             "network.protocol", "network.type",
             "user.name", "user_agent.original",
+            "observer.name", "dshield.classification",
             "cowrie.session_id", "cowrie.password", "cowrie.hassh_algorithms",
             "cowrie.hassh", "cowrie.proxy",
             "process.command_line",

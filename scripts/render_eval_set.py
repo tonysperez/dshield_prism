@@ -3,11 +3,11 @@
 Companion to `scripts/build_eval_set.py` (brutal-review phase 1.2). The
 JSONL file the build script emits is dense and not analyst-readable;
 this script turns it into one markdown file per session under
-``eval/sessions-v1/<session_id>.md`` plus an index and a fresh-or-
-preserved ``eval/labels-v1.yaml`` skeleton the analyst fills in.
+``eval/sessions/<session_id>.md`` plus an index and a fresh-or-
+preserved ``eval/labels.yaml`` skeleton the analyst fills in.
 
 Idempotent: re-rendering preserves any labels already present in
-``labels-v1.yaml`` and only adds empty blocks for newly-introduced
+``labels.yaml`` and only adds empty blocks for newly-introduced
 session ids. Re-rendering overwrites the markdown files (cheap; they
 are pure projections of the JSONL).
 
@@ -327,7 +327,7 @@ def _render_session(rec: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# labels-v1.yaml round-trip
+# labels.yaml round-trip
 # ---------------------------------------------------------------------------
 
 # Default skeleton block. Order matters: `annotated` is first so the
@@ -476,7 +476,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--input", type=Path,
-        default=Path("eval/sessions-v1.unlabeled.jsonl"),
+        default=Path("eval/sessions.unlabeled.jsonl"),
         help="Unlabeled JSONL from scripts/build_eval_set.py",
     )
     ap.add_argument(
@@ -486,7 +486,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--labels-yaml", type=Path,
-        default=Path("eval/labels-v1.yaml"),
+        default=Path("eval/labels.yaml"),
         help="Round-tripped YAML labels file (idempotent merge)",
     )
     args = ap.parse_args()

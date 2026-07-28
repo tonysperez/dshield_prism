@@ -1,6 +1,6 @@
 """Eval the session-layer clustering against the analyst-labeled ground truth.
 
-Loads ``eval/labels-v1.yaml`` (the stratified analyst sample), joins it by
+Loads ``eval/labels.yaml`` (the stratified analyst sample), joins it by
 ``session_id`` against its unlabeled JSONL, filters to ``is_real: true``
 blocks with a non-null ``playbook_label``, then re-runs the same
 L2-normalize + SVD-reduce + scalar-augment + HDBSCAN + noise-rescue pipeline
@@ -657,10 +657,10 @@ def _render_gate(rows: list[dict], ok: bool) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--labels", type=Path,
-                    default=Path("eval/labels-v1.yaml"),
+                    default=Path("eval/labels.yaml"),
                     help="v1 analyst-labeled YAML")
     ap.add_argument("--jsonl", type=Path,
-                    default=Path("eval/sessions-v1.unlabeled.jsonl"),
+                    default=Path("eval/sessions.unlabeled.jsonl"),
                     help="v1 unlabeled eval JSONL")
     ap.add_argument("--output-dir", type=Path,
                     default=Path("eval/results"),

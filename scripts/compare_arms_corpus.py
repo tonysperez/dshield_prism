@@ -120,7 +120,7 @@ def main() -> int:
     print(f"  {len(corpus)} sessions", flush=True)
     hash_to_cluster = pull_hash_to_cluster(es, ix.commands, cfg.command_cluster.page_size)
     sid_to_label, pairs = _load_eval_session_ids_and_labels(
-        Path("eval/labels-v1.yaml"), Path("eval/labels-v2.yaml"))
+        Path("eval/labels.yaml"), Path("eval/labels-v2.yaml"))
 
     # Baseline: production hdbscan + rescue + merge (embedding space).
     base, _ = cluster_hdbscan(

@@ -193,7 +193,7 @@ def _render_markdown(
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config-path", type=str, default=None)
-    ap.add_argument("--labels", type=Path, default=Path("eval/labels-v1.yaml"))
+    ap.add_argument("--labels", type=Path, default=Path("eval/labels.yaml"))
     ap.add_argument("--labels-v2", type=Path, default=Path("eval/labels-v2.yaml"))
     ap.add_argument("--limit-rollups", type=int, default=None,
                     help="Cap the production pull at N rollups for dev runs.")

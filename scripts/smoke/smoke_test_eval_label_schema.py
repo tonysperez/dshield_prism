@@ -1,9 +1,13 @@
-"""Smoke test for label-schema v2 — optional provenance + rare-class boost.
+"""Smoke test for label-schema v2 — required-if-annotated provenance
+(CAP-2) + optional rare-class boost.
 
-Covers the four optional label-block fields (`annotator`, `labeled_at`,
-`rubric_version`, `boost_weight`) added to `eval/labels-v1.yaml`:
-  * A legacy annotated block (none of the four fields) validates clean —
-    the fields are optional, so the committed answer key keeps passing.
+Covers the four label-block fields (`annotator`, `labeled_at`,
+`rubric_version`, `boost_weight`) added to `eval/labels.yaml`:
+  * `annotator` / `labeled_at` / `rubric_version` are required-if-annotated
+    (CAP-2): missing/null on an `annotated: true` block fails closed, one
+    error per missing field, naming the field.
+  * `annotated: false` blocks skip the whole schema, including provenance —
+    not-yet-labeled skeletons stay valid.
   * A well-typed provenance block validates clean.
   * Every bad value errors: `boost_weight` of 0 / negative / inf / nan /
     True / non-number; `labeled_at` that isn't a real ISO date; empty or
@@ -50,10 +54,19 @@ def _base_block(**overrides) -> dict:
     return block
 
 
-def test_legacy_block_no_provenance_passes() -> None:
+def test_annotated_block_missing_provenance_fails() -> None:
+    # CAP-2: an annotated block with none of the three required provenance
+    # fields fails closed, one error per missing field, naming it.
     errors = _errors_for(_base_block())
+    for f in ("annotator", "labeled_at", "rubric_version"):
+        assert any(f in e for e in errors), (f, errors)
+    print("  ok: annotated block missing provenance fails, one error per field")
+
+
+def test_not_annotated_block_skips_provenance() -> None:
+    errors = _errors_for(_base_block(annotated=False, is_real=False))
     assert errors == [], errors
-    print("  ok: legacy annotated block (no provenance) validates clean")
+    print("  ok: annotated:false block skips provenance entirely")
 
 
 def test_well_typed_provenance_passes() -> None:
@@ -67,13 +80,15 @@ def test_well_typed_provenance_passes() -> None:
     print("  ok: well-typed provenance validates clean")
 
 
-def test_null_provenance_passes() -> None:
-    # Explicit nulls (the skeleton defaults) must be as valid as absent.
+def test_null_provenance_fails() -> None:
+    # Explicit nulls (the skeleton defaults) are treated the same as absent —
+    # still required-if-annotated. boost_weight alone stays optional.
     errors = _errors_for(_base_block(
         annotator=None, labeled_at=None, rubric_version=None, boost_weight=1.0,
     ))
-    assert errors == [], errors
-    print("  ok: explicit-null / default provenance validates clean")
+    for f in ("annotator", "labeled_at", "rubric_version"):
+        assert any(f in e for e in errors), (f, errors)
+    print("  ok: explicit-null provenance fails same as absent")
 
 
 def test_boost_weight_bad_values_error() -> None:
@@ -86,7 +101,11 @@ def test_boost_weight_bad_values_error() -> None:
 def test_boost_weight_huge_int_ok_not_crash() -> None:
     # A 400-digit YAML int must not crash the validator (math.isfinite would
     # OverflowError on the float cast) — no upper bound, so it validates clean.
-    errors = _errors_for(_base_block(boost_weight=10 ** 400))
+    # Valid provenance alongside it isolates this assertion to boost_weight.
+    errors = _errors_for(_base_block(
+        boost_weight=10 ** 400,
+        annotator="ts", labeled_at="2026-07-03", rubric_version="v1",
+    ))
     assert errors == [], errors
     print("  ok: boost_weight huge int validates without OverflowError")
 
@@ -127,9 +146,10 @@ def test_skeleton_carries_provenance_keys() -> None:
 
 def main() -> int:
     print("smoke_test_eval_label_schema:")
-    test_legacy_block_no_provenance_passes()
+    test_annotated_block_missing_provenance_fails()
+    test_not_annotated_block_skips_provenance()
     test_well_typed_provenance_passes()
-    test_null_provenance_passes()
+    test_null_provenance_fails()
     test_boost_weight_bad_values_error()
     test_boost_weight_huge_int_ok_not_crash()
     test_labeled_at_bad_dates_error()

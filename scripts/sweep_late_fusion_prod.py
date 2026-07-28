@@ -120,7 +120,7 @@ def main() -> int:
     corpus = pull_session_corpus(es, index, cfg.session.page_size)
     print(f"  {len(corpus)} sessions", flush=True)
     sid_to_label, pair_to_sessions = _load_eval_session_ids_and_labels(
-        Path("eval/labels-v1.yaml"), Path("eval/labels-v2.yaml"),
+        Path("eval/labels.yaml"), Path("eval/labels-v2.yaml"),
     )
     merge_threshold = cfg.session.playbook_merge_threshold
 

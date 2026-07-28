@@ -24,7 +24,7 @@ dist/
 eval/archive
 eval/results/*
 !eval/results/.gitkeep
-eval/sessions-v1/
+eval/sessions/
 eval/confidential/
 
 # Claude

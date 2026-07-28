@@ -14,7 +14,7 @@ This script:
      augment, HDBSCAN, optional noise rescue) — same hyperparameters as
      ``run_session_clustering``, but no ES writes.
   3. Filters the resulting cluster assignment to the session_ids
-     present in ``eval/sessions-v1.unlabeled.jsonl`` (the analyst-
+     present in ``eval/sessions.unlabeled.jsonl`` (the analyst-
      labeled subset).
   4. Scores ARI / NMI / homogeneity / completeness / v_measure against
      analyst labels.
@@ -764,7 +764,7 @@ def main() -> int:
                     help="Path to the AppConfig YAML (defaults to "
                          "ENRICH_CONFIG / config/default.yaml).")
     ap.add_argument("--labels", type=Path,
-                    default=Path("eval/labels-v1.yaml"),
+                    default=Path("eval/labels.yaml"),
                     help="analyst-labeled YAML")
     ap.add_argument("--snapshot", type=Path, default=None,
                     help=(

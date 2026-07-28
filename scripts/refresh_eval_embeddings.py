@@ -2,9 +2,9 @@
 
 Surgical companion to ``build_eval_set.py`` — when production runs
 ``reembed`` (after a config change that flipped ``embed_config_hash``),
-the v1+v2 unlabeled JSONLs go stale: their persisted session embeddings
-still encode the old config. This script does the minimum work needed
-to verify the new production state on the eval set:
+the unlabeled JSONL goes stale: its persisted session embeddings still
+encode the old config. This script does the minimum work needed to
+verify the new production state on the eval set:
 
   * Reads each session_id from the JSONL (the labeled set is fixed —
     we never change the SET of sessions, only their embedding vectors).
@@ -181,10 +181,7 @@ def _refresh_one(
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--jsonls", type=Path, nargs="+",
-                    default=[
-                        Path("eval/sessions-v1.unlabeled.jsonl"),
-                        Path("eval/sessions-v2.unlabeled.jsonl"),
-                    ],
+                    default=[Path("eval/sessions.unlabeled.jsonl")],
                     help="One or more JSONL files to refresh in place.")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()

@@ -1,0 +1,1609 @@
+# Eval-set labels. One block per session_id. Edit by hand and
+# flip `annotated: false -> true` when you've labeled the block.
+# The renderer preserves your edits and backfills any new fields.
+# Validate every ~25 entries with:
+#   console/.venv/bin/python scripts/validate_eval_labels.py \
+#     --labels eval/labels.yaml \
+#     --unlabeled eval/sessions.unlabeled.jsonl
+# Rubric: ./RUBRIC.md
+
+b824e829c2cb:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+7385780fdc9e:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+5b000089545e:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Single nc to external host:800 — connectivity/beacon probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+79f205fabb8b:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: OS detection (os-release/lsb_release).
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+67e4d3d56677:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Writes /tmp/.config test marker — capability probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+5f9aeb9bcde7:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: /ip cloud print — MikroTik public-IP recon.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+5c0e931a97ff:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: chattr -ia .ssh + cpuinfo only; mdrfckr persistence playbook with key-write truncated. .ssh unlock signature places it here.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+1b11cf4a5db0:
+  annotated: true
+  is_real: true
+  playbook_label: payload_fetch_exec
+  expected_findings: []
+  notes: echo SHELL_TEST then loops curl/wget/busybox to fetch run.sh and exec.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+2301c29ad7df:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: busybox applet probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+75953004e88f:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: busybox applet probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+3ee3f5ac9378:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: Stager + authorized_keys write + chattr +ai.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+ea74a6f96090:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Single '?' token probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+f4b7730a6a6f:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: Automated uname/arch/uptime/cpu fingerprint script.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+cc3f5f7b3d5e:
+  annotated: true
+  is_real: true
+  playbook_label: payload_fetch_exec
+  expected_findings: []
+  notes: wget y.sh into web spool and run.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+15b282c7f08d:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: which htop — tool enumeration.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+94c35d9665bb:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+49d23d1aff22:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: Stager + authorized_keys write + chattr +ai.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+0a7d5d721dad:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Writes /tmp/.config test marker — capability probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+1d47b1ca65bd:
+  annotated: true
+  is_real: true
+  playbook_label: payload_fetch_exec
+  expected_findings: []
+  notes: wget a7891.sh then sh.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+0441400d07de:
+  annotated: true
+  is_real: true
+  playbook_label: payload_fetch_exec
+  expected_findings: []
+  notes: Multi-method (wget/curl/tftp/ftp) fetch of phantom.sh and run.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+a94e5e4d41c8:
+  annotated: true
+  is_real: true
+  playbook_label: inband_payload_drop
+  expected_findings: []
+  notes: ELF reconstructed via echo base64 >> /tmp/s.b64.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+71c6c505de78:
+  annotated: true
+  is_real: true
+  playbook_label: inband_payload_drop
+  expected_findings: []
+  notes: ELF reconstructed via echo base64 >> /tmp/s.b64.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+c993b3b8edc4:
+  annotated: true
+  is_real: true
+  playbook_label: inband_payload_drop
+  expected_findings: []
+  notes: ELF reconstructed via echo base64 >> /tmp/s.b64.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+460848a4ad7a:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+a85a9470af9c:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: Fetches arch-specific unkillbot binary, beacons ./bot <IP> 1338.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+04311e455c60:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: 'Full mdrfckr playbook: authorized_keys drop + chpasswd, recon padding.'
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+95e4d7e41573:
+  annotated: true
+  is_real: true
+  playbook_label: iot_cli_probe
+  expected_findings: []
+  notes: Embedded-device shell probe (sh/shell/help/busybox); no payload.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+24994834532f:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+ffa8c067343a:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+54af761ca552:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+86f07dabfda3:
+  annotated: true
+  is_real: true
+  playbook_label: scp_upload
+  expected_findings: []
+  notes: scp -t sink receiving /tmp binary.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+66fc5dfa3b95:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+7ce3ab084795:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: Broad host/container profiling probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+3cf1cbe56aaa:
+  annotated: true
+  is_real: true
+  playbook_label: dropped_binary_exec
+  expected_findings: []
+  notes: Executes previously-uploaded /tmp binary.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+f182dd4e8ac7:
+  annotated: true
+  is_real: false
+  playbook_label: null
+  expected_findings: []
+  notes: 'HTTP request ingested as SSH session (Accept-Language header login, Host: header commands). Protocol leakage.'
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+50b5e8a37e12:
+  annotated: true
+  is_real: true
+  playbook_label: payload_fetch_exec
+  expected_findings: []
+  notes: Multi-method wget/curl/tftp fetch of 1.sh.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+122b46ae9c77:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: /ip cloud print — MikroTik public-IP recon.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+be32ce896b06:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: Automated uname/arch/uptime/cpu fingerprint script.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+13f9082e7747:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: Automated uname/arch/uptime/cpu fingerprint script.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+8e7e561fe3d2:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: Mounts remount exec then fetches proto.arm7 mirai binary and runs with report-back.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+0f71095fdc5c:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: uname fingerprint + checks/chmods /dev/shm/.i implant; dominant behavior is recon.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+1cf5042bb02b:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+67571421c8d4:
+  annotated: true
+  is_real: true
+  playbook_label: scp_upload
+  expected_findings: []
+  notes: 'Minted: scp -t sink receiving a binary into /tmp — file upload vector (pi worm).'
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+0ab9e9e7bd06:
+  annotated: true
+  is_real: true
+  playbook_label: inband_payload_drop
+  expected_findings: []
+  notes: In-band file drop via cat> to /dev/shm and /tmp; no network fetch.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+27724c8ab334:
+  annotated: true
+  is_real: false
+  playbook_label: null
+  expected_findings: []
+  notes: HTTP request ingested as SSH session (GET / HTTP/1.1 login, Accept:*/* commands). Protocol leakage, not attacker behavior.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+f6bf6f15c3b9:
+  annotated: true
+  is_real: true
+  playbook_label: dropped_binary_exec
+  expected_findings: []
+  notes: Executes previously-uploaded /tmp binary.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+35f0e0492297:
+  annotated: true
+  is_real: true
+  playbook_label: account_backdoor_persistence
+  expected_findings: []
+  notes: 'Minted: multi-vector account backdoor — sudoers NOPASSWD, chsh, passwd on daemon, plus ssh key. Distinct from key-only persistence.'
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+4992a05a5934:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Writes /tmp/.config test marker — capability probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+33d2f7a82d86:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: netstat listener enumeration.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+2dcc5affcdeb:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: Endianness/arch detection selecting main_<arch> binary — mirai/gafgyt loader preamble.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+3b3a422154de:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Repeated FTP-style 'USER test' — auth probe, no shell behavior.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+2d4317bae883:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+7159cc644313:
+  annotated: true
+  is_real: true
+  playbook_label: payload_fetch_exec
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+3e5f3091877d:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: busybox applet probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+a5b88d0cb4a7:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+9eee57957807:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+b24adde41580:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: Multi-arch mirai loader (ohshit.*) + busybox telnetd self-spread.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+fdd6a935c33a:
+  annotated: true
+  is_real: true
+  playbook_label: payload_fetch_exec
+  expected_findings: []
+  notes: wget dl.sh; sh; history -c.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+7d3e7e9b9d01:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: Automated uname/arch/uptime/cpu fingerprint script.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+bcf38f2e85aa:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Repeated FTP-style 'USER test' — auth probe, no shell behavior.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+3f45a8cdcb2b:
+  annotated: true
+  is_real: true
+  playbook_label: payload_fetch_exec
+  expected_findings: []
+  notes: wget bins.sh; sh; history -c.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+f324920e053d:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: Multi-arch mirai loader (ohshit.*) + telnetd self-spread.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+eb85cf05a006:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Single 'config' router probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+be205f53cb4d:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Single junk token 'zalee' — probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+f0d93651e73b:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+3a178e1872d3:
+  annotated: true
+  is_real: true
+  playbook_label: dropped_binary_exec
+  expected_findings: []
+  notes: 'Minted: chmod +x and executes a previously scp-uploaded binary; no fetch.'
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+66a2549a0619:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+3da9e9731057:
+  annotated: true
+  is_real: true
+  playbook_label: inband_payload_drop
+  expected_findings: []
+  notes: Reconstructs an ELF on disk via thousands of echo base64 >> /tmp/s.b64 lines; no network fetch.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+40bb22db391b:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+37637f98b8cf:
+  annotated: true
+  is_real: true
+  playbook_label: inband_payload_drop
+  expected_findings: []
+  notes: cat> /tmp/s.py heredoc — in-band script drop.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+b40ca209647a:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: Fetches arch-specific unkillbot binary, beacons ./bot <IP> 1338.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+ce47acef44e6:
+  annotated: true
+  is_real: true
+  playbook_label: scp_upload
+  expected_findings: []
+  notes: scp -t sink receiving /tmp binary.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+f64f5c4bea89:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+49f86c6c5d2d:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: Stager + authorized_keys write + chattr +ai.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+9aed3e9e158c:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Repeated FTP-style 'USER test' — auth probe, no shell behavior.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+3cecf4e0b4e5:
+  annotated: true
+  is_real: false
+  playbook_label: null
+  expected_findings: []
+  notes: HTTP request ingested as SSH session (User-Agent/Accept headers as commands). Protocol leakage.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+cf8d4dfab073:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+dc24ceb5d684:
+  annotated: true
+  is_real: true
+  playbook_label: payload_fetch_exec
+  expected_findings: []
+  notes: wget Tcp1000gbps.sh DDoS script and run.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+fa97e81ebedd:
+  annotated: true
+  is_real: false
+  playbook_label: null
+  expected_findings: []
+  notes: 'HTTP request ingested as SSH session (Accept-Language/GET login, Host: header commands). Protocol leakage.'
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+bd4e3cbde826:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: GPU recon then authorized_keys write with chattr -i; persistence is load-bearing.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+bb8c2ff022c1:
+  annotated: true
+  is_real: true
+  playbook_label: payload_fetch_exec
+  expected_findings: []
+  notes: Multi-method wget/curl/tftp fetch of bins.sh.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+85d4b1eb02e2:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+5e8909e9f4c8:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+a219bfc22b8f:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: Fetches /tmp/bot and beacons /tmp/bot <IP> 1338.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+3b6ea0db1a36:
+  annotated: true
+  is_real: true
+  playbook_label: payload_fetch_exec
+  expected_findings: []
+  notes: Multi-method (wget/curl/tftp/ftp) fetch of phantom.sh and run.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+0850700df1c2:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+5452a0bcfeaf:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+868dde54feed:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+ce7b3fe2f448:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+3ddde04ddc90:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+90f844d14fac:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+4d3fabd54ed6:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+fb56c49202bb:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: whoami/uname with echo marker.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+e9fb59dd9a9d:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+3b2e5055bc42:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+628cd6cffa92:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: Host fingerprint via echo|sh (proc/1, cpuinfo).
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+'763274873566':
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: Host fingerprint via echo|sh (proc/1, cpuinfo).
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+7a1ccb928832:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: Host fingerprint via echo|sh (proc/1, cpuinfo).
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+e11a5cae14c4:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: Host fingerprint via echo|sh (proc/1, cpuinfo).
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+ddc47bc7063b:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: Host fingerprint via echo|sh (proc/1, cpuinfo).
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+2abc9a84ebce:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: Container/host fingerprint via echo|sh (proc/1 mounts, ps).
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+67ae6770ea19:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: Container/host fingerprint via echo|sh (proc/1 mounts, ps).
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+96733fe731dc:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: Container/host fingerprint via echo|sh (proc/1 mounts, ps).
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+7adea332235d:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: Container/host fingerprint via echo|sh (proc/1 mounts, ps).
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+8c07f7eebdb9:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: Container/host fingerprint via echo|sh (proc/1 mounts, ps).
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+1756a15955d5:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+07be20bc4f6d:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: cat /bin/echo — reads ELF header for arch fingerprint.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+28f7be0f36ad:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Reads /tmp/.config marker — probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+0e53ee12389c:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: cat /bin/echo — reads ELF header for arch fingerprint.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+b91862395275:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Reads /tmp/.config marker — probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+a75b5c36c799:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: echo SHELL_TEST shell-liveness probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+f03affb24491:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: echo SHELL_TEST shell-liveness probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+67ef9ae5868f:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: echo SHELL_TEST shell-liveness probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+ef5762787742:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Capability probes (echo/busybox/cat proc); no payload.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+4b4295959703:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: echo OK liveness probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+86ef33a84e22:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: MikroTik/router recon; hunts existing miners + Telegram/SMS creds.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+7ccb29b011c8:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: MikroTik/router recon; hunts existing miners + Telegram/SMS creds.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+17bb5fdb9439:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: MikroTik/router recon; hunts existing miners + Telegram/SMS creds.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+2a24b52619d3:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: MikroTik/router recon; hunts existing miners + Telegram/SMS creds.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+0c0464993410:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: MikroTik/router recon; miner + Telegram/SMS hunt.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+77b8a41f634e:
+  annotated: true
+  is_real: true
+  playbook_label: payload_fetch_exec
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+2aff0280c528:
+  annotated: true
+  is_real: true
+  playbook_label: payload_fetch_exec
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+81d784ced887:
+  annotated: true
+  is_real: true
+  playbook_label: payload_fetch_exec
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+1762c790a29b:
+  annotated: true
+  is_real: true
+  playbook_label: payload_fetch_exec
+  expected_findings: []
+  notes: nohup curl/wget + /dev/tcp fallback fetch.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+10df99beba36:
+  annotated: true
+  is_real: true
+  playbook_label: payload_fetch_exec
+  expected_findings: []
+  notes: nohup curl/wget with raw /dev/tcp fallback fetch of a binary.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+e52cf4dbd897:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Single PING liveness probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+354f783ce304:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Single PING liveness probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+fae4e2f6c60c:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Single PING liveness probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+8fa89defe1a9:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Single PING liveness probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+cec4acfee663:
+  annotated: true
+  is_real: true
+  playbook_label: single_command_probe
+  expected_findings: []
+  notes: Single PING liveness probe.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+6ce6bb4c32ac:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: Stager (clean.sh/setup.sh) then authorized_keys write + chattr +ai immutable lock.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+14a60fcd2533:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: Stager (clean.sh/setup.sh) then authorized_keys write + chattr +ai immutable lock.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+1f1e3481d731:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: Stager (clean.sh/setup.sh) then authorized_keys write + chattr +ai immutable lock.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+dff9d9895cfd:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: Stager (clean.sh/setup.sh) then authorized_keys write + chattr +ai immutable lock.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+21ebf638b7e8:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: Stager (clean.sh/setup.sh) then authorized_keys write + chattr +ai immutable lock.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+421f60b77982:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: uname/arch/uptime fingerprint script.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+cb19d7a2f808:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: uname/arch/uptime fingerprint script.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+c652f57c9ea2:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: uname/arch/uptime fingerprint script.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+836af4981351:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: uname/arch/uptime fingerprint script.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+66904a519a67:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: Fingerprint script + sudo memory check.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+a4b4361253aa:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: Router CLI then redtail telnet loader (wget|curl | sh -s telnet).
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+0fe357d0194c:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: Router-CLI busybox ELF fetch-and-run loader.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+4280879c3f5c:
+  annotated: true
+  is_real: true
+  playbook_label: iot_cli_probe
+  expected_findings: []
+  notes: Embedded-device CLI enumeration (enable/system/shell) + busybox self-exe check; no payload.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+5fc67ee72724:
+  annotated: true
+  is_real: true
+  playbook_label: botnet_loader
+  expected_findings: []
+  notes: Router-CLI busybox ELF fetch-and-run loader.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+6c40791514b8:
+  annotated: true
+  is_real: true
+  playbook_label: iot_cli_probe
+  expected_findings: []
+  notes: Embedded-device CLI enumeration (enable/system/shell) + busybox self-exe check; no payload.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+610a12efeca4:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: mdrfckr authorized_keys drop; chattr -ia unlock + chmod go=.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+46c34cd39dee:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: mdrfckr authorized_keys drop; chattr -ia unlock + chmod go=.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+51049c387f72:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: mdrfckr authorized_keys drop; chattr -ia unlock + chmod go=.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+fc178aea1df1:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: mdrfckr authorized_keys drop; chattr -ia unlock + chmod go=.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+1b636d7746e4:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: mdrfckr authorized_keys drop; chattr -ia unlock + chmod go=.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+258afb6c8ead:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+0f27f941e967:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+eb952cced6d9:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+af069449f823:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+7499b021b31b:
+  annotated: true
+  is_real: true
+  playbook_label: host_recon
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+9ebcba96e51c:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+9b30fc8f2c1f:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+21e71466d4f4:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+14880b3b8172:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: mdrfckr key drop + passwd reset + recon.
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0
+557f8e1c5dcf:
+  annotated: true
+  is_real: true
+  playbook_label: ssh_key_chattr_persistence
+  expected_findings: []
+  notes: ''
+  annotator: ts
+  labeled_at: '2026-07-27'
+  rubric_version: v1
+  boost_weight: 1.0

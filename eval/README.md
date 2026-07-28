@@ -1,50 +1,55 @@
 # Eval set — labeled cowrie sessions
 
-The eval set is the analyst-labeled ground truth the clustering-quality
-CI gate measures against ([`scripts/eval_clustering.py`](../scripts/eval_clustering.py)).
-Without it, clustering quality reduces to anecdote.
+The eval set is the analyst-labeled ground truth the operational CI gate
+measures against ([`scripts/eval_operational.py`](../scripts/eval_operational.py)
+— assignment macro-F1 + per-label accuracy, novelty precision/recall, minted-
+playbook purity). Without it, quality reduces to anecdote.
 
-It is a **stratified random sample** of cowrie sessions, hand-labeled with
-the behavior each session expresses. The eval scripts join the labels
-against an unlabeled JSONL by `session_id` at load time.
+`scripts/eval_clustering.py` also reads this set but is **diagnostic only** —
+it scores raw HDBSCAN-vs-label partition metrics (ARI/NMI/etc.), a geometry the
+shipped nearest-prototype assign path doesn't use. It prints for a coarse
+sanity check and never fails a build; don't read a bad number there as a
+regression. Full gate catalog + what each one measures:
+[`docs/evaluation.md`](../docs/evaluation.md#the-gates).
+
+It is a **variety-first sample** of cowrie sessions bucketed by `playbook_id`
+(one bucket per named behavior, each unattributed session its own bucket) with
+a per-playbook cap, so no single behavior dominates the set — not a
+stratified-random draw. Hand-labeled with the behavior each session
+expresses. The eval scripts join the labels against an unlabeled JSONL by
+`session_id` at load time.
 
 This file is the eval-set *mechanics*. For what the gates measure and what the
 measurements found, see [`docs/evaluation.md`](../docs/evaluation.md).
-
-> **Archived:** the divergent-pair / "behavior-not-text" stress-test (v2)
-> machinery that used to live here is retired — a faithful evaluation did
-> not support the claim that the embedding clusters by semantics rather
-> than text. It's preserved under
-> [`archive/semantic-clustering-claim/`](archive/semantic-clustering-claim/)
-> (scripts, data, prompts, and the write-up of the negative result).
 
 ## Files
 
 | File | Status | Tracked? | What it is |
 |---|---|---|---|
-| `sessions-v1.unlabeled.jsonl` | generated | no | Output of `scripts/build_eval_set.py`. Stratified random sample. Not analyst-readable. |
-| `sessions-v1/<session_id>.md` | generated | no | Per-session human-readable rendering from `scripts/render_eval_set.py`. |
-| `labels-v1.yaml` | hand-edited | yes | The labels — one block per `session_id`. Deliverable. |
-| `labeling-prompt-v1.md` | hand-written | yes | Self-contained LLM prompt to automate labeling. |
+| `sessions.unlabeled.jsonl` | generated | yes | Output of `scripts/build_eval_set.py`. Public-only (classification-gated), defanged, variety-first sample. Committed because it's safe to publish post-defang; not analyst-readable. |
+| `sessions/<session_id>.md` | generated | no | Per-session human-readable rendering from `scripts/render_eval_set.py`. |
+| `labels.yaml` | hand-edited | yes | The labels — one block per `session_id`. Deliverable. |
+| `labeling-prompt.md` | hand-written | yes | Self-contained LLM prompt to automate labeling. |
 | `RUBRIC.md` | hand-written | yes | Labeling rubric. |
-| `labels-v1-relabel.yaml` | hand-edited | no | Optional delayed blind re-label of a subset, same schema — the intra-annotator agreement input. Not committed. |
-| `baseline.json` | generated | yes | Metric snapshot the CI gate diffs against. |
+| `labels-relabel.yaml` | hand-edited | no | Optional delayed blind re-label of a subset, same schema — the intra-annotator agreement input. Not committed. |
+| `baseline-operational.json` | generated | yes | Metric snapshot `eval_operational.py` (the actual CI gate) diffs against. |
+| `baseline.json` | generated | yes | Metric snapshot `eval_clustering.py` (diagnostic-only, doesn't gate) diffs against. |
 | `results/` | generated | no | Per-run JSON + per-experiment markdown verdicts from the `eval_*.py` / `sweep_*.py` / `exp_*.py` scripts. Rebuildable; gitignored. |
 | `archive/` | frozen | yes | Retired experiments (see the note above). |
 
 ## Labeling workflow
 
 ```bash
-# 1. Stratified sample from the live ES (deterministic per corpus + seed)
+# 1. Variety-first sample from the live ES (deterministic per corpus + seed)
 console/.venv/bin/python scripts/build_eval_set.py --n 300
 
-# 2. Render into per-session markdown + a labels-v1.yaml skeleton
+# 2. Render into per-session markdown + a labels.yaml skeleton
 console/.venv/bin/python scripts/render_eval_set.py
 ```
 
-Then walk `eval/sessions-v1/*.md` one file at a time (any order — they
+Then walk `eval/sessions/*.md` one file at a time (any order — they
 are independent), read the rendered markdown, and fill the matching
-block in `eval/labels-v1.yaml`. Re-running `render_eval_set.py` is
+block in `eval/labels.yaml`. Re-running `render_eval_set.py` is
 idempotent — existing label blocks are preserved verbatim; new
 sessions get empty skeletons appended.
 
@@ -52,17 +57,29 @@ After every ~25 entries, run the validator:
 
 ```bash
 console/.venv/bin/python scripts/validate_eval_labels.py \
-  --labels eval/labels-v1.yaml \
-  --unlabeled eval/sessions-v1.unlabeled.jsonl
+  --labels eval/labels.yaml \
+  --unlabeled eval/sessions.unlabeled.jsonl
 ```
 
-When you're done, gate the final set with `--min-records 200`.
-
-Then score the clustering against the labels (the CI gate):
+When you're done, gate the final set on a minimum record count:
 
 ```bash
-console/.venv/bin/python scripts/eval_clustering.py --baseline eval/baseline.json --no-json
+console/.venv/bin/python scripts/validate_eval_labels.py \
+  --labels eval/labels.yaml \
+  --unlabeled eval/sessions.unlabeled.jsonl \
+  --min-records 200
 ```
+
+Then run the actual quality gate — assignment macro-F1, per-label accuracy,
+novelty precision/recall, minted-playbook purity:
+
+```bash
+console/.venv/bin/python scripts/eval_operational.py --baseline eval/baseline-operational.json --no-json
+```
+
+`scripts/eval_clustering.py --baseline eval/baseline.json --no-json` also
+runs against this set but is diagnostic-only (prints, never fails a build) —
+see the note above. Don't treat it as the pass/fail signal.
 
 ## Annotator agreement (reliability)
 
@@ -73,13 +90,13 @@ graded against.
 
 **Intra-annotator (the headline workflow, single operator).** After finishing a
 labeling batch, wait long enough to forget the specifics, then blind re-label a
-subset into a second file (same schema, e.g. `eval/labels-v1-relabel.yaml`) —
+subset into a second file (same schema, e.g. `eval/labels-relabel.yaml`) —
 don't peek at the originals. Score self-consistency:
 
 ```bash
 console/.venv/bin/python scripts/eval_agreement.py \
-  --labels-a eval/labels-v1.yaml \
-  --labels-b eval/labels-v1-relabel.yaml
+  --labels-a eval/labels.yaml \
+  --labels-b eval/labels-relabel.yaml
 ```
 
 **Inter-annotator (when a second annotator exists).** Same command, two
@@ -133,7 +150,7 @@ number `> 0`, `labeled_at` a real `YYYY-MM-DD` date, `annotator` /
 
 ## Unlabeled JSONL schema (rebuildable, not tracked)
 
-Each line of `sessions-v1.unlabeled.jsonl`:
+Each line of `sessions.unlabeled.jsonl`:
 
 ```jsonc
 {
@@ -149,9 +166,13 @@ Each line of `sessions-v1.unlabeled.jsonl`:
 }
 ```
 
-No embeddings — those get recomputed at eval time from whatever
-embedding model is configured then. Stratification axes appear under
-`stratum` so downstream eval scripts don't have to recompute them.
+`rollup_doc`'s `embedding` field (when present) is frozen in the file at
+sample time — it is **not** recomputed at eval time. After a production
+re-embed, `scripts/refresh_eval_embeddings.py` is the only supported way to
+bring it current. Display strata appear under `stratum` so downstream eval
+scripts don't have to recompute them (they no longer drive sampling — see
+above).
 
-`eval_clustering.py` joins `labels-v1.yaml` against the unlabeled JSONL
+Every eval script (`eval_operational.py`, `eval_clustering.py`,
+`eval_assignment.py`, ...) joins `labels.yaml` against the unlabeled JSONL
 by `session_id` at load time — no labeled-JSONL file materialises on disk.
