@@ -18,10 +18,17 @@ from typing import Any, Iterable, Optional
 from elasticsearch import Elasticsearch
 from elasticsearch.helpers import bulk
 
+from .lifecycle import RUN_ID_UNSET
+
 log = logging.getLogger(__name__)
 
 
 _VALID_STATUSES: frozenset[str] = frozenset({"new", "ack", "confirmed", "rejected"})
+
+#: Max ids per `mget` / actions per `_bulk` on the status-mutation path.
+#: Matches `helpers.bulk`'s own default so driving the chunking here changes
+#: request shape not at all — it only makes a failure attributable.
+_BULK_STATUS_CHUNK = 500
 
 
 def _now_iso() -> str:
@@ -197,11 +204,16 @@ def mutate_status(
     new_status: str,
     note: str = "",
     cfg: Any = None,
+    refresh: bool | str = False,
 ) -> dict[str, Any]:
     """Transition a finding's status. Appends a history entry; rejects
     unknown statuses. Returns the updated doc body.
 
     Called from the console's POST endpoint, not the miner.
+
+    `refresh` is passed straight to `es.index`. It defaults to `False`:
+    the caller owns visibility and issues one `es.indices.refresh()` per
+    request instead of paying the index's `refresh_interval` per document.
 
     When `cfg` is supplied, Findings v2 step 2 lifecycle side effects fire
     based on (kind classification, transition):
@@ -233,7 +245,7 @@ def mutate_status(
     })
     src["status"] = new_status
     src["status_history"] = history
-    es.index(index=index, id=finding_id_, document=src, refresh="wait_for")
+    es.index(index=index, id=finding_id_, document=src, refresh=refresh)
 
     if cfg is not None:
         try:
@@ -252,6 +264,7 @@ def add_note(
     finding_id_: str,
     *,
     note: str,
+    refresh: bool | str = False,
 ) -> dict[str, Any]:
     """Append a free-text note to a finding without changing its status.
 
@@ -277,13 +290,179 @@ def add_note(
         "note": note.strip(),
     })
     src["status_history"] = history
-    es.index(index=index, id=finding_id_, document=src, refresh="wait_for")
+    es.index(index=index, id=finding_id_, document=src, refresh=refresh)
     return src
 
 
-def _apply_lifecycle_side_effects(es: Elasticsearch, cfg: Any, *, finding: dict[str, Any]) -> None:
+def bulk_mutate_status(
+    es: Elasticsearch,
+    index: str,
+    ids: Iterable[str],
+    *,
+    new_status: str,
+    note: str = "",
+    cfg: Any = None,
+) -> tuple[int, list[dict[str, Any]]]:
+    """Apply one status to many findings in two ES round-trips.
+
+    The per-id `mutate_status` loop cost `2N` round-trips plus `N` blocking
+    refreshes; this is one `mget`, one `bulk`, and one `indices.refresh`
+    regardless of N. Returns `(n_updated, errors)` where `errors` is a list
+    of `{"id", "error"}` — a missing or unwritable id fails only itself.
+
+    Semantics deliberately mirror `mutate_status`:
+      - an invalid `new_status` raises `ValueError` **before any ES call**
+        (the caller maps it to one HTTP 400 for the whole request)
+      - `prev == new_status` writes nothing but still counts as updated
+      - lifecycle side effects are per-finding and logged-and-swallowed
+      - duplicate ids collapse to one transition
+    """
+    if new_status not in _VALID_STATUSES:
+        raise ValueError(f"invalid status: {new_status!r} (valid: {sorted(_VALID_STATUSES)})")
+    ids = list(ids)
+    if not ids:
+        return 0, []
+
+    errors: list[dict[str, Any]] = []
+    existing: dict[str, dict[str, Any]] = {}
+    errored: set[str] = set()
+
+    def _fail(fid: str, msg: str) -> None:
+        errored.add(fid)
+        errors.append({"id": fid, "error": msg})
+
+    # Chunked so one oversized selection can't build a single request that
+    # exceeds `http.max_content_length`, and so a transport failure costs
+    # its chunk rather than the whole batch.
+    for i in range(0, len(ids), _BULK_STATUS_CHUNK):
+        chunk_ids = ids[i:i + _BULK_STATUS_CHUNK]
+        try:
+            resp = es.mget(index=index, ids=chunk_ids)
+        except Exception as exc:
+            log.warning("findings bulk status mget failed: %s", exc)
+            for fid in chunk_ids:
+                _fail(fid, f"{exc.__class__.__name__}: {exc}")
+            continue
+        for d in resp.get("docs") or []:
+            if not d.get("found"):
+                continue
+            src = d.get("_source")
+            if not src:
+                # An indexed doc with no readable source: writing the
+                # computed transition would replace the finding with a
+                # two-field stub, erasing kind / artifact / evidence.
+                _fail(d["_id"], "empty _source; refusing to overwrite")
+                continue
+            existing[d["_id"]] = src
+
+    now = _now_iso()
+    n_updated = 0
+    actions: list[dict[str, Any]] = []
+    mutated: list[tuple[str, dict[str, Any]]] = []
+    seen: set[str] = set()
+    for fid in ids:
+        if fid in seen or fid in errored:
+            continue
+        seen.add(fid)
+        src = existing.get(fid)
+        if src is None:
+            _fail(fid, f"finding not found: {fid}")
+            continue
+        prev = src.get("status") or "new"
+        if prev == new_status:
+            n_updated += 1          # no-op: nothing written, still counted
+            continue
+        history = src.get("status_history") or []
+        history.append({
+            "ts": now,
+            "from": prev,
+            "to":   new_status,
+            "note": note or "",
+        })
+        src["status"] = new_status
+        src["status_history"] = history
+        actions.append({"_op_type": "index", "_index": index, "_id": fid, "_source": src})
+        mutated.append((fid, src))
+
+    # `helpers.bulk` chunks internally and re-raises transport errors even
+    # under `raise_on_error=False`, so an exception says nothing about the
+    # chunks that already committed. Drive the chunking here instead: a
+    # failure is then attributable to exactly the ids in its own chunk.
+    failed_ids: set[str] = set()
+    n_written = 0
+    for i in range(0, len(actions), _BULK_STATUS_CHUNK):
+        chunk = actions[i:i + _BULK_STATUS_CHUNK]
+        try:
+            ok, bulk_errs = bulk(
+                es, chunk, raise_on_error=False,
+                chunk_size=_BULK_STATUS_CHUNK, request_timeout=60,
+            )
+        except Exception as exc:
+            log.warning("findings bulk status write failed: %s", exc)
+            for a in chunk:
+                failed_ids.add(a["_id"])
+                errors.append({"id": a["_id"], "error": f"{exc.__class__.__name__}: {exc}"})
+            continue
+        n_written += int(ok)
+        for e in bulk_errs or []:
+            info = (next(iter(e.values()), {}) if isinstance(e, dict) and e else {}) or {}
+            efid = info.get("_id")
+            msg = str(info.get("error") or "bulk index failed")
+            if not efid:
+                # Unattributable failure. Fail the whole chunk rather than
+                # let a side effect fire on a doc that may not have landed.
+                log.warning("findings bulk status error carried no _id: %r", e)
+                for a in chunk:
+                    failed_ids.add(a["_id"])
+                errors.append({"id": "", "error": msg})
+                continue
+            failed_ids.add(efid)
+            errors.append({"id": efid, "error": msg})
+    n_updated += n_written
+
+    if actions:
+        # One forced refresh for the whole request — the console reloads
+        # immediately after and must see every transition. Skipped when
+        # nothing was written; there is nothing to make visible.
+        try:
+            es.indices.refresh(index=index)
+        except Exception as exc:
+            log.warning("findings refresh after bulk status write failed: %s", exc)
+
+    survivors = [(fid, src) for fid, src in mutated if fid not in failed_ids]
+    if cfg is not None and survivors:
+        # Batch-invariant, and only the confirm path builds anchors — so
+        # resolve it once, there, and pass it down even when it is None.
+        # Resolved after `survivors`: a batch that wrote nothing has no
+        # anchor to key, so it should not pay the lookup either.
+        from .lifecycle import latest_cluster_run_id
+        run_id: Any = RUN_ID_UNSET
+        if new_status == "confirmed":
+            run_id = latest_cluster_run_id(es, cfg)
+        for fid, src in survivors:
+            try:
+                _apply_lifecycle_side_effects(es, cfg, finding=src, confirmed_run_id=run_id)
+            except Exception as exc:
+                log.warning(
+                    "lifecycle side effect for finding %s (status=%s) failed: %s",
+                    fid, new_status, exc,
+                )
+    return n_updated, errors
+
+
+def _apply_lifecycle_side_effects(
+    es: Elasticsearch,
+    cfg: Any,
+    *,
+    finding: dict[str, Any],
+    confirmed_run_id: Any = RUN_ID_UNSET,
+) -> None:
     """Dispatch lifecycle writes triggered by a status change. Routes by
     `(kind_classification, status)` per the Findings v2 design table.
+
+    `confirmed_run_id` is the batch-invariant latest cluster run. Bulk
+    callers resolve it once and pass it in; when None the anchor builder
+    resolves it itself (one search per anchor).
 
     Coverage findings (`playbook` / `campaign`):
       - confirmed → analyst anchor appended
@@ -327,6 +506,7 @@ def _apply_lifecycle_side_effects(es: Elasticsearch, cfg: Any, *, finding: dict[
                 es, cfg,
                 artifact_kind=artifact_kind, artifact_id=artifact_id,
                 source="analyst", confirming_finding_id=fid,
+                confirmed_run_id=confirmed_run_id,
             )
             write_confirm_anchor(es, lc_index, artifact_id=artifact_id, anchor=anchor)
         elif status == "rejected":
@@ -346,6 +526,7 @@ def _apply_lifecycle_side_effects(es: Elasticsearch, cfg: Any, *, finding: dict[
                 es, cfg,
                 artifact_kind=artifact_kind, artifact_id=artifact_id,
                 source="analyst", confirming_finding_id=fid,
+                confirmed_run_id=confirmed_run_id,
             )
             write_confirm_anchor(es, lc_index, artifact_id=artifact_id, anchor=anchor)
         elif status == "rejected":

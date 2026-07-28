@@ -278,6 +278,39 @@ def remove_anchors_by_source(
     return removed
 
 
+#: Distinguishes "caller did not resolve a run id" from "caller resolved it
+#: and the answer is None". Without it a failed batch lookup silently reverts
+#: to one `session_clusters` search per anchor — the exact cost the batch
+#: path exists to avoid.
+RUN_ID_UNSET: Any = object()
+
+
+def latest_cluster_run_id(es: Elasticsearch, cfg) -> Optional[str]:
+    """Latest COMPLETED cluster `run_id` from session_clusters. P3.1 —
+    resolve via the run_summary sentinel (written LAST, P3.3) so callers key
+    to a complete run, not a half-built one.
+
+    Batch-invariant: the answer is the same for every artifact in one
+    request, so bulk callers resolve it once and pass it to
+    `build_anchor_payload(confirmed_run_id=...)` instead of paying a search
+    per finding. Returns None if the lookup fails or no run exists.
+    """
+    try:
+        resp = es.search(
+            index=cfg.elasticsearch.indexes.cowrie.session_clusters,
+            size=1,
+            query={"term": {"doc_type": "run_summary"}},
+            sort=[{"@timestamp": "desc"}],
+            _source=["run_id"],
+        )
+        h = resp["hits"]["hits"]
+        if h:
+            return h[0]["_source"].get("run_id")
+    except Exception:
+        pass
+    return None
+
+
 def build_anchor_payload(
     es: Elasticsearch,
     cfg,
@@ -286,6 +319,7 @@ def build_anchor_payload(
     artifact_id: str,
     source: str,
     confirming_finding_id: Optional[str] = None,
+    confirmed_run_id: Any = RUN_ID_UNSET,
 ) -> dict:
     """Materialise an anchor doc from the current state of `artifact_id`.
 
@@ -294,7 +328,10 @@ def build_anchor_payload(
     command + bigram signatures + capped command_set / artifact_set
     unions across the artifact's member sessions. The latest cluster
     `run_id` is read from session_clusters so the anchor is keyed to
-    the run the analyst was looking at when they confirmed.
+    the run the analyst was looking at when they confirmed — pass
+    `confirmed_run_id` (including an explicit `None`) to reuse an
+    already-resolved one and skip that search; bulk confirms resolve it
+    once for the whole batch.
 
     `source` is `"analyst"` (called from mutate_status) or
     `"provisional"` (called from `track lifecycles` after N stable runs).
@@ -328,23 +365,12 @@ def build_anchor_payload(
         snap_session_count = int(latest.get("session_count") or 0)
         snap_ip_count = int(latest.get("ip_count") or 0)
 
-    # Latest COMPLETED cluster run_id from session_clusters. P3.1 — resolve via
-    # the run_summary sentinel (written LAST, P3.3) so the anchor is keyed to a
-    # complete run, not a half-built one.
-    confirmed_run_id: Optional[str] = None
-    try:
-        resp = es.search(
-            index=cowrie_idx.session_clusters,
-            size=1,
-            query={"term": {"doc_type": "run_summary"}},
-            sort=[{"@timestamp": "desc"}],
-            _source=["run_id"],
-        )
-        h = resp["hits"]["hits"]
-        if h:
-            confirmed_run_id = h[0]["_source"].get("run_id")
-    except Exception:
-        pass
+    # Latest COMPLETED cluster run_id from session_clusters. Batch callers
+    # resolve it once up front and pass it in; solo callers pay the search here.
+    # An explicitly-passed None means "already looked, there isn't one" — do
+    # not re-search, or a batch whose lookup came back empty pays N searches.
+    if confirmed_run_id is RUN_ID_UNSET:
+        confirmed_run_id = latest_cluster_run_id(es, cfg)
 
     # Session aggregations — for campaign, sess_filter_field is wrong (we'd
     # want member_session_ids from the campaign doc). Step 2 ships playbook
