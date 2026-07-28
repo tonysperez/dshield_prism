@@ -15,3 +15,7 @@ filters:
       - account_manipulation
   - kind: command_count_gte
     threshold: 1
+
+# Ships disabled: `enabled` gates whether this hunt writes findings.
+# Preview it or switch it on from the console /hunts page.
+enabled: false

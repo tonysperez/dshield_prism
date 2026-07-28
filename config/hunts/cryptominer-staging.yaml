@@ -18,3 +18,7 @@ filters:
       - download_ingress
       - execute_payload
       - cryptomining
+
+# Ships disabled: `enabled` gates whether this hunt writes findings.
+# Preview it or switch it on from the console /hunts page.
+enabled: false

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -351,21 +351,192 @@ def build_app(config_path: str | None = None) -> FastAPI:
         return JSONResponse({"ok": True, "cleared": cleared})
 
     # ------------------------------------------------------------------
-    # Hunts (brutal-review phase 6.3) — read-only list view + run-now.
+    # Hunts — list (incl. disabled), create / edit / delete of the YAML
+    # files themselves, per-hunt enable toggle, preview (executes but
+    # writes nothing), and run-now (writes enabled only).
     # ------------------------------------------------------------------
+    def _hunts_dir() -> str:
+        return getattr(getattr(cfg.findings, "hunts", None),
+                       "config_dir", "config/hunts")
+
+    def _resolve_hunt(hunt_id: str) -> dict:
+        """Look a hunt up by id among the ones `load_hunts` actually
+        returned. The id from the URL is never interpolated into a
+        filesystem path — resolving through the loaded set is what makes
+        path traversal structurally impossible here."""
+        from enrich.findings.hunts import load_hunts
+        try:
+            hunts = load_hunts(_hunts_dir())
+        except Exception:
+            # Loader errors quote absolute file paths — log, don't echo.
+            log.exception("hunts: load failed")
+            raise HTTPException(500, "hunts load failed; see server log")
+        for h in hunts:
+            if h["id"] == hunt_id:
+                return h
+        raise HTTPException(404, f"unknown hunt id {hunt_id!r}")
+
+    def _hunt_body(body: Any, hunt_id: str) -> dict:
+        """Hand-validate a create/edit body into a hunt document.
+
+        By hand rather than through a pydantic model for the same reason
+        `hunts_toggle_api` does it: a malformed body is a 400, not
+        FastAPI's 422, and pydantic's coercion never gets to turn a
+        wrong-typed filter into a plausible-looking one. Filter *clause*
+        contents are left to `validate_hunt_doc` on the write path — one
+        validator, the loader's own.
+        """
+        if not isinstance(body, dict):
+            raise HTTPException(400, "body must be a JSON object")
+        if "id" in body and body["id"] != hunt_id:
+            raise HTTPException(400, "a hunt's `id` cannot be changed")
+        name = body.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise HTTPException(400, "`name` must be a non-empty string")
+        # Type-check before any falsy coercion: `or ""` would silently
+        # turn `description: 0` / `false` / `[]` into an empty string
+        # while 400ing every other wrong type.
+        desc = body.get("description", "")
+        if not isinstance(desc, str):
+            raise HTTPException(400, "`description` must be a string")
+        filters = body.get("filters")
+        if not isinstance(filters, list) or not filters:
+            raise HTTPException(400, "`filters` must be a non-empty list")
+        if any(not isinstance(f, dict) for f in filters):
+            raise HTTPException(400, "each filter must be a JSON object")
+        return {
+            "id": hunt_id, "name": name.strip(),
+            "description": desc, "filters": filters,
+        }
+
+    def _hunt_public(doc: dict, enabled: bool) -> dict:
+        """The wire shape of one hunt. `_source_path` never crosses it."""
+        return {
+            "id":          doc["id"],
+            "name":        doc["name"],
+            "description": doc.get("description") or "",
+            "filters":     doc.get("filters") or [],
+            "enabled":     bool(enabled),
+            "ok":          True,
+        }
+
+    # `body: Any`, not `body: dict` — a `dict` annotation makes FastAPI
+    # reject a non-object body with its own 422 before the handler runs,
+    # which would make the hand-validated 400 below unreachable.
+    @app.post("/api/hunts", status_code=201)
+    def hunts_create_api(body: Any = Body(...)) -> JSONResponse:
+        """Author a new hunt as `<config_dir>/<id>.yaml`.
+
+        Always written `enabled: false` — a hunt created from a
+        half-formed hypothesis must not start writing findings before
+        the analyst has previewed it. `/toggle` is the only route that
+        changes the flag.
+        """
+        from enrich.findings.hunts import HUNT_ID_RE, load_hunts, write_hunt
+        if not isinstance(body, dict):
+            raise HTTPException(400, "body must be a JSON object")
+        hunt_id = body.get("id")
+        if not isinstance(hunt_id, str) or not HUNT_ID_RE.match(hunt_id):
+            raise HTTPException(
+                400, "`id` must match ^[a-z0-9][a-z0-9-]{0,63}$ — lowercase "
+                     "letters, digits and hyphens, starting with a letter or "
+                     "digit, 64 chars max")
+        doc = _hunt_body(body, hunt_id)
+        doc["enabled"] = False
+        hunts_dir = _hunts_dir()
+        try:
+            existing = load_hunts(hunts_dir)
+        except Exception:
+            log.exception("hunts create: load failed")
+            raise HTTPException(500, "hunts load failed; see server log")
+        if any(h["id"] == hunt_id for h in existing):
+            raise HTTPException(409, f"hunt id {hunt_id!r} already exists")
+        # A file can exist without being loaded under this id (it may
+        # declare a different one inside). Creating would clobber it.
+        if any((Path(hunts_dir) / f"{hunt_id}{s}").exists()
+               for s in (".yaml", ".yml")):
+            raise HTTPException(
+                409, f"a hunt file named {hunt_id}.yaml already exists")
+        try:
+            write_hunt(hunts_dir, doc)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except Exception:
+            log.exception("hunts create failed for %s", hunt_id)
+            raise HTTPException(
+                500, f"hunt create failed for {hunt_id!r}; see server log")
+        return JSONResponse(_hunt_public(doc, False), status_code=201)
+
+    @app.put("/api/hunts/{hunt_id}")
+    def hunts_update_api(hunt_id: str, body: Any = Body(...)) -> JSONResponse:
+        """Rewrite an existing hunt's name / description / filters.
+
+        Writes back to the hunt's own file — which may be `.yml`, or
+        named differently from the id — never a second one. The file's
+        current `enabled` value is carried through untouched; only
+        `/toggle` changes it. A full `yaml.safe_dump` rewrite, so the
+        file's comments and block descriptions do not survive; the UI
+        warns before saving.
+        """
+        from enrich.findings.hunts import write_hunt
+        hunt = _resolve_hunt(hunt_id)                       # 404 on unknown id
+        edits = _hunt_body(body, hunt_id)
+        enabled = bool(hunt.get("enabled"))
+        # Start from what is on disk, not from a fresh four-key dict:
+        # an operator's own top-level keys (`owner:`, `tags:`, `notes:`)
+        # would otherwise vanish on the first console save. `write_hunt`
+        # appends anything unknown after the ordered keys, so the file
+        # still reads `id, name, description, enabled, filters, <extras>`.
+        doc = {k: v for k, v in hunt.items() if k != "_source_path"}
+        doc.update(edits)
+        doc["enabled"] = enabled
+        try:
+            write_hunt(_hunts_dir(), doc, path=hunt.get("_source_path"))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except Exception:
+            # The exception text carries the hunt's absolute path.
+            log.exception("hunts update failed for %s", hunt_id)
+            raise HTTPException(
+                500, f"hunt update failed for {hunt_id!r}; see server log")
+        return JSONResponse(_hunt_public(doc, enabled))
+
+    @app.delete("/api/hunts/{hunt_id}")
+    def hunts_delete_api(hunt_id: str) -> JSONResponse:
+        """Unlink a hunt's YAML file.
+
+        The `analyst_hunt` findings it already wrote are deliberately
+        left in place — findings outlive their hunt; deleting the file
+        only stops future writes.
+        """
+        from enrich.findings.hunts import delete_hunt
+        hunt = _resolve_hunt(hunt_id)
+        try:
+            delete_hunt(hunt, hunts_dir=_hunts_dir())
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except Exception:
+            log.exception("hunts delete failed for %s", hunt_id)
+            raise HTTPException(
+                500, f"hunt delete failed for {hunt_id!r}; see server log")
+        return JSONResponse({"id": hunt_id, "deleted": True, "ok": True})
+
     @app.get("/api/hunts")
     def hunts_list_api() -> JSONResponse:
-        """List every hunt loaded from `config/hunts/` along with its
-        last-run finding count (queried from `prism.findings`). Read-only.
-        """
+        """List every hunt in `config/hunts/` — disabled ones included —
+        with its accumulated finding count from `prism.findings`.
+        `enabled` reflects whether the hunt writes findings, not whether
+        it loads. `_source_path` is deliberately not exposed."""
         from enrich.findings.hunts import load_hunts
-        hunts_dir = getattr(getattr(cfg.findings, "hunts", None),
-                            "config_dir", "config/hunts")
+        hunts_dir = _hunts_dir()
         try:
             hunts = load_hunts(hunts_dir)
-        except Exception as exc:
-            log.warning("hunts list: load failed: %s", exc)
-            return JSONResponse({"hunts": [], "error": str(exc)})
+        except Exception:
+            # Loader errors quote absolute file paths — log them, and hand
+            # the page an error state that isn't the filesystem layout.
+            log.exception("hunts list: load failed")
+            return JSONResponse(
+                {"hunts": [], "error": "hunts load failed; see server log"})
         # One agg pulls per-hunt counts in a single round-trip.
         counts_by_id: dict[str, int] = {}
         try:
@@ -389,17 +560,69 @@ def build_app(config_path: str | None = None) -> FastAPI:
                 "name":         h["name"],
                 "description":  h.get("description") or "",
                 "filters":      h.get("filters") or [],
-                "enabled":      h.get("enabled", True),
+                "enabled":      bool(h.get("enabled")),
                 "finding_count": int(counts_by_id.get(h["id"], 0)),
             })
-        return JSONResponse({"hunts": out, "hunts_dir": hunts_dir})
+        return JSONResponse({
+            "hunts": out,
+            "hunts_dir": hunts_dir,
+            "enabled_count": sum(1 for h in out if h["enabled"]),
+        })
+
+    @app.post("/api/hunts/{hunt_id}/toggle")
+    def hunts_toggle_api(hunt_id: str, body: dict = Body(...)) -> JSONResponse:
+        """Flip a hunt's `enabled` key in its own YAML file. Surgical
+        single-line rewrite — descriptions, comments and key order
+        survive; see `set_hunt_enabled`. The only write this console
+        makes outside Elasticsearch.
+
+        The body is validated by hand rather than through a pydantic
+        model so a malformed one is a 400, not FastAPI's default 422,
+        and so pydantic's lax mode can't coerce `"yes"` into a `True`
+        that silently rewrites a file."""
+        from enrich.findings.hunts import set_hunt_enabled
+        if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
+            raise HTTPException(
+                400, "body must be {\"enabled\": true|false} with a real boolean")
+        enabled = body["enabled"]
+        hunt = _resolve_hunt(hunt_id)
+        try:
+            set_hunt_enabled(hunt, enabled)
+        except Exception:
+            # The exception text carries the hunt's absolute path; log it
+            # locally, don't hand the operator's filesystem layout back
+            # over HTTP.
+            log.exception("hunts toggle failed for %s", hunt_id)
+            raise HTTPException(500, f"hunt toggle failed for {hunt_id!r}; see server log")
+        return JSONResponse({
+            "id": hunt_id, "enabled": bool(enabled), "ok": True,
+        })
+
+    @app.post("/api/hunts/{hunt_id}/preview")
+    def hunts_preview_api(
+        hunt_id: str,
+        limit: int = Query(100, ge=1, le=100,
+                           description="max sessions to return"),
+    ) -> JSONResponse:
+        """Execute one hunt and return the sessions it *would* match.
+        Writes nothing — no findings are created, so an analyst can
+        iterate on a hypothesis without polluting the inbox. Works on
+        disabled hunts, which is the point."""
+        from enrich.findings.hunts import preview_hunt
+        hunt = _resolve_hunt(hunt_id)
+        try:
+            result = preview_hunt(es, cfg, hunt, limit=limit)
+        except Exception:
+            log.exception("hunts preview failed for %s", hunt_id)
+            raise HTTPException(500, f"hunt preview failed for {hunt_id!r}; see server log")
+        return JSONResponse(result)
 
     @app.post("/api/hunts/run")
     def hunts_run_api() -> JSONResponse:
         """Trigger `mine hunts` on demand — same logic the backward
-        chain runs at Step 13. Read-only effects on the cluster /
-        rollup indexes; just upserts new analyst_hunt findings.
-        """
+        chain runs. Only `enabled` hunts write; the rest come back under
+        `skipped`. Read-only against the cluster / rollup indexes; just
+        upserts analyst_hunt findings."""
         from enrich.findings.hunts import run_hunts
         from enrich.findings.writer import bulk_upsert_findings
         from enrich.es_client import init_index
@@ -425,6 +648,7 @@ def build_app(config_path: str | None = None) -> FastAPI:
             "run_id":         run_id,
             "loaded":         result.get("loaded", 0),
             "written_by_hunt": written_by_hunt,
+            "skipped":        result.get("skipped") or [],
             "errors":         result.get("errors") or [],
         })
 
@@ -531,6 +755,19 @@ def build_app(config_path: str | None = None) -> FastAPI:
             raise HTTPException(404, f"finding not found: {finding_id}")
         return JSONResponse(data)
 
+    def _refresh_findings(es, cfg) -> None:
+        """Force one refresh so the reload that follows a mutation sees it.
+
+        The writers index with `refresh=False` — blocking each document on
+        the index's `refresh_interval` cost seconds per click. Failure is
+        logged and swallowed: the write is already committed, and reporting
+        a successful mutation as failed is worse than a briefly stale list.
+        """
+        try:
+            es.indices.refresh(index=cfg.findings.indexes.default)
+        except Exception as exc:                            # pragma: no cover
+            log.warning("findings refresh after mutation failed: %s", exc)
+
     @app.post("/api/finding/{finding_id}/status")
     def finding_status_api(finding_id: str, body: FindingStatusRequest) -> JSONResponse:
         # The mutation logic + history-append lives in the parent
@@ -551,6 +788,7 @@ def build_app(config_path: str | None = None) -> FastAPI:
         except Exception as exc:                            # pragma: no cover
             log.exception("finding_status_api failed")
             raise HTTPException(500, f"status mutation failed: {exc}")
+        _refresh_findings(es, cfg)
         return JSONResponse(updated)
 
     @app.post("/api/finding/{finding_id}/note")
@@ -568,6 +806,7 @@ def build_app(config_path: str | None = None) -> FastAPI:
         except Exception as exc:                            # pragma: no cover
             log.exception("finding_note_api failed")
             raise HTTPException(500, f"note append failed: {exc}")
+        _refresh_findings(es, cfg)
         return JSONResponse(updated)
 
     @app.post("/api/findings/status")
@@ -575,27 +814,24 @@ def build_app(config_path: str | None = None) -> FastAPI:
         """Apply the same status (and optional note) to many findings in
         one round-trip. Drives the inbox multi-select bar. Per-id
         failures are collected and reported alongside the success
-        count rather than aborting the batch."""
-        from enrich.findings.writer import mutate_status
+        count rather than aborting the batch.
+
+        An invalid `status` is rejected once with a 400 — it can't be a
+        per-id failure, since it dooms every id identically."""
+        from enrich.findings.writer import bulk_mutate_status
         if not body.ids:
             raise HTTPException(400, "no ids supplied")
-        n_updated = 0
-        errors: list[dict] = []
-        for fid in body.ids:
-            try:
-                mutate_status(
-                    es, cfg.findings.indexes.default, fid,
-                    new_status=body.status, note=body.note,
-                    cfg=cfg,
-                )
-                n_updated += 1
-            except ValueError as exc:
-                errors.append({"id": fid, "error": str(exc)})
-            except LookupError as exc:
-                errors.append({"id": fid, "error": str(exc)})
-            except Exception as exc:                        # pragma: no cover
-                log.exception("findings_bulk_status_api failed for %s", fid)
-                errors.append({"id": fid, "error": f"{exc.__class__.__name__}: {exc}"})
+        try:
+            n_updated, errors = bulk_mutate_status(
+                es, cfg.findings.indexes.default, body.ids,
+                new_status=body.status, note=body.note,
+                cfg=cfg,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except Exception as exc:                            # pragma: no cover
+            log.exception("findings_bulk_status_api failed")
+            raise HTTPException(500, f"bulk status mutation failed: {exc}")
         return JSONResponse({"n_updated": n_updated, "errors": errors})
 
     # ------------------------------------------------------------------
@@ -1015,13 +1251,15 @@ def build_app(config_path: str | None = None) -> FastAPI:
 
     @app.get("/api/health/ops-runs")
     def health_ops_runs_api() -> JSONResponse:
-        """Per-verb run telemetry from prism.ops (P4.3): latest run per verb +
-        in-progress steps. Drives the all-verb pipeline-activity panel on
-        /health. Empty lists when the index is absent (telemetry not enabled)."""
+        """Run telemetry from prism.ops (P4.3): latest run per verb,
+        in-progress steps, and `units` — the same runs grouped by owning systemd
+        unit, which drives the "Pipeline & schedule" panel on /health. Empty
+        lists when the index is absent (telemetry not enabled)."""
         try:
             return JSONResponse(queries.health_ops_runs(es, cfg))
         except Exception as e:  # pragma: no cover -- depends on ES state
-            return JSONResponse({"rows": [], "running": [], "error": f"{e.__class__.__name__}: {e}"})
+            return JSONResponse({"rows": [], "running": [], "units": [],
+                                 "error": f"{e.__class__.__name__}: {e}"})
 
     @app.get("/api/health/pressure")
     def health_pressure_api() -> JSONResponse:

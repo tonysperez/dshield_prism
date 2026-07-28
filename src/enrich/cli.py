@@ -718,6 +718,11 @@ def _run_pipeline(cfg, secrets, args) -> int:
             # per-command cache skips re-LLM on already-enriched commands
             "enrich": lambda: cmds_mod.run_enrich(
                 cfg, secrets, dry_run=dry, no_cloud=args.no_cloud, full_rescan=True),
+            # campaign mining has its own wall-clock window (default 30d,
+            # independent of session.cluster_window_days) — same problem this
+            # whole backfill mode exists to avoid, so force it unbounded too.
+            "mine campaigns": lambda: campaigns_mod.run_mine(
+                cfg, secrets, kind="all", dry_run=dry, window_days=0),
         })
         on = [n for n, e in (("intel", cfg.intel.enabled), ("cloud", cfg.cloud.enabled)) if e]
         if on:
@@ -1314,16 +1319,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p_mo.add_argument("--dry-run", action="store_true",
                       help="Evaluate pairs without writing operation docs")
 
-    # mine hunts — brutal-review phase 6.1. Analyst-authored YAML
-    # queries against the session rollup; matches emit
-    # `kind=analyst_hunt` into prism.findings. Loads from
-    # `cfg.findings.hunts.config_dir` (default: config/hunts).
+    # mine hunts — analyst-authored YAML queries against the session
+    # rollup; matches emit `kind=analyst_hunt` into prism.findings.
+    # Loads from `cfg.findings.hunts.config_dir` (default: config/hunts).
+    # A hunt's `enabled` flag gates *writing* — disabled hunts are still
+    # loaded and previewable, they just never reach this write path.
     p_mh = mine_sub.add_parser(
         "hunts",
-        help="Run analyst-authored hunt YAMLs and emit analyst_hunt findings",
+        help=("Run enabled hunt YAMLs and emit analyst_hunt findings "
+              "(`enabled: false` hunts are skipped)"),
     )
     p_mh.add_argument("--dry-run", action="store_true",
                       help="Load + execute but don't write findings")
+    p_mh.add_argument("--include-disabled", action="store_true",
+                      help=("Also execute `enabled: false` hunts. Requires "
+                            "--dry-run — a flag must never write findings "
+                            "for a hunt the operator switched off."))
 
     # mine file-crossref — brutal-review phase 7.6. Cross-session
     # file -> command attribution. One doc per (sha256, source.ip)
@@ -1939,19 +1950,30 @@ def _dispatch_verb(args, cfg, secrets) -> int:
             print(json.dumps(stats, indent=2, default=str))
             return 0
         if args.subject == "hunts":
-            # Hypothesis-driven hunts (brutal-review phase 6.1). Reads
-            # YAML from cfg.findings.hunts.config_dir, executes each
-            # against the session rollup, writes one
+            # Hypothesis-driven hunts. Reads YAML from
+            # cfg.findings.hunts.config_dir, executes each *enabled*
+            # hunt against the session rollup, writes one
             # `kind=analyst_hunt` finding per matching session.
             from .findings.hunts import run_hunts
             from .findings.writer import bulk_upsert_findings
             from .es_client import init_index, make_client
             import uuid as _uuid
+            if args.include_disabled and not args.dry_run:
+                # Stay on the JSON contract even when refusing — callers
+                # parse this stdout and a bare exit 2 gives them a decode
+                # error instead of a reason.
+                print(json.dumps({
+                    "error": "--include-disabled requires --dry-run",
+                    "detail": ("refusing to write findings for hunts the "
+                               "operator switched off"),
+                }, indent=2))
+                return 2
             es = make_client(cfg.elasticsearch, secrets)
             findings_idx = cfg.findings.indexes.default
             init_index(es, "setup/es-mappings/findings/default.json", findings_idx)
             run_id = str(_uuid.uuid4())
-            result = run_hunts(es, cfg, run_id)
+            result = run_hunts(es, cfg, run_id,
+                               include_disabled=args.include_disabled)
             written = 0
             if not args.dry_run:
                 for hunt_id, findings in (result.get("by_hunt") or {}).items():
@@ -1967,6 +1989,12 @@ def _dispatch_verb(args, cfg, secrets) -> int:
                 "dry_run":   args.dry_run,
                 "loaded":    result.get("loaded", 0),
                 "by_hunt":   per_hunt,
+                # Hunts on disk with `enabled: false` — loaded and
+                # previewable, but deliberately not run here.
+                "skipped":   result.get("skipped", []),
+                # Populated only under --include-disabled: which of the
+                # executed hunts are actually switched off.
+                "ran_disabled": result.get("ran_disabled", []),
                 "total_written": written,
                 "errors":    result.get("errors", []),
             }, indent=2, default=str))

@@ -2,10 +2,12 @@
 {% block title %}DShield Hunts{% endblock %}
 {% block head_extra %}
   <style>
-    /* Hypothesis-driven hunts page — brutal-review phase 6.3.
-       Read-only list of YAML-defined hunts in `config/hunts/`. Each
-       row shows the last-run match count, a "run now" button, and a
-       click-through to the matching findings.
+    /* Hypothesis-driven hunts page.
+       Lists every YAML-defined hunt in `config/hunts/` — disabled ones
+       included. Each row carries an enable toggle (gates whether the
+       hunt writes findings), a Preview button (executes the query and
+       shows matching sessions without writing anything), the
+       accumulated finding count, and a click-through to the inbox.
     */
     #hunts-main {
       max-width: 1180px;
@@ -125,6 +127,239 @@
       text-decoration: none;
     }
     .h-item .h-link:hover { text-decoration: underline; }
+
+    /* --- Enable toggle -------------------------------------------------
+       `enabled` gates whether the hunt WRITES findings. A disabled hunt
+       is still listed and still previewable, so the card is muted rather
+       than hidden. */
+    .h-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      cursor: pointer;
+      user-select: none;
+      font-size: 11px;
+      font-weight: 600;
+      color: #6b7494;
+      white-space: nowrap;
+    }
+    .h-toggle .h-track {
+      width: 30px;
+      height: 16px;
+      border-radius: 8px;
+      background: #1e2540;
+      border: 1px solid #2b3556;
+      position: relative;
+      transition: background 0.12s ease, border-color 0.12s ease;
+      flex: none;
+    }
+    .h-toggle .h-track::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #6b7494;
+      transition: transform 0.12s ease, background 0.12s ease;
+    }
+    .h-toggle.on .h-track {
+      background: #12324a;
+      border-color: #4cc1ff55;
+    }
+    .h-toggle.on .h-track::after {
+      transform: translateX(14px);
+      background: #4cc1ff;
+    }
+    .h-toggle.on { color: #4cc1ff; }
+    .h-toggle.busy { opacity: 0.5; pointer-events: none; }
+
+    /* Disabled hunts stay legible but visibly inert — they emit nothing
+       until switched on. */
+    .h-item.off { opacity: 0.62; }
+    .h-item.off .h-name { color: #9aa5c0; }
+
+    /* --- Preview results ----------------------------------------------
+       Preview executes the hunt's query and writes NOTHING. Rendered
+       inline under the card so the analyst can compare filters against
+       matches without leaving the page. */
+    .h-item .h-preview {
+      grid-column: 1 / span 2;
+      border: 1px solid #1e2540;
+      border-radius: 5px;
+      background: #08101e;
+      padding: 10px;
+      overflow-x: auto;
+    }
+    .h-preview .h-preview-head {
+      font-size: 11px;
+      color: #8e9bbf;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+    .h-preview .h-preview-note {
+      color: #f0c674;
+      font-size: 10px;
+    }
+    .h-preview table {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: 11px;
+    }
+    .h-preview th {
+      text-align: left;
+      font-weight: 600;
+      color: #6b7494;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-size: 9px;
+      padding: 3px 8px 5px 0;
+      border-bottom: 1px solid #1e2540;
+      white-space: nowrap;
+    }
+    .h-preview td {
+      padding: 4px 8px 4px 0;
+      color: #c3ccdf;
+      border-bottom: 1px solid #12192b;
+      white-space: nowrap;
+    }
+    .h-preview td.mono {
+      font-family: "JetBrains Mono", "SF Mono", "Consolas", monospace;
+      color: #8e9bbf;
+    }
+    .h-preview .h-preview-empty {
+      font-size: 11px;
+      color: #414b62;
+      padding: 6px 0;
+    }
+    /* --- Filter builder ------------------------------------------------
+       The only authoring surface for a hunt — there is no raw-YAML
+       textarea, so an invalid clause can't be composed. Mounted inline
+       in a card when editing, at the top of the list when new. */
+    .h-editor {
+      grid-column: 1 / span 2;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: #08101e;
+      border: 1px solid #4cc1ff28;
+      border-radius: 6px;
+      padding: 12px 14px;
+    }
+    .h-editor-new { margin-bottom: 4px; }
+    .h-editor-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: #4cc1ff;
+    }
+    .h-field {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .h-field-label {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: #6b7494;
+      width: 84px;
+      flex: none;
+    }
+    .h-field-hint {
+      font-size: 10px;
+      color: #414b62;
+    }
+    .h-input {
+      flex: 1 1 200px;
+      min-width: 0;
+      font-family: "JetBrains Mono", "SF Mono", "Consolas", monospace;
+      font-size: 11px;
+      color: #e8edf7;
+      background: #0c1424;
+      border: 1px solid #1e2540;
+      border-radius: 4px;
+      padding: 5px 8px;
+    }
+    .h-input:focus {
+      outline: none;
+      border-color: #4cc1ff55;
+    }
+    .h-input:disabled { color: #6b7494; cursor: not-allowed; }
+    .h-textarea { resize: vertical; line-height: 1.5; }
+    /* List clauses take one value per line — values contain commas. */
+    .h-values {
+      resize: vertical;
+      line-height: 1.5;
+      white-space: pre;
+      overflow-wrap: normal;
+      overflow-x: auto;
+    }
+    .h-select {
+      flex: none;
+      font-size: 11px;
+      color: #c3ccdf;
+      background: #0c1424;
+      border: 1px solid #1e2540;
+      border-radius: 4px;
+      padding: 5px 6px;
+      max-width: 230px;
+    }
+    .h-select:focus { outline: none; border-color: #4cc1ff55; }
+    .h-filter-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .h-filter-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .h-filter-row.bad .h-input { border-color: #f8717155; }
+    .h-filter-err {
+      font-size: 10px;
+      color: #f87171;
+    }
+    .h-filter-add { display: flex; }
+    .h-btn-quiet {
+      background: transparent;
+      color: #8e9bbf;
+      border-color: #1e2540;
+    }
+    .h-btn-quiet:hover { background: #12192b; }
+    .h-btn-icon { padding: 4px 9px; }
+    .h-btn-danger {
+      background: #1a0e0e;
+      border-color: #f8717128;
+      color: #f87171;
+    }
+    .h-btn-danger:hover { background: #2a1414; }
+    .h-editor-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .h-editor-err {
+      font-size: 10px;
+      color: #f87171;
+    }
+    /* Saving is a full yaml.safe_dump rewrite — the surgical path that
+       preserves comments belongs to the toggle, not to Save. */
+    .h-warn {
+      font-size: 10px;
+      color: #f0c674;
+      background: #1a1408;
+      border: 1px solid #f0c67428;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
     .h-empty {
       font-size: 12px;
       color: #414b62;
@@ -148,10 +383,11 @@
   <main id="hunts-main">
     <section class="h-section" id="sec-hunts">
       <p class="h-section-title">Hunts
-        <span class="h-hint">analyst-authored YAML queries against the session rollup — see <code id="hunts-dir">config/hunts</code></span>
+        <span class="h-hint">analyst-authored YAML queries against the session rollup — see <code id="hunts-dir">config/hunts</code>. <strong>Preview</strong> runs a hunt without saving anything; the toggle controls whether it writes findings.</span>
       </p>
       <div class="h-toolbar">
-        <button id="h-run-all" class="h-btn" type="button">Run all hunts now</button>
+        <button id="h-new" class="h-btn" type="button">New hunt</button>
+        <button id="h-run-all" class="h-btn" type="button">Run enabled hunts &amp; write findings</button>
         <span id="h-status" class="h-status">loading…</span>
       </div>
       <div id="hunts-body" class="h-list">
