@@ -41,7 +41,7 @@
 #          → re-enrich-stale + reembed + reset rollup watermarks
 #            + re-rollup + cluster commands/sessions/ips
 #            + escalate + name playbooks + name ip-clusters
-#            + mine campaigns + track lifecycles + intel refresh
+#            + mine campaigns + track lifecycles
 #            + mine findings
 #            (every 6h; `cluster sessions` windows to the last 30 days
 #             per session.cluster_window_days — P1.2. `cluster ips` self-gates
@@ -61,6 +61,11 @@
 #            enrich.command_grounding, overwrites the single report doc the
 #            console reads O(1) for the Health stat bar + Tune's Grounding
 #            tab. Own cadence, isolated from forward/backward.
+#        dshield_prism-analytics.timer
+#          → daily write-leaves split out of the 6h backward chain:
+#            intel refresh + apply-artifact-rules + track
+#            threshold-distributions + mine file-crossref. All soft-fail;
+#            nothing reads their output same-cycle (04:15).
 #        All timers serialise on /var/lib/dshield_prism/.lock via flock.
 #        `mine findings` is inlined into the backward chain so it always
 #        runs after `name playbooks` — the legacy
@@ -614,7 +619,7 @@ if (( INSTALL_SYSTEMD )); then
     # standalone hourly miner; mining is now inlined into the backward
     # chain so the unit + timer are deleted from disk and forgotten by
     # systemd.
-    for legacy in dshield_prism-ingest dshield_prism-analytics dshield_prism-mine-findings; do
+    for legacy in dshield_prism-ingest dshield_prism-mine-findings; do
         if [[ -f "${SYSTEMD_DIR}/${legacy}.timer" ]] \
         || [[ -f "${SYSTEMD_DIR}/${legacy}.service" ]] \
         || systemctl list-unit-files 2>/dev/null | grep -q "^${legacy}\."; then
@@ -636,6 +641,11 @@ if (( INSTALL_SYSTEMD )); then
         # forward/backward so the full-corpus commands scan never blocks them.
         dshield_prism-grounding-coverage.service
         dshield_prism-grounding-coverage.timer
+        # Daily write-leaves split out of the 6h backward chain (intel refresh,
+        # apply-artifact-rules, threshold metrics, file-crossref). Soft-fail,
+        # own daily cadence — nothing reads their output same-cycle.
+        dshield_prism-analytics.service
+        dshield_prism-analytics.timer
         # Installed but NOT enabled — a manual one-shot for historical backfill,
         # started on demand (`systemctl start dshield_prism-backfill`). No timer.
         dshield_prism-backfill.service
@@ -683,6 +693,7 @@ if (( INSTALL_SYSTEMD )); then
     systemctl enable --now dshield_prism-backward.timer
     systemctl enable --now dshield_prism-recluster-full.timer
     systemctl enable --now dshield_prism-grounding-coverage.timer
+    systemctl enable --now dshield_prism-analytics.timer
 
     if (( INSTALL_CONSOLE )); then
         # `enable --now` starts it on a fresh install and is a no-op when

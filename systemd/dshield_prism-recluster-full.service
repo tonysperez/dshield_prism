@@ -1,5 +1,5 @@
 [Unit]
-Description=DShield Prism weekly full novel-pool session mint + full IP re-cluster (Option A cutover / backlog B0.5)
+Description=DShield Prism weekly full assignment sweep + novel-pool session mint + full IP re-cluster (Option A cutover / backlog B0.5)
 After=network-online.target
 Wants=network-online.target
 
@@ -10,11 +10,26 @@ Group=dshield_prism
 WorkingDirectory=/opt/dshield_prism
 EnvironmentFile=/opt/dshield_prism/.env
 
-# Post-Option-A-cutover this weekly unit does two things:
-#   * SESSIONS: a single all-time `cluster sessions --novel-pool` — HDBSCAN over the
-#     FULL novel pool (the 6h backward pass only mints from the last 30d of novel), so
-#     older novel sessions that never got an anchor finally do. It does NOT touch the
-#     assigned bulk (that is owned by `assign_sessions`).
+# Owning-unit stamp for pipeline telemetry. `enrich.ops.run_start` copies this
+# onto every `prism.ops` verb_run doc the unit's steps write, so the console's
+# /health "Pipeline & schedule" panel groups runs by unit. `%n` expands to this
+# unit's full name — no per-file hardcoding and no console-side unit->verb map
+# to drift. Set AFTER the EnvironmentFile so it wins.
+Environment=PRISM_SYSTEMD_UNIT=%n
+
+# Post-Option-A-cutover this weekly unit does three things:
+#   * SESSIONS (assign): a single all-time `assign_sessions --window-days 0` — sweeps
+#     every session (not just the 6h backward pass's trailing 30d) against the current
+#     anchor set. Without this, any session older than 30 days at the time it first
+#     becomes eligible (a corpus reprocess/backfill, a slow-drip backlog, a sensor
+#     catching up after downtime) sits permanently unassigned: no scheduled job ever
+#     revisits it, since the 6h pass is windowed and this unit used to only cluster the
+#     novel pool, never re-sweep assignment. Found the hard way: a full reprocess left
+#     633K rollups with only ~8.5K command-bearing/eligible, and roughly half of THOSE
+#     sat unassigned indefinitely because nothing unwindowed ever ran assign_sessions.
+#   * SESSIONS (mint): `cluster sessions --novel-pool` — HDBSCAN over the FULL novel
+#     pool (whatever the assign sweep above just marked novel), so older novel sessions
+#     that never got an anchor finally do.
 #   * IPS: the full O(n^2) IP HDBSCAN + `--refresh-reference` (unchanged by the session
 #     cutover) — the only periodic full IP fit + IP reference refresh (backlog B0.5).
 # Identity is preserved: playbook ids re-match by centroid anchor, so this does not churn
@@ -24,15 +39,23 @@ EnvironmentFile=/opt/dshield_prism/.env
 # in-flight pass rather than colliding on the cache / cluster index.
 ExecStartPre=/usr/bin/flock /var/lib/dshield_prism/.lock /bin/true
 
+# Full-corpus assignment sweep, `-` (soft) so a slow/failed pass never blocks the
+# novel-pool mint or IP work below — failure surfaces in prism.ops. `--allow-unclassified`
+# is REQUIRED: assignment must cover every session regardless of classification (a
+# server-side label write, no egress — same posture as `cluster sessions`). Runs BEFORE
+# the novel-pool mint below so a session an existing anchor can now claim doesn't get
+# re-clustered into a duplicate playbook.
+ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python /opt/dshield_prism/scripts/assign_sessions.py --config /opt/dshield_prism/config/default.yaml --window-days 0 --apply --yes --allow-unclassified
+
 # Option A cutover: `--novel-pool` scopes this to sessions the authoritative assignment
 # runner marked novel; `--window-days 0` forces the FULL all-time novel pool (the 6h
 # backward pass only mints from the last 30d of novel, so this catches older novel
-# sessions that never got an anchor). It does NOT re-label the assigned bulk — that stays
-# owned by `assign_sessions` in the backward pass. `--refresh-reference` is dropped on the
-# session layer: post-cutover, session novelty is assignment-owned (below-τ / band-reject),
-# not reference-centroid-scored, and re-minting the reference from the novel pool only
-# would mis-calibrate it. If you REVERSE the cutover, restore
-# `cluster sessions --window-days 0 --refresh-reference` here.
+# sessions that never got an anchor). Self-converges with the full assign sweep above:
+# this pass's freshly-minted anchors get swept into the assigned bulk next week.
+# `--refresh-reference` is dropped on the session layer: post-cutover, session novelty is
+# assignment-owned (below-τ / band-reject), not reference-centroid-scored, and re-minting
+# the reference from the novel pool only would mis-calibrate it. If you REVERSE the
+# cutover, restore `cluster sessions --window-days 0 --refresh-reference` here.
 ExecStart=/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml cluster sessions --novel-pool --window-days 0
 
 # Backlog scale-hardening B0.5 — the IP layer has no windowing escape valve, so

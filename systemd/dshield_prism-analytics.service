@@ -1,0 +1,71 @@
+[Unit]
+Description=DShield Prism daily analytics tail — intel refresh, artifact-rule apply, threshold metrics, file-crossref
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=dshield_prism
+Group=dshield_prism
+WorkingDirectory=/opt/dshield_prism
+EnvironmentFile=/opt/dshield_prism/.env
+
+# Owning-unit stamp for pipeline telemetry. `enrich.ops.run_start` copies this
+# onto every `prism.ops` verb_run doc the unit's steps write, so the console's
+# /health "Pipeline & schedule" panel groups runs by unit. `%n` expands to this
+# unit's full name — no per-file hardcoding and no console-side unit->verb map
+# to drift. Set AFTER the EnvironmentFile so it wins.
+Environment=PRISM_SYSTEMD_UNIT=%n
+
+# Mutex with forward/backward/recluster — flock blocks (no -n) so this waits for
+# an in-flight pass rather than colliding on the cache / shared indices. These
+# four stages were split out of the 6h backward chain: they are write-leaves
+# (nothing in the pipeline reads their output same-cycle) whose ideal freshness
+# is daily, so demoting them off the 6h clock means they hold the shared lock
+# 1×/day instead of 4×. No LLM healthcheck: none of these call the local LLM
+# (intel + apply-artifact-rules are ES/HTTP only).
+#
+# Stage order is ARBITRARY — none of the four reads another's same-cycle output.
+# They are sequenced to match their former relative order in backward.service
+# purely so the split reads as a lift-and-drop against that file.
+ExecStartPre=/usr/bin/flock /var/lib/dshield_prism/.lock /bin/true
+
+# --- refresh external threat-intel for IPs in the rollup. No-op when
+# `intel.enabled: false`. Egress + rate-limited; soft-fail (provider outages,
+# rate-limits must never abort — intel catches up on the next daily pass).
+# Verdicts land on IP-rollup docs and are consumed cross-cycle by a later
+# backward pass's lifecycle snapshot (findings' intel_verdict_flip compares
+# snapshot[-2] vs [-1]); the flip is now daily-grained (see docs/decisions.md).
+ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml intel refresh
+
+# --- apply analyst-authored artifact rules retroactively (rules that landed
+# since the last pass). Retroactive by design; soft-fail. ROADMAP #5.
+ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml apply-artifact-rules
+
+# --- snapshot per-thresholded-quantity percentile distributions. Reads lifecycle
+# docs (written by the backward pass's `track lifecycles`, not by this unit — so
+# order within this unit does not affect what it sees). Observability, not
+# pipeline-critical. Soft-fail.
+ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml track threshold-distributions
+
+# --- cross-session file -> command attribution. Read-only join on the session
+# rollup; writes prism.crossref.file_command, which drives the console
+# artifact-hash pane's first-uploaded / first-executed timeline. Soft-fail.
+ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml mine file-crossref
+
+StandardOutput=journal
+StandardError=journal
+
+# 2h ceiling — these are ES reads + a rate-limited intel queue; circuit-breaker.
+TimeoutStartSec=2h
+Nice=10
+
+# Hardening (matches the other units).
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dshield_prism /var/log/dshield_prism
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

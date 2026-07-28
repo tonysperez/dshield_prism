@@ -2,7 +2,8 @@
 # setup.sh — DShield Prism one-command installer (front door).
 #
 # Interactive wizard that writes .env + config/local.yaml (no hand-editing) and
-# validates them live — checks the ES credentials authenticate and that the
+# validates them live — checks the ES credentials authenticate against a real
+# Elasticsearch endpoint (not just any HTTP 200) and that the
 # chosen LLM models are actually loaded on the GPU box — then orchestrates the
 # underlying scripts under setup/scripts/. Idempotent: re-running keeps existing
 # config (unless --reconfigure) and every downstream step is a no-op when done.
@@ -107,31 +108,54 @@ confirm_retry() {
 }
 
 # verify_es <url> <verify_certs> <mode:apikey|userpass>  (creds via env)
-#   rc 0=ok  2=auth rejected(401/403)  3=other/TLS  4=unreachable
+#   rc 0=ok  2=auth rejected(401/403)  3=other/TLS  4=unreachable  5=not-ES
 verify_es() {
     local url="$1" verify="$2" mode="$3"
     V_USER="${4:-}" V_PASS="${5:-}" V_APIKEY="${6:-}" \
     python3 - "$url" "$verify" "$mode" <<'PY'
-import os, sys, ssl, base64, urllib.request, urllib.error
+import os, sys, json, ssl, base64, urllib.request, urllib.error
 url, verify, mode = sys.argv[1:4]
-req = urllib.request.Request(url.rstrip('/') + '/_security/_authenticate')
+base = url.rstrip('/')
 if mode == 'apikey':
-    req.add_header('Authorization', 'ApiKey ' + os.environ.get('V_APIKEY', ''))
+    auth_header = ('Authorization', 'ApiKey ' + os.environ.get('V_APIKEY', ''))
 else:
     tok = base64.b64encode(
         f"{os.environ.get('V_USER','')}:{os.environ.get('V_PASS','')}".encode()).decode()
-    req.add_header('Authorization', 'Basic ' + tok)
+    auth_header = ('Authorization', 'Basic ' + tok)
 ctx = ssl.create_default_context()
 if verify != 'true':
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
-try:
+
+def get(path):
+    req = urllib.request.Request(base + path)
+    req.add_header(*auth_header)
     with urllib.request.urlopen(req, timeout=8, context=ctx) as r:
-        sys.exit(0 if getattr(r, 'status', 200) == 200 else 3)
+        return r.status, r.read()
+
+try:
+    status, _ = get('/_security/_authenticate')
+    if status != 200:
+        sys.exit(3)
 except urllib.error.HTTPError as e:
     sys.exit(2 if e.code in (401, 403) else 3)
 except Exception:
     sys.exit(4)
+
+# creds are valid on *something* — confirm it's actually Elasticsearch, not
+# some other service that happens to accept the same auth header/status.
+try:
+    status, body = get('/')
+    if status != 200:
+        sys.exit(5)
+    data = json.loads(body)
+    if data.get('tagline') != 'You Know, for Search' or 'version' not in data:
+        sys.exit(5)
+except urllib.error.HTTPError:
+    sys.exit(5)
+except Exception:
+    sys.exit(5)
+sys.exit(0)
 PY
 }
 
@@ -217,6 +241,7 @@ write_config() {
             0) log "  ES credentials OK"; break ;;
             2) warn "  ES rejected the credentials (HTTP 401/403)." ;;
             4) warn "  ES unreachable at ${es_hosts} (timeout / connection refused)." ;;
+            5) warn "  ${es_hosts} authenticated but isn't Elasticsearch (no ES tagline/version at '/'). Check the URL." ;;
             *) warn "  ES check failed (TLS or unexpected response). For a self-signed SO cert answer 'N' to verify certs." ;;
         esac
         if confirm_retry; then continue; else break; fi

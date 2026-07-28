@@ -1,3 +1,8 @@
+# NOTE: four daily write-leaves — intel refresh, apply-artifact-rules,
+# track threshold-distributions, mine file-crossref — were split out of this
+# chain into dshield_prism-analytics.service (daily 04:15). Nothing in the
+# pipeline reads their output same-cycle. `escalate` stayed: it reads
+# this-cycle clustering novelty, so its cadence must equal the model's.
 [Unit]
 Description=DShield Prism backward pass — re-embed, re-enrich-stale, re-cluster, re-escalate, re-mine
 After=network-online.target
@@ -9,6 +14,13 @@ User=dshield_prism
 Group=dshield_prism
 WorkingDirectory=/opt/dshield_prism
 EnvironmentFile=/opt/dshield_prism/.env
+
+# Owning-unit stamp for pipeline telemetry. `enrich.ops.run_start` copies this
+# onto every `prism.ops` verb_run doc the unit's steps write, so the console's
+# /health "Pipeline & schedule" panel groups runs by unit. `%n` expands to this
+# unit's full name — no per-file hardcoding and no console-side unit->verb map
+# to drift. Set AFTER the EnvironmentFile so it wins.
+Environment=PRISM_SYSTEMD_UNIT=%n
 
 # Mutex with the forward pass. flock blocks (no -n) so the backward task
 # waits for an in-flight forward run rather than colliding on the cache.
@@ -70,6 +82,10 @@ ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/
 # then runs HDBSCAN over ONLY the novel tail to mint new-behaviour anchors (named by
 # step 7), instead of re-clustering — and overwriting — the assigned bulk. Self-converges:
 # next pass `assign_sessions` flips last pass's newly-minted sessions out of the novel pool.
+# NOTE: this step is windowed to the trailing 30 days — a session outside the window when
+# it first becomes eligible (corpus reprocess/backfill, a sensor catching up after
+# downtime) is NOT revisited here. `dshield_prism-recluster-full.service` (weekly) runs
+# the unwindowed `assign_sessions --window-days 0` sweep that catches those.
 # Gated by session.assignment_authoritative (true). REVERSE the cutover: set it false and
 # restore a plain `cluster sessions` here (and in recluster-full.service). The weekly
 # `dshield_prism-recluster-full.service` is also scoped to `--novel-pool` for the cutover,
@@ -123,14 +139,6 @@ ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/
 # (Findings v2 step 4) once anchors are populated.
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml track lifecycles
 
-# --- Step 9: refresh external threat-intel for IPs in the rollup.
-# No-op when `intel.enabled: false`. ROADMAP "Research-mode strategic
-# gaps" section A. Runs last so it sees the latest novelty scores
-# from step 5 — high-novelty artifacts are prioritised in the queue.
-# Soft-fail: provider outages, rate-limits etc. should never abort
-# the chain; intel can always catch up on the next backward pass.
-ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml intel refresh
-
 # --- Step 10: mine findings. Inlined into the backward chain (formerly
 # hourly via dshield_prism-mine-findings.timer) so it always runs AFTER
 # `name playbooks` and `track lifecycles` — without this ordering, the
@@ -141,19 +149,6 @@ ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/
 # canonical schedule.
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml mine findings
 
-# --- Step 11: apply analyst-authored artifact rules retroactively.
-# Picks up rules that landed since the last backward pass (POST inline
-# scans the small-corpus case; this catches the queued large-corpus and
-# multi-rule-edit cases). Soft-fail. ROADMAP #5.
-ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml apply-artifact-rules
-
-# --- Step 12: snapshot per-thresholded-quantity percentile distributions.
-# Runs AFTER `mine findings` so the lifecycle docs the writer reads are
-# already up-to-date for this cycle. Feeds the percentile-based threshold
-# migrations in brutal-review phases 4.2-4.4. Soft-fail; metrics docs are
-# observability, not pipeline-critical.
-ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml track threshold-distributions
-
 # --- Step 13: run hypothesis-driven hunts. Loads YAML from
 # `cfg.findings.hunts.config_dir` (default: config/hunts), executes each
 # hunt's filters against the session rollup, and writes one
@@ -162,14 +157,6 @@ ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/
 # are populated. Soft-fail; a malformed hunt YAML shouldn't abort the
 # backward chain. Brutal-review phase 6.1.
 ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml mine hunts
-
-# --- Step 14: cross-session file -> command attribution. Joins each
-# session's file_events to subsequent commands run by the same source.ip
-# (across sessions) and writes one doc per (sha256, source.ip) into
-# `prism.crossref.file_command`. Drives the artifact-hash pane's
-# "first-uploaded / first-executed" timeline. Read-only on the session
-# rollup; soft-fail. Brutal-review phase 7.6.
-ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml mine file-crossref
 
 StandardOutput=journal
 StandardError=journal

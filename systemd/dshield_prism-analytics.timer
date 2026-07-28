@@ -1,0 +1,19 @@
+[Unit]
+Description=Daily DShield Prism analytics tail (intel / artifact-rules / threshold metrics / crossref)
+Requires=dshield_prism-analytics.service
+
+[Timer]
+# Daily, off every other timer's hour (forward :00/:30, backward 00/06/12/18,
+# grounding 02:15, recluster Mon 03:30). Wall-clock OnCalendar (not
+# OnUnitActiveSec) so the phase relative to the backward timer is stable — the
+# ~06:00 backward pass always sees a fresh intel verdict first, keeping
+# intel_verdict_flip single-count (see docs/decisions.md).
+OnCalendar=*-*-* 04:15:00
+# Stagger across nodes so they don't all hit ES / intel providers at once.
+RandomizedDelaySec=300
+# Catch up one missed run if the box was down across the firing.
+Persistent=true
+Unit=dshield_prism-analytics.service
+
+[Install]
+WantedBy=timers.target
