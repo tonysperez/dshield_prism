@@ -1,5 +1,5 @@
 {
-  "_comment": "Per-run pipeline telemetry (P4.2). One doc per tracked CLI verb invocation (including each systemd-driven forward/backward step): a 'started' doc on entry, patched to 'finished' or 'failed' on exit with timing + return code + error. This is the 'sentinel doc written by the verbs' the ROADMAP pipeline-running-indicator residual asks for; the console health page reads it (P4.3). Created by `init-indexes --source ops`. Strict-dynamic: the writer's field set is fixed; new fields need a mapping migration first. The writer is best-effort and skips silently when this index is absent.",
+  "_comment": "Per-run pipeline telemetry (P4.2). One doc per tracked CLI verb invocation (including each systemd-driven forward/backward step): a 'started' doc on entry, patched to 'finished' or 'failed' on exit with timing + return code + error. `unit` is the owning systemd unit, stamped from the PRISM_SYSTEMD_UNIT env var each unit file sets to `%n`; it is absent for manual CLI runs, which the console groups as 'manual / ad-hoc'. This is the 'sentinel doc written by the verbs' the ROADMAP pipeline-running-indicator residual asks for; the console health page reads it (P4.3). Created by `init-indexes --source ops`. Strict-dynamic: the writer's field set is fixed; new fields need a mapping migration first. The writer is best-effort and skips silently when this index is absent.",
   "settings": {
     "number_of_shards": 1,
     "number_of_replicas": 0,
@@ -12,6 +12,10 @@
       "run_id":      { "type": "keyword" },
       "verb":        { "type": "keyword" },
       "status":      { "type": "keyword" },
+      "unit": {
+        "type": "text",
+        "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } }
+      },
       "host": {
         "type": "text",
         "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } }

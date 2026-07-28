@@ -1628,7 +1628,7 @@ def _running_ops(es: Elasticsearch, idx: str,
                 {"range": {"started_at": {"gte": f"now-{window_min}m"}}},
             ]}},
             sort=[{"started_at": {"order": "desc"}}],
-            _source=["verb", "host", "started_at"],
+            _source=["verb", "unit", "host", "started_at"],
         )
         return [h["_source"] for h in r["hits"]["hits"]]
     except Exception:
@@ -1665,20 +1665,290 @@ def pipeline_running(es: Elasticsearch, cfg: AppConfig) -> dict:
     return out
 
 
+# ----------------------------------------------------------------------------
+# Unit-grain pipeline state for the /health "Pipeline & schedule" panel.
+#
+# `enrich.ops.run_start` stamps the owning systemd unit onto every verb_run doc
+# from the `PRISM_SYSTEMD_UNIT=%n` each unit file sets, so grouping is read
+# straight out of ES — the console never shells out to systemctl.
+#
+# The catalog below supplies only what ES cannot: the human description behind
+# each unit's tooltip and its timer cadence. It is keyed by unit filename and
+# guarded by `scripts/smoke/smoke_test_unit_catalog.py`, which parses
+# `systemd/*.service` and fails the build when a unit is added or removed
+# without updating this dict — static data that cannot drift silently.
+# ----------------------------------------------------------------------------
+
+# Docs with no `unit` are operator-run CLI verbs, not a defect — they get their
+# own bucket rather than being dropped or blamed on a unit.
+_ADHOC_UNIT = "manual / ad-hoc"
+
+_UNIT_CATALOG: dict[str, dict[str, str]] = {
+    "dshield_prism-forward.service": {
+        "description": "Forward pass — incremental enrichment and rollups. "
+                       "Watermark-driven, so it only touches new data.",
+        "cadence": "*-*-* *:00,30:00",
+    },
+    "dshield_prism-backward.service": {
+        "description": "Backward pass — re-enrich stale, re-embed, re-cluster, "
+                       "assign sessions, escalate, name, and mine findings/hunts.",
+        "cadence": "*-*-* 00,06,12,18:00:00",
+    },
+    "dshield_prism-analytics.service": {
+        "description": "Daily analytics tail — intel refresh, artifact-rule apply, "
+                       "threshold metrics, file-crossref.",
+        "cadence": "*-*-* 04:15:00",
+    },
+    "dshield_prism-grounding-coverage.service": {
+        "description": "Command-grounding coverage precompute, so the console "
+                       "reads coverage as O(1) instead of scanning on load.",
+        "cadence": "*-*-* 02:15:00",
+    },
+    "dshield_prism-recluster-full.service": {
+        "description": "Weekly full assignment sweep + novel-pool session mint + "
+                       "full IP re-cluster, with inactive-anchor pruning.",
+        "cadence": "Mon *-*-* 03:30:00",
+    },
+    "dshield_prism-backfill.service": {
+        "description": "One-shot historical backfill (`pipeline --backfill`). "
+                       "Operator-started; may run for days.",
+        "cadence": "manual start",
+    },
+    "dshield_prism-console.service": {
+        "description": "The read-only investigation web UI serving this page. "
+                       "Long-running, so it records no per-run telemetry.",
+        "cadence": "continuous",
+    },
+}
+
+# Sort order for the panel: what an operator must act on rises to the top.
+_UNIT_STATE_RANK = {"running": 0, "failed": 1, "ok": 2, "never": 3}
+
+# How far back the panel looks. Without a bound, a verb dropped from a unit's
+# ExecStart chain keeps its final doc forever — a failure from a step the unit
+# no longer runs would pin it red permanently, and `last_run` would report a
+# step that no longer fires. Long enough to still show the weekly unit.
+_UNIT_LOOKBACK_DAYS = 30
+
+# Sort floor for rows whose `started_at` is missing or unparseable — they sort
+# last instead of raising on a datetime/None comparison.
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _parse_ts(s) -> datetime | None:
+    """Lenient ISO-8601 parse. Returns None for anything unusable so callers can
+    treat an unparseable timestamp as "no evidence" rather than raising."""
+    if not s or not isinstance(s, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _unit_rows(
+    ops_rows: list[dict],
+    running: list[dict],
+    catalog: dict[str, dict[str, str]] | None = None,
+    now: datetime | None = None,
+    ghost_window_min: int = _PIPELINE_RUNNING_WINDOW_MIN,
+    failed_verbs: dict[str, list[str]] | None = None,
+) -> list[dict]:
+    """Group per-(unit, verb) run docs into one row per systemd unit.
+
+    Pure — takes no ES — so every I/O-matrix scenario is unit-testable offline.
+    `ops_rows` are the latest-run docs per (unit, verb), `running` the in-flight
+    docs, and `failed_verbs` the unit -> verb-names evidence from the windowed
+    failure filter. Every catalog unit is emitted even with zero docs
+    (`state="never"`), so a unit that has never run is visibly present rather
+    than silently missing.
+
+    Unit state does NOT come from the latest doc per verb alone. `prism.ops.verb`
+    holds only the top-level verb (`mine`, `cluster`, …), so one bucket can cover
+    four steps and a later sibling's success would overwrite an earlier one's
+    failure. `failed_verbs` carries that lost evidence.
+    """
+    catalog = _UNIT_CATALOG if catalog is None else catalog
+    failed_verbs = failed_verbs or {}
+    now = now or datetime.now(timezone.utc)
+    ghost_cutoff = now - timedelta(minutes=ghost_window_min)
+
+    # Match in-flight steps on (unit, verb): `rollup` runs under both forward and
+    # backward, so verb alone would light up the wrong row.
+    running_keys = {
+        ((r.get("unit") or _ADHOC_UNIT), r.get("verb")) for r in running
+    }
+
+    groups: dict[str, list[dict]] = {}
+    for row in ops_rows:
+        groups.setdefault(row.get("unit") or _ADHOC_UNIT, []).append(row)
+    for unit in catalog:
+        groups.setdefault(unit, [])
+    for unit in failed_verbs:
+        groups.setdefault(unit, [])
+    # A unit can be in-flight while the agg returned nothing for that pair — a
+    # first-ever run, or an agg that errored. Synthesise the row from the
+    # heartbeat doc so the unit reads `running` rather than `never`.
+    for r in running:
+        unit = r.get("unit") or _ADHOC_UNIT
+        rows = groups.setdefault(unit, [])
+        if not any(x.get("verb") == r.get("verb") for x in rows):
+            rows.append({"verb": r.get("verb"), "status": "started",
+                         "started_at": r.get("started_at"), "host": r.get("host")})
+
+    out: list[dict] = []
+    for unit, rows in groups.items():
+        verbs: list[dict] = []
+        for r in rows:
+            # A `started` doc is only live inside the heartbeat window. Past it
+            # the process was killed without patching its doc — treat it as a
+            # ghost, not a run in progress, or the unit pins to `running`
+            # (which outranks `failed`) and masks a real failure underneath.
+            started_ts = _parse_ts(r.get("started_at"))
+            fresh_start = (r.get("status") == "started"
+                           and started_ts is not None
+                           and started_ts >= ghost_cutoff)
+            in_flight = fresh_start or (unit, r.get("verb")) in running_keys
+            rc = r.get("rc")
+            failed = not in_flight and (
+                r.get("status") == "failed" or (rc is not None and rc != 0)
+                or r.get("verb") in failed_verbs.get(unit, [])
+            )
+            verbs.append({
+                "verb":       r.get("verb"),
+                "status":     r.get("status"),
+                "state":      "running" if in_flight else ("failed" if failed else "ok"),
+                "started_at": r.get("started_at"),
+                "duration_s": r.get("duration_s"),
+                "host":       r.get("host"),
+                "rc":         rc,
+            })
+        verbs.sort(key=lambda v: _parse_ts(v.get("started_at")) or _EPOCH, reverse=True)
+
+        if any(v["state"] == "running" for v in verbs):
+            state = "running"
+        elif failed_verbs.get(unit) or any(v["state"] == "failed" for v in verbs):
+            # `failed_verbs` alone can flip the unit: a masked sibling failure
+            # leaves every visible row `ok`.
+            state = "failed"
+        elif verbs:
+            state = "ok"
+        else:
+            state = "never"
+
+        meta = catalog.get(unit, {})
+        starts = [_parse_ts(v["started_at"]) for v in verbs]
+        starts = [s for s in starts if s is not None]
+        hosts = {v["host"] for v in verbs if v.get("host")}
+        durations = [v["duration_s"] for v in verbs if v.get("duration_s") is not None]
+        out.append({
+            "unit":        unit,
+            "description": meta.get("description"),
+            "cadence":     meta.get("cadence"),
+            "state":       state,
+            "last_run":    max(starts).isoformat() if starts else None,
+            # Sum, not a placeholder — the unit's total work in the window.
+            "duration_s":  round(sum(durations), 3) if durations else None,
+            # Named only when unambiguous; a multi-host deployment must not be
+            # misreported as whichever host happened to run last.
+            "host":        next(iter(hosts)) if len(hosts) == 1 else (
+                f"{len(hosts)} hosts" if hosts else None),
+            "failed_verbs": sorted(failed_verbs.get(unit, [])),
+            "verbs":       verbs,
+        })
+
+    # Actionable first; the ad-hoc bucket last within its rank since it names no
+    # real unit an operator can go look at.
+    out.sort(key=lambda u: (
+        _UNIT_STATE_RANK.get(u["state"], 9), u["unit"] == _ADHOC_UNIT, u["unit"],
+    ))
+    return out
+
+
+def _ops_unit_verb_rows(
+    es: Elasticsearch, idx: str, src_fields: list[str],
+) -> tuple[list[dict], dict[str, list[str]]]:
+    """Windowed unit-grain telemetry: latest run per (unit, verb), plus the
+    verbs that failed at any point in the window per unit.
+
+    Returns `(rows, failed_verbs)`. Bucketing by unit first is load-bearing —
+    `rollup` runs under forward AND backward, `cluster`/`prune-clusters` under
+    backward AND recluster-full — so a verb-only agg would keep one doc and make
+    the other unit look like it never ran that step. `missing` buckets manual CLI
+    runs (no `unit`).
+
+    The separate failure filter exists because `verb` is coarse: `backward`
+    stamps `verb="mine"` for four distinct steps, so `latest` alone loses an
+    earlier sibling's failure. Both aggs ride one search request.
+    """
+    try:
+        r = es.search(
+            index=idx, size=0,
+            query={"bool": {"filter": [
+                {"term": {"kind": "verb_run"}},
+                {"range": {"started_at": {"gte": f"now-{_UNIT_LOOKBACK_DAYS}d"}}},
+            ]}},
+            aggs={"by_unit": {
+                "terms": {"field": "unit.keyword", "size": 50,
+                          "missing": _ADHOC_UNIT},
+                "aggs": {
+                    "by_verb": {
+                        "terms": {"field": "verb", "size": 100},
+                        "aggs": {"latest": {"top_hits": {
+                            "size": 1,
+                            "sort": [{"started_at": {"order": "desc"}}],
+                            "_source": src_fields,
+                        }}},
+                    },
+                    "failures": {
+                        "filter": {"term": {"status": "failed"}},
+                        "aggs": {"verbs": {
+                            "terms": {"field": "verb", "size": 100},
+                        }},
+                    },
+                },
+            }},
+        )
+        buckets = r["aggregations"]["by_unit"]["buckets"]
+    except Exception:
+        return [], {}
+
+    rows: list[dict] = []
+    failed_verbs: dict[str, list[str]] = {}
+    for ub in buckets:
+        unit = ub.get("key")
+        for vb in ub.get("by_verb", {}).get("buckets", []):
+            hits = vb.get("latest", {}).get("hits", {}).get("hits", [])
+            if not hits:
+                continue
+            src = dict(hits[0]["_source"])
+            src["unit"] = src.get("unit") or unit
+            rows.append(src)
+        failed = [b.get("key") for b
+                  in ub.get("failures", {}).get("verbs", {}).get("buckets", [])
+                  if b.get("key")]
+        if failed:
+            failed_verbs[unit] = failed
+    return rows, failed_verbs
+
+
 def health_ops_runs(es: Elasticsearch, cfg: AppConfig) -> dict:
     """Per-verb run telemetry from `prism.ops` (P4.3) — the all-verb companion
     to `health_runs` (which only covers the 3 cluster steps). Surfaces the
     P4.2 sentinel docs the verbs write so the console can show *every* pipeline
     step, not just clustering, plus an in-progress heartbeat.
 
-    Returns `{"rows": [...latest run per verb...], "running": [...in-flight...]}`.
-    Each row: `{verb, status, host, started_at, finished_at, duration_s, rc}`.
-    A `running` entry is a `status=started` doc not yet patched to
-    finished/failed. The `prism.ops` index is optional (created by
+    Returns `{"rows": [...latest run per verb...], "running": [...in-flight...],
+    "units": [...one row per systemd unit...]}`. Each row: `{verb, status, host,
+    started_at, finished_at, duration_s, rc}`. A `running` entry is a
+    `status=started` doc not yet patched to finished/failed. `units` groups the
+    same telemetry by owning systemd unit for the "Pipeline & schedule" panel —
+    see `_unit_rows`. The `prism.ops` index is optional (created by
     `init-indexes --source ops`); when absent we return empty lists so the
     panel renders a "no telemetry yet" placeholder instead of erroring.
     """
-    out: dict = {"rows": [], "running": []}
+    out: dict = {"rows": [], "running": [], "units": []}
     idx = cfg.ops.indexes.default
     try:
         if not es.indices.exists(index=idx):
@@ -1686,7 +1956,7 @@ def health_ops_runs(es: Elasticsearch, cfg: AppConfig) -> dict:
     except Exception:
         return out
 
-    src_fields = ["verb", "status", "host", "started_at",
+    src_fields = ["verb", "unit", "status", "host", "started_at",
                   "finished_at", "duration_s", "rc"]
     # Latest run per verb: one terms bucket per verb, newest doc in each.
     try:
@@ -1712,6 +1982,21 @@ def health_ops_runs(es: Elasticsearch, cfg: AppConfig) -> dict:
     # In-progress: started but not yet finished/failed, within the freshness
     # window (the heartbeat) — shared with the global running-banner.
     out["running"] = _running_ops(es, idx, cfg.ops.pipeline_running_window_min)
+
+    # Unit grain for the "Pipeline & schedule" panel. Its own agg (latest per
+    # unit+verb, plus the windowed failure filter) rather than a regroup of
+    # `rows`, which keeps only one doc for a verb that runs under two units.
+    # Wrapped so a derivation error degrades to catalog-only rows — every unit
+    # still renders, as "never" — instead of taking `rows`/`running` down too.
+    try:
+        unit_docs, failed_verbs = _ops_unit_verb_rows(es, idx, src_fields)
+        out["units"] = _unit_rows(
+            unit_docs, out["running"],
+            ghost_window_min=cfg.ops.pipeline_running_window_min,
+            failed_verbs=failed_verbs,
+        )
+    except Exception:
+        out["units"] = _unit_rows([], [])
 
     return out
 

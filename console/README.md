@@ -67,7 +67,9 @@ The single search box accepts any of:
   embeddings server-side; they never reach the browser.
 * **Frontend**: vanilla JS with a custom `<canvas>` graph renderer — no
   framework, no build step, no CDN. Loads from `web/` (`css/`, `js/`).
-* **State**: read-only. The console never writes to ES.
+* **State**: read-only against ES — the console never writes to it. Local YAML
+  files are the sole exception: the grounding denylist, and hunt files, which
+  the Hunts page creates, edits, deletes and toggles.
 
 Pages:
 
@@ -76,9 +78,9 @@ Pages:
 | `/inbox` | **Findings inbox** — the default landing (`/` redirects here). Drift, novel-behavior, and coverage findings with a facet rail (score / age / IP-count band / intent / intel verdict) and a new → ack → confirmed status flow |
 | `/graph` | **Investigation graph** — search any IOC and pivot through its first-degree behavioral neighborhood as a node-link graph; detail panel with inline **compare** and a copy-ready **write-up** builder |
 | `/explore` | **Longitudinal lifecycle list** — one row per **playbook / session-cluster / IP-cluster / campaign / operation** (entity selector), each with its own time-flipped activity band on a shared adaptive axis, a live-period strip, and an `interest` composite ranking. Window selector (30/90/180d · all · custom, default 90d), all/recurring + alive/dead filters, sort lens; click a row to open it in the graph |
-| `/hunts` | **Hunts** — YAML-defined AND-combined session filters, plus a **Tradecraft Matches** view ranking sessions against the Atomic Red Team reference corpus |
+| `/hunts` | **Hunts** — YAML-defined AND-combined session filters, each with an enable toggle (gates whether it writes findings; all ship off) and a **Preview** that runs the query and shows matching sessions without saving anything. A filter builder creates, edits and deletes the hunt YAML files themselves — no raw-YAML escape hatch, so an invalid clause cannot be composed. Plus a **Tradecraft Matches** view ranking sessions against the Atomic Red Team reference corpus |
 | `/tune` | **Tune** — command-grounding coverage, the artifact-rule curation surface, and the grounding denylist |
-| `/health` | **Health** — corpus-summary stat bar, index freshness, recent run + ops telemetry, ES heap pressure, and per-sensor breakdown |
+| `/health` | **Health** — corpus-summary stat bar, index freshness, clustering performance, ES heap pressure, per-sensor breakdown, and **Pipeline & schedule**: one row per systemd unit with a tooltip of what it does, its `OnCalendar` cadence, last run, and whether it is running, expanding to the steps that ran under it |
 | `/artifact/{ip,url,hash}/…` | Standalone artifact detail pages |
 
 Legacy deep links still resolve as 302s: `/findings` → `/inbox`; `/history`,
@@ -98,7 +100,13 @@ GET  /api/search?q=...                    # IOC / free-text resolver
 GET  /api/ioc/{type}/{id}                 # IOC detail
 GET  /api/ioc/{type}/{id}/neighbors?limit=50&require_login=&require_commands=
 GET  /api/cluster/{kind}/{cid}/members
-GET  /api/hunts   ·   POST /api/hunts/run
+GET  /api/hunts                           # every hunt incl. disabled, + finding counts
+POST /api/hunts                           # author <config_dir>/<id>.yaml, always enabled:false -> 201 (409 on a clash)
+PUT  /api/hunts/{id}                      # rewrite that hunt's own file (name/description/filters); `enabled` and unknown keys survive
+DELETE /api/hunts/{id}                    # unlink the YAML; the findings it already wrote stay in the inbox
+POST /api/hunts/{id}/preview?limit=100    # run one hunt, return matching sessions + true total, write NOTHING
+POST /api/hunts/{id}/toggle               # {"enabled": bool} -> rewrites that key in the hunt's YAML (400 if not a bool)
+POST /api/hunts/run                       # writes findings for enabled hunts only
 GET  /api/tune/grounding-coverage
 POST /api/compare/explain                 # inline cluster / playbook / campaign compare
 POST /api/ask                             # natural-language Q&A (parent LLM config)

@@ -153,6 +153,76 @@ check("run_finish swallows an update() error", True)
 
 
 # -----------------------------------------------------------------------------
+# [7] owning systemd unit stamped from PRISM_SYSTEMD_UNIT (each unit file sets
+#     it to `%n`). Absent for a manual CLI run — the console buckets those as
+#     "manual / ad-hoc", so the key must be OMITTED, not written as null:
+#     `prism.ops` is `dynamic: strict` and a null groups on nothing.
+# -----------------------------------------------------------------------------
+print("\n[7] unit stamp from PRISM_SYSTEMD_UNIT; omitted for manual runs")
+import os  # noqa: E402
+
+_prev = os.environ.pop("PRISM_SYSTEMD_UNIT", None)
+try:
+    es = _StubES(exists=True)
+    _patch(es)
+    ops.run_start(CFG, SEC, "rollup")
+    check("no env var → `unit` key omitted entirely",
+          "unit" not in es.indexed[0]["document"], str(es.indexed[0]["document"]))
+
+    os.environ["PRISM_SYSTEMD_UNIT"] = "dshield_prism-forward.service"
+    es = _StubES(exists=True)
+    _patch(es)
+    ops.run_start(CFG, SEC, "rollup")
+    check("env var set → `unit` stamped on the doc",
+          es.indexed[0]["document"].get("unit") == "dshield_prism-forward.service",
+          str(es.indexed[0]["document"]))
+
+    os.environ["PRISM_SYSTEMD_UNIT"] = "   "
+    es = _StubES(exists=True)
+    _patch(es)
+    ops.run_start(CFG, SEC, "rollup")
+    check("blank/whitespace env var treated as unset",
+          "unit" not in es.indexed[0]["document"], str(es.indexed[0]["document"]))
+
+    # A stray export of the console's own bucket label must not merge real unit
+    # runs into the manual bucket.
+    os.environ["PRISM_SYSTEMD_UNIT"] = "manual / ad-hoc"
+    es = _StubES(exists=True)
+    _patch(es)
+    ops.run_start(CFG, SEC, "rollup")
+    check("the ad-hoc bucket label is rejected as a unit name",
+          "unit" not in es.indexed[0]["document"], str(es.indexed[0]["document"]))
+
+    # [8] strict-mapping fallback: if the ops mapping hasn't been updated yet,
+    # ES rejects the `unit` field. Retry once without it so telemetry degrades
+    # to pre-`unit` behaviour rather than disappearing entirely.
+    print("\n[8] strict-mapping rejection falls back to an unstamped doc")
+    os.environ["PRISM_SYSTEMD_UNIT"] = "dshield_prism-forward.service"
+
+    class _StrictES(_StubES):
+        """Rejects any doc carrying `unit`, like a strict mapping would."""
+
+        def index(self, *, index, id, document):
+            if "unit" in document:
+                raise RuntimeError("strict_dynamic_mapping_exception: [unit]")
+            super().index(index=index, id=id, document=document)
+
+    es = _StrictES(exists=True)
+    _patch(es)
+    h = ops.run_start(CFG, SEC, "rollup")
+    check("run_start still returns a usable handle", h is not None)
+    check("the doc lands without `unit`",
+          len(es.indexed) == 1 and "unit" not in es.indexed[0]["document"],
+          str(es.indexed))
+    ops.run_finish(CFG, SEC, h, status="finished", rc=0)
+    check("the run still finishes normally", len(es.updated) == 1, str(es.updated))
+finally:
+    os.environ.pop("PRISM_SYSTEMD_UNIT", None)
+    if _prev is not None:
+        os.environ["PRISM_SYSTEMD_UNIT"] = _prev
+
+
+# -----------------------------------------------------------------------------
 print()
 print(f"=== {len(PASSED)} passed, {len(FAILED)} failed ===")
 if FAILED:

@@ -2,7 +2,10 @@
 
 /* Pipeline-health page. Panels:
  *   - Data freshness — per-index doc count + max(@timestamp).
- *   - Recent pipeline runs — latest run_summary per cluster index.
+ *   - Clustering performance — cluster/outlier counts per type. The sole home
+ *     for those numbers; the unit panel deliberately does not repeat them.
+ *   - Pipeline & schedule — one row per systemd unit (what it does, cadence,
+ *     last run, running?), expanding to the verbs that ran under it.
  *   - Command-grounding coverage — stat bar read from the single
  *     precomputed report doc (spec-grounding-precompute), O(1); the full
  *     worklist + block/unblock live under Tune.
@@ -314,55 +317,30 @@ function renderClustering(rows) {
   }
 }
 
+/* `/api/health/runs` now feeds only the Clustering-performance panel. The
+ * former "Recent pipeline runs" table rendered these same rows a second time,
+ * and their verbs a third time under "Pipeline activity" — run/status facts now
+ * live once, in "Pipeline & schedule". */
 async function loadRuns() {
-  const body = document.getElementById("runs-body");
   const clustering = document.getElementById("clustering-stats");
+  if (!clustering) return;
+  const fail = (msg) => {
+    clustering.innerHTML = "";
+    clustering.appendChild(el("div", {class: "h-error"}, [msg]));
+  };
   let data;
   try {
     const r = await fetch("/api/health/runs");
     data = await r.json();
   } catch (e) {
-    body.innerHTML = "";
-    body.appendChild(el("div", {class: "h-error"}, [`fetch failed: ${e.message}`]));
-    if (clustering) {
-      clustering.innerHTML = "";
-      clustering.appendChild(el("div", {class: "h-error"}, [`fetch failed: ${e.message}`]));
-    }
+    fail(`fetch failed: ${e.message}`);
     return;
   }
   if (data.error) {
-    body.innerHTML = "";
-    body.appendChild(el("div", {class: "h-error"}, [data.error]));
-    if (clustering) {
-      clustering.innerHTML = "";
-      clustering.appendChild(el("div", {class: "h-error"}, [data.error]));
-    }
+    fail(data.error);
     return;
   }
   renderClustering(data.rows);
-  body.innerHTML = "";
-  const table = el("table", {class: "h-table"});
-  table.appendChild(el("thead", null, [el("tr", null, [
-    el("th", null, ["Verb"]),
-    el("th", null, ["Last run"]),
-    el("th", {class: "num"}, ["Input docs"]),
-    el("th", {class: "num"}, ["Clusters"]),
-    el("th", {class: "num"}, ["Outliers"]),
-    el("th", null, ["Run id"]),
-  ])]));
-  const tbody = el("tbody");
-  for (const r of (data.rows || [])) {
-    const tr = el("tr");
-    tr.appendChild(el("td", {class: "name"}, [r.verb]));
-    tr.appendChild(tsCell(r.ts, r.verb.replace(/^cluster /, "") + "_clusters"));
-    tr.appendChild(el("td", {class: "num"}, [fmtNum(r.total_docs)]));
-    tr.appendChild(el("td", {class: "num"}, [fmtNum(r.n_clusters)]));
-    tr.appendChild(el("td", {class: "num"}, [fmtNum(r.n_outliers)]));
-    tr.appendChild(el("td", {class: "idx"}, [r.run_id || "—"]));
-    tbody.appendChild(tr);
-  }
-  table.appendChild(tbody);
-  body.appendChild(table);
 }
 
 async function loadOpsRuns() {
@@ -392,42 +370,103 @@ async function loadOpsRuns() {
       [`in progress: ${names}`]));
   }
 
-  const rows = data.rows || [];
-  if (!rows.length) {
+  const units = data.units || [];
+  if (!units.length) {
     body.appendChild(el("em", {class: "h-empty"},
       ["no run telemetry yet — enable with `init-indexes --source ops`"]));
     return;
   }
 
+  const UNIT_STATE_TEXT = {
+    running: "running", failed: "failed", ok: "ok", never: "no runs recorded",
+  };
+
   const table = el("table", {class: "h-table"});
   table.appendChild(el("thead", null, [el("tr", null, [
-    el("th", null, ["Verb"]),
-    el("th", null, ["Status"]),
+    el("th", null, ["Unit"]),
+    el("th", null, ["State"]),
     el("th", null, ["Last run"]),
+    el("th", null, ["Cadence"]),
     el("th", {class: "num"}, ["Duration"]),
     el("th", null, ["Host"]),
   ])]));
   const tbody = el("tbody");
-  const runningVerbs = new Set(running.map((r) => r.verb));
-  for (const r of rows) {
-    // started (in-flight) > failed (prominent) > finished.
-    const inFlight = r.status === "started" || runningVerbs.has(r.verb);
-    const failed = !inFlight && (r.status === "failed" || (r.rc != null && r.rc !== 0));
-    const tr = el("tr", failed ? {class: "run-failed"} : null);
-    tr.appendChild(el("td", {class: "name"}, [r.verb]));
-    let statusText;
-    if (inFlight) statusText = "running";
-    else if (failed) statusText = (r.rc != null) ? `failed (rc ${r.rc})` : "failed";
-    else statusText = r.status || "—";
-    const statusCell = el("td", null, [statusText]);
-    if (inFlight) statusCell.style.color = "#34d399";
-    else if (failed) statusCell.style.color = "#f87171";
-    tr.appendChild(statusCell);
-    tr.appendChild(tsCell(r.started_at, "__ops__"));
-    tr.appendChild(el("td", {class: "num"},
-      [r.duration_s == null ? "—" : `${Number(r.duration_s).toLocaleString()}s`]));
-    tr.appendChild(el("td", {class: "idx"}, [r.host || "—"]));
+
+  const fmtDur = (s) => (s == null ? "—" : `${Number(s).toLocaleString()}s`);
+
+  for (const u of units) {
+    const kids = [];
+    const hasKids = !!(u.verbs && u.verbs.length);
+    const nameCell = el("td", {class: "name"}, [
+      el("span", {class: "u-caret"}, [hasKids ? "▸" : " "]),
+      u.unit,
+    ]);
+    // The tooltip is what the unit does — the ask this panel exists to answer.
+    // Native `title`, so it needs no JS and reads out to assistive tech.
+    if (u.description) nameCell.setAttribute("title", u.description);
+    // `verb` is top-level only, so a unit can fail in a step whose bucket was
+    // overwritten by a later sibling's success. Name those verbs explicitly —
+    // otherwise the child rows all read "ok" under a red unit.
+    if (u.failed_verbs && u.failed_verbs.length) {
+      nameCell.appendChild(el("span", {class: "u-desc"},
+        [`failed in window: ${u.failed_verbs.join(", ")}`]));
+    }
+
+    const tr = el("tr", {
+      class: `unit-row${u.state === "failed" ? " run-failed" : ""}`,
+      // Keyboard-operable: the row is the disclosure control, so it needs to be
+      // focusable and announce its expanded state.
+      ...(hasKids ? {tabindex: "0", role: "button", "aria-expanded": "false"} : {}),
+    });
+    tr.appendChild(nameCell);
+    tr.appendChild(el("td", null, [
+      el("span", {class: `u-state state-${u.state}`},
+        [UNIT_STATE_TEXT[u.state] || u.state]),
+    ]));
+    tr.appendChild(tsCell(u.last_run, "__ops__"));
+    tr.appendChild(el("td", null, [el("span", {class: "u-cadence"}, [u.cadence || "—"])]));
+    tr.appendChild(el("td", {class: "num"}, [fmtDur(u.duration_s)]));
+    tr.appendChild(el("td", {class: "idx"}, [u.host || "—"]));
     tbody.appendChild(tr);
+
+    for (const v of (u.verbs || [])) {
+      const vtr = el("tr", {class: "verb-row", hidden: "hidden"});
+      vtr.appendChild(el("td", {class: "name"}, [v.verb || "—"]));
+      let statusText;
+      if (v.state === "running") statusText = "running";
+      else if (v.state === "failed") {
+        statusText = (v.rc != null) ? `failed (rc ${v.rc})` : "failed";
+      } else statusText = v.status || "—";
+      vtr.appendChild(el("td", null, [
+        el("span", {class: `u-state state-${v.state}`}, [statusText]),
+      ]));
+      vtr.appendChild(tsCell(v.started_at, "__ops__"));
+      // Cadence is a unit-level property; a step inside it has none.
+      vtr.appendChild(el("td", null, [""]));
+      vtr.appendChild(el("td", {class: "num"}, [fmtDur(v.duration_s)]));
+      vtr.appendChild(el("td", {class: "idx"}, [v.host || "—"]));
+      tbody.appendChild(vtr);
+      kids.push(vtr);
+    }
+
+    if (kids.length) {
+      const caret = nameCell.querySelector(".u-caret");
+      const toggle = () => {
+        const open = kids[0].hasAttribute("hidden");
+        for (const k of kids) {
+          if (open) k.removeAttribute("hidden"); else k.setAttribute("hidden", "hidden");
+        }
+        caret.textContent = open ? "▾" : "▸";
+        tr.setAttribute("aria-expanded", open ? "true" : "false");
+      };
+      tr.addEventListener("click", toggle);
+      tr.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); }
+      });
+      // Units needing attention open on load — the operator shouldn't have to
+      // hunt for which step inside the unit broke, or what is in flight.
+      if (u.state === "failed" || u.state === "running") toggle();
+    }
   }
   table.appendChild(tbody);
   body.appendChild(table);

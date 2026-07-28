@@ -177,6 +177,36 @@
     /* Failed pipeline-run row emphasis in the ops-runs panel. */
     table.h-table tr.run-failed td { background: #1a0e0e; }
     table.h-table tr.run-failed td.name { color: #f87171; }
+
+    /* "Pipeline & schedule": one row per systemd unit, expanding to its verbs.
+       Same state hexes as the rest of the page. The unit name carries a
+       `title` tooltip describing what the unit does. */
+    tr.unit-row { cursor: pointer; }
+    tr.unit-row:hover td { background: #151c2e; }
+    tr.unit-row td.name { font-weight: 600; }
+    tr.unit-row td.name .u-caret {
+      display: inline-block; width: 10px; color: #5a6278; font-size: 10px;
+    }
+    tr.unit-row td.name .u-desc {
+      display: block; font-weight: 400; font-size: 11px; color: #6b7494;
+      margin-top: 2px; max-width: 52ch;
+    }
+    /* Child verb rows: indented, dimmer, hidden until the unit is expanded. */
+    tr.verb-row td { color: #8b93ab; font-size: 12px; background: #0e1420; }
+    tr.verb-row td.name { padding-left: 26px; font-weight: 400; }
+    tr.verb-row[hidden] { display: none; }
+    tr.unit-row:focus-visible { outline: 2px solid #4cc1ff; outline-offset: -2px; }
+    .u-state { font-weight: 600; }
+    .u-state.state-running { color: #4ade80; }
+    /* Amber, not red: a failed step is "needs attention", matching the page's
+       existing warn/stale hue rather than the crit hue used for ES pressure. */
+    .u-state.state-failed  { color: #fbbf24; }
+    .u-state.state-ok      { color: #9aa3b8; }
+    .u-state.state-never   { color: #6b7494; }
+    .u-cadence {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px; color: #6b7494;
+    }
   </style>
 {% endblock %}
 {% block content %}
@@ -228,15 +258,8 @@
     </section>
 
     <section>
-      <p class="h-section-title">Recent pipeline runs
-        <span class="h-hint">latest <code>run_summary</code> doc per cluster index</span>
-      </p>
-      <div id="runs-body"><em class="h-empty">loading…</em></div>
-    </section>
-
-    <section>
-      <p class="h-section-title">Pipeline activity
-        <span class="h-hint">latest <code>prism.ops</code> run per verb (P4.2 telemetry) &mdash; in-progress steps highlight; failed runs show in amber</span>
+      <p class="h-section-title">Pipeline &amp; schedule
+        <span class="h-hint">every systemd unit &mdash; hover a unit name for what it does; failed/running rows sort first and open automatically. Grouped from <code>prism.ops</code> by the unit each run was stamped with (30-day window); click or press Enter on a unit to see its steps</span>
       </p>
       <div id="ops-runs-body"><em class="h-empty">loading…</em></div>
     </section>

@@ -10,6 +10,13 @@ Group=dshield_prism
 WorkingDirectory=/opt/dshield_prism
 EnvironmentFile=/opt/dshield_prism/.env
 
+# Owning-unit stamp for pipeline telemetry. `enrich.ops.run_start` copies this
+# onto every `prism.ops` verb_run doc the unit's steps write, so the console's
+# /health "Pipeline & schedule" panel groups runs by unit. `%n` expands to this
+# unit's full name — no per-file hardcoding and no console-side unit->verb map
+# to drift. Set AFTER the EnvironmentFile so it wins.
+Environment=PRISM_SYSTEMD_UNIT=%n
+
 # Mutex with forward/backward — flock blocks (no -n) so this waits for an
 # in-flight pass rather than colliding on the commands index scan.
 ExecStartPre=/usr/bin/flock /var/lib/dshield_prism/.lock /bin/true

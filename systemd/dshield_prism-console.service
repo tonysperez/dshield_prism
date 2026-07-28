@@ -10,6 +10,13 @@ Group=dshield_prism
 WorkingDirectory=/opt/dshield_prism/console
 EnvironmentFile=/opt/dshield_prism/.env
 
+# Owning-unit stamp for pipeline telemetry. `enrich.ops.run_start` copies this
+# onto every `prism.ops` verb_run doc the unit's steps write, so the console's
+# /health "Pipeline & schedule" panel groups runs by unit. `%n` expands to this
+# unit's full name — no per-file hardcoding and no console-side unit->verb map
+# to drift. Set AFTER the EnvironmentFile so it wins.
+Environment=PRISM_SYSTEMD_UNIT=%n
+
 # Binds 127.0.0.1:8765 (loopback) by default. The console ships with NO
 # built-in authentication, so it must not face the LAN directly. To serve
 # analysts on the LAN, put it behind a reverse proxy that terminates auth on
