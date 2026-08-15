@@ -31,7 +31,7 @@ for how to run it see [operations.md](operations.md).
 | IP rollup | `prism.rollup.cowrie.ip` |
 | IP cluster centroids | `prism.clusters.cowrie.ip` |
 | Mined campaigns | `prism.campaigns.cowrie` |
-| Playbook identity anchors (write-once, one doc per `spb-`) | `prism.identity.cowrie.playbook_anchor` |
+| Playbook identity anchors (write-once; one primary doc per `spb-`, plus optional drift "satellite" docs — see below) | `prism.identity.cowrie.playbook_anchor` |
 | External reference corpus (Tradecraft) | `prism.reference.cowrie.session` |
 | IP / URL / hash intel | `prism.intel.{ip,url,hash}` |
 | Findings | `prism.finding` |
@@ -325,8 +325,73 @@ parentheses.
   `assign_sessions` is the session **labeler** (nearest-anchor assignment), and
   `cluster sessions --novel-pool` only mints new playbooks from the novel tail.
 - `session.assignment_tau` (0.94) / `assignment_confident_tau` (0.98) /
-  `assignment_tfidf_tau` (0.80) — novel floor / embedding-trusted ceiling /
-  band TF-IDF confirm cutoff.
+  `assignment_tfidf_tau` (**0.50**) — novel floor / embedding-trusted ceiling /
+  band TF-IDF confirm cutoff. `tfidf_tau` is a **valley placement, not a tuned
+  value**: corpus-wide the band's TF-IDF cosines are bimodal — ~2,813 checks at
+  0.12–0.2, only ~108 across the whole of 0.2–0.7, then ~2,382 at 0.7–0.8 sitting
+  immediately below ~3,522 confirms at 0.8–1.0. Anything in ~0.25–0.65 behaves
+  identically. Re-measure with `eval_novel_pool.py`'s `band_tfidf_diagnosis` before
+  changing it; do not hand-tune. Note `scripts/eval_assignment_faithful.py` carries
+  its own `TFIDF_TAU` module constant and does **not** read config — keep the two in
+  step by hand.
+- `session.assignment_rescue_tau` (0.94, i.e. == `assignment_tau` — no-op by default) —
+  below-tau structural-predicate rescue floor (item 30). `assign_batch`'s cascade
+  extends from `assignment_tau` down to this value; a session in that band gets
+  rescued from NOVEL to ASSIGNED when its structural predicate vector positively
+  overlaps its nearest anchor's `predicate_signature` (never on an all-false match on
+  either side — see `src/enrich/sources/cowrie/predicates.py`). The 7 structural
+  predicates are precomputed per command at enrichment time
+  (`dshield.cowrie.enrichment.predicates.*`, `commands.json`) and folded into a
+  session vector by `lexical.build_session_predicate_vectors`; each `playbook_anchors`
+  doc carries a `predicate_signature` (modal/frequency vector over its member
+  sessions, `capture_anchor_snapshot.py:predicate_signature`). Lowering this below
+  `assignment_tau` is an operator decision made from a `rescue_tau` sweep
+  (`eval_assignment_faithful.py --rescue-tau-sweep`) — not shipped as a lowered
+  default without reviewing the tradeoff. **Measured on real anchors: keep it at
+  0.94.** See `docs/decisions.md`.
+  `--rescue-tau-sweep` alone runs the label-prototype sweep
+  (`report["rescue_tau_sweep"]`: `novelty_precision`/`novelty_recall` per candidate).
+  Combined with `--anchors` it also runs the real-anchor three-arm ablation into
+  `report["real_anchor_rescue_sweep"]` — `evidence` (arm-invariant ceilings:
+  `gt_in_library`, `sessions_with_predicate_evidence`, `anchors_with_signature`,
+  `anchors_armed`) plus `rows`, one per candidate, each carrying `gated` /
+  `forced_true` / `forced_false` arms and a `blocked_fraction`. The arms differ only
+  in the predicate inputs handed to the same gate: `forced_true` uses all-True vectors
+  and all-1.0 signatures (pure tau-lowering), `forced_false` all-0.0 signatures (inert
+  control, must rescue 0). Candidates must lie in `(0.0, assignment_tau]`. Both sweeps
+  are diagnostic — never baseline-gated.
+- `session.anchor_satellite_minting_enabled` (false); `anchor_satellite_drift_fraction`
+  (0.15) — item 59, write-once anchor drift. A pinned anchor's centroid is never
+  updated, so a growing/drifting cluster's own newer members can fall below
+  `assignment_tau` and become permanently novel even though `name playbooks` still
+  recognises the group as already-named (measured: 22% of one playbook's members,
+  `spb-afafb73ec79a60cb`). When enabled, an already-named group whose drift fraction —
+  sessions carrying its `playbook_id` that replay as `cluster.assignment_status ==
+  novel`, over all such sessions — meets the threshold mints an *additional* "satellite"
+  anchor doc for the same `playbook_id` (distinct `_id`, `<playbook_id>-sat-<8hex>`)
+  instead of being skipped. The incumbent anchor doc is never touched.
+  `_assign_playbook_id` / `assignment.py` already argmax-match over every loaded anchor
+  and return the winning anchor's `playbook_id`, so satellites resolve identically to
+  the primary on the read side — no assignment-path code change. Off by default:
+  widening what one playbook id covers is exactly the conflation risk the write-once
+  rule guards against, so enabling it and re-measuring `anchor_label_purity`/
+  `homogeneity` (`eval_assignment_prod.py`) is an operator decision.
+- `lexical._MIN_ANCHOR_BAGS` (50; code constant, not a config knob, single
+  source of truth in `src/enrich/sources/cowrie/lexical.py`) — an anchor whose
+  sampled `command_cluster_bags` count is below this gets no TF-IDF centroid;
+  its band checks degrade to embedding-only instead of a noisy cosine, the
+  same graceful path already used when a whole snapshot has no bags.
+  `capture_anchor_snapshot.py` prints (stderr) which anchors land under it at
+  capture time — audit signal, since rare-playbook public-session counts are
+  corpus-limited, not a `--per-anchor` setting.
+- `scripts/refresh_eval_taxonomy.py` — operator-run companion to
+  `refresh_eval_embeddings.py`: re-pulls each eval-JSONL command hash's
+  current cluster id from live ES via `lexical.pull_hash_to_cluster`
+  (public-only filtered) and overwrites just the `cluster` sub-object in
+  place. Run after a clustering/taxonomy re-run so the eval set's TF-IDF
+  bag vocabulary stays aligned with the live anchor snapshot's; a hash that
+  no longer resolves publicly has its stale `cluster` block cleared rather
+  than left stale, falling back to the outlier token downstream.
 - `session.clustering_mode` (`hdbscan`; `late_fusion` opt-in) — `late_fusion`
   fuses an embedding-HDBSCAN and a TF-IDF/SVD lexical-HDBSCAN; needs
   `command_stream_text`; O(N²) so guarded by `session.fusion_max_docs` (15000).
@@ -335,7 +400,12 @@ parentheses.
   it expecting an upgrade ([decisions.md](decisions.md), [evaluation.md](evaluation.md)).
 - `session.cluster_window_days` (30) — when > 0, the 6 h cycle clusters only the
   last N days; the weekly full pass (`--window-days 0`) re-pools the long tail
-  and refreshes the reference. `0` reverts to all-time-every-6 h.
+  and refreshes the reference. `0` reverts to all-time-every-6 h. `name
+  playbooks` has no window concept of its own — it just names whichever
+  cluster run is newest — so both the 6h windowed pass and the weekly full
+  pass call it themselves, right after their own mint, under one continuous
+  `flock` hold spanning mint+name (so the other cadence's naming call can't
+  interleave and claim the wrong run as "latest").
 - `session.playbook_merge_distinctiveness_floor` (0.25) — pass-2 merge gate:
   colliding playbooks sharing every prevalent feature are merged.
 - `session.playbook_naming_session_cap` (500); `playbook_naming_max_command_chars`
@@ -439,6 +509,15 @@ subsample (`playbook_naming_session_cap`). Pass-2 collision resolution first
 LLM-renames the genuinely-distinct survivors. Playbook id is cosine-anchored to
 the write-once anchor index (see [Stable ids](#stable-ids-and-formats)). Stability
 sentinel: `scripts/measure_playbook_id_churn.py`.
+
+**Anchor drift / satellite anchors (item 59).** A pinned anchor centroid never
+updates, so an already-named group's own newer members can drift below
+`assignment_tau` and go permanently novel while naming still recognises the
+group (`skipped_already_named`). Gated by `anchor_satellite_minting_enabled`
+(off by default): when the drift fraction crosses `anchor_satellite_drift_fraction`,
+`name playbooks` mints an *additional* anchor doc sharing the group's `playbook_id`
+under a distinct `_id` rather than updating or skipping — see
+`session.anchor_satellite_minting_enabled` above.
 
 **Noise rescue.** Before naming, `cluster sessions` reassigns HDBSCAN outlier
 sessions to their nearest centroid when pure-embedding cosine ≥
@@ -693,6 +772,7 @@ console/.venv/bin/python scripts/run_smoke.py
 console/.venv/bin/python scripts/eval_operational.py --baseline eval/baseline-operational.json --no-json   # THE operational gate
 console/.venv/bin/python scripts/eval_clustering.py --baseline eval/baseline.json --no-json   # DIAGNOSTIC (exits 0)
 console/.venv/bin/python scripts/eval_assignment.py --baseline eval/baseline-assignment.json --no-json   # DIAGNOSTIC (exits 0)
+console/.venv/bin/python scripts/eval_assignment_faithful.py --no-json   # TEMPORARY DIAGNOSTIC; shared production decision path
 console/.venv/bin/python scripts/eval_assignment_prod.py --baseline eval/baseline-assignment-prod.json --no-json
 console/.venv/bin/python scripts/eval_production_scale.py --snapshot eval/production-snapshot-v1.jsonl.gz --baseline eval/baseline-prod-scale.json --no-json
 console/.venv/bin/python scripts/eval_command_scale.py --snapshot eval/command-snapshot-v1.jsonl.gz --baseline eval/baseline-command-scale.json --no-json
@@ -700,6 +780,23 @@ console/.venv/bin/python scripts/eval_command_scale.py --snapshot eval/command-s
 
 What each gate measures, the eval-scale-vs-production-scale distinction, and the
 snapshot refresh cadence are in [evaluation.md](evaluation.md).
+`eval_assignment_prod.py` also checks the current snapshot anchor count against
+the baseline `n_anchors`, so a recaptured snapshot must be rebaselined before
+the gate can pass.
+
+**Faithful-replay fixture depth.** `eval_assignment_faithful.py --anchors
+eval/anchor-snapshot-v1.jsonl.gz` replays against the committed public anchor
+snapshot; `--background eval/background-cohort-v1.jsonl.gz` (optional, operator
+must first run `capture_anchor_snapshot.py --background-out ...` against live
+ES) pads that replay's TF-IDF/SVD fit with a broader, non-scored public session
+sample so the fit's document-space size approaches production's rather than the
+eval window alone. Omitting `--background` is byte-identical to not having the
+flag at all — it changes nothing unless supplied. Capture refuses any
+explicitly-public command taxonomy with fewer than two distinct non-outlier
+cluster IDs before it samples sessions or writes either fixture. Outlier-only
+and single-real-cluster mappings are equally degenerate, so
+committed lexical bags cannot be derived from the fallback token; classify and
+rebuild the command enrichment index before retrying.
 
 **Reliability diagnostic (not a gate).** `scripts/eval_agreement.py` scores
 annotator agreement over the overlap of two `labels.yaml`-schema files —

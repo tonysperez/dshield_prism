@@ -84,8 +84,10 @@ console/.venv/bin/python scripts/eval_clustering.py \
   --baseline eval/baseline.json --no-json   # DIAGNOSTIC — partition metrics, exits 0
 console/.venv/bin/python scripts/eval_assignment.py \
   --baseline eval/baseline-assignment.json --no-json   # DIAGNOSTIC — exits 0
+console/.venv/bin/python scripts/eval_assignment_faithful.py \
+  --no-json   # TEMPORARY DIAGNOSTIC — production decision path, label-prototype anchors
 console/.venv/bin/python scripts/eval_assignment_prod.py \
-  --baseline eval/baseline-assignment-prod.json --no-json   # real-anchor gate; SKIPs until the public anchor snapshot is committed
+  --baseline eval/baseline-assignment-prod.json --no-json   # real-anchor gate against the committed public anchor snapshot
 console/.venv/bin/python scripts/eval_production_scale.py \
   --snapshot eval/production-snapshot-v1.jsonl.gz \
   --baseline eval/baseline-prod-scale.json --no-json

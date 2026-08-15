@@ -21,12 +21,101 @@ distinct count). Thresholds are **per-metric, variance-justified** — a bootstr
 half-width for metrics with real n, a **hard absolute floor** for per-label accuracy
 (n is too small there for a CI, so a CI-derived tolerance would gate nothing on a
 collapse). Novelty is gated only if the generated baseline shows it non-degenerate
-at τ in the label-mean geometry — measured, not assumed (it reads ≈0.84 recall, so
-it gates); false-familiar (= 1 − novel recall) is reported, never a second gate on
+at τ in the label-mean geometry — measured, not assumed (it reads 0.8841 recall at
+0.5865 precision, so it gates on both); false-familiar (= 1 − novel recall) is
+reported, never a second gate on
 the same quantity. The partition metrics are kept as printed diagnostics
 (`eval_clustering.py` / `eval_assignment.py` exit 0). Novelty measured against the
 real production anchors, an expanded label set, and a labeled drift set are
 deferred follow-ups (quality-metrics Slices B/D/E).
+
+**Production-path assignment measurement stays diagnostic until anchor geometry
+is representative.** `eval_assignment_faithful.py` now replays the shipped
+TF-IDF band confirmation and cascade, including whole-behavior holdouts and a
+fixed operating curve. The committed evidence can currently construct only
+broad analyst-label prototypes; those yield very low familiar coverage and
+therefore cannot ground an adoption baseline. The evaluator is kept in CI for
+decision-path and evidence-contract diagnostics, while explicit baselines fail
+closed. Blocking activation waits for a representative public production-anchor
+snapshot with capture provenance.
+
+That prerequisite is now **met**: the corpus is classified entirely `public` and holds 27
+production anchors, all of which clear the capture floor, so the committed
+`eval/anchor-snapshot-v1.jsonl.gz` carries the complete library (27, up from a stale 15).
+The evaluator gained `--anchors` to ingest it, and the snapshot schema gained the per-anchor
+command-cluster bags its TF-IDF confirm needs. Measured outcome: familiar coverage on the
+attributed subset rose 0.0612 → 0.786, confirming that broad label prototypes caused the
+pre-band coverage collapse — but the band confirm's rejection rate rose 96.6% → 100%, so
+that half of the attribution is refuted and is now tracked separately. Note the ceiling is structural: centroids are
+recomputed from public sessions only, because the pinned production ones are
+mixed-classification and cannot be committed — so "complete coverage" holds on a fully-public
+corpus and would not on a mixed one.
+
+**The eval label vocabulary is closed (rubric v2), and agreement is reported
+both raw and vocabulary-aligned.** The v1 rubric offered a *suggested* skeleton
+vocabulary to "extend / contract as you go", while `eval_agreement.py` compares
+label strings — so two passes over the same 160 sessions, both compliant with
+`rubric_version: v1`, produced 11 and 12 categories with only 5 shared, and every
+rename scored as a total mismatch. Measured agreement 0.4813; 0.5813 once the
+vocabularies were aligned 1:1. An unpinned vocabulary makes the reliability
+instrument unreadable, so `eval/RUBRIC.md` now carries a closed canonical table
+enforced by `validate_eval_labels.py` (`KNOWN_PLAYBOOK_LABELS`), a retired-synonym
+table that names each replacement, and an explicit "adding a label is a rubric
+version bump" process. `eval_agreement.py::vocabulary_alignment` reports agreement
+under the best 1:1 renaming, with any category present in **both** vocabularies
+locked to itself — both annotators knew that term and chose differently, which is
+genuine disagreement, not naming. The raw number stays the headline; the gap
+between them is the naming component.
+
+**Two eval labels are defined by behavior, never by form.** The same divergence
+exposed three rubric defects that an open vocabulary had hidden. (1)
+`single_command_probe` was defined as "exactly one command, then disconnect" —
+but over half the sample is a single command line, and 31 `host_recon` sessions
+are single-command. It is now defined by what the attacker *learns* (nothing —
+`PING`, `echo SHELL_TEST`, `busybox abc`), with an explicit content-beats-form
+precedence rule against `host_recon`. (2) `shell_wrapper_only` (a skeleton label
+naming the `echo "…" | sh` delivery form) is retired — `echo "cat /proc/cpuinfo;
+uname -a" | sh` is `host_recon`. (3) `botnet_loader` now requires an observed
+beacon or arch-selection preamble; a plain `wget x.sh; ./x.sh` is
+`payload_fetch_exec`, since calling it a loader asserts a C2 role the session
+doesn't evidence. Form labels look consistent and measure nothing.
+
+**`botnet_loader` fires on fleet intent, not on an observed beacon.** The first
+v2 wording required "runtime arch detection or an observed C2 beacon" — written
+to stop an annotator over-calling the label on any fetch-and-execute. It
+overcorrected: a cowrie honeypot never observes a beacon packet, so real loaders
+fell through to `payload_fetch_exec`. The test is now any one of three forms that
+*are* visible in the command stream — multi-architecture targeting (runtime
+detection or brute-force fetching several variants), a C2 address/port passed at
+launch (`./bot 1.2.3.4 1338`), or self-spread (`busybox telnetd -l /bin/sh -p
+31337 &`). `payload_fetch_exec` is the default; `botnet_loader` is the exception
+that must earn itself. Related: `iot_cli_probe` now requires the appliance CLI to
+be the *whole* session — appliance sessions routinely walk a menu (`enable`,
+`system`, `linuxshell`) to reach a shell and then fetch a payload, and the menu
+walk is a means, not the behavior.
+
+**Macro-F1 excludes labels a held-out split cannot learn.** A label with one
+member corpus-wide has zero training examples whenever that member is the test
+case, so it scores a structural 0.0 that no prototype quality could move — while
+still contributing 1/n_labels of the macro mean (measured: 0.7612 → 0.7777 on the
+148-session set). `eval_operational.gate` already exempted `n < 2` labels from the
+per-label floor on exactly this reasoning; `classification_metrics(...,
+scoreable=)` makes macro-F1 agree with that judgement instead of contradicting it.
+The exclusion forgives only what no prototype could have fixed: those sessions
+stay in the test set and still cost some other label precision when misassigned.
+Rare labels are otherwise *stabilizers*, not noise — at n=3, `dropped_binary_exec`
+/ `iot_cli_probe` / `scp_upload` each score recall 1.000 ± 0.000, and dropping all
+labels with n<6 *raises* the macro-F1 CI half-width from 0.1954 to 0.2310. Don't
+prune rare labels to "reduce variance"; the variance lives in the confusable
+middle.
+
+**`is_real: false` covers any non-shell protocol leaking into the command
+stream, not just HTTP.** The v1 rule named only the HTTP case. Cowrie records
+whatever arrives on the port, so Redis RESP (`PING`) and FTP (`USER test`) frames
+are recorded as commands and embed as if they were shell behavior. The test is
+"could this string ever be a shell command?" — a one-word *shell* command
+(`hostname`, `busybox`) is real; a protocol verb is leakage regardless of whether
+the traffic was hostile.
 
 **Labeling is nearest-prototype assignment, not full-corpus clustering.** The
 embedding earns no measurable edge over a TF-IDF text baseline on this corpus
@@ -129,6 +218,23 @@ commands; this is the relief valve.
 both keep the full-dim centroids, novelty, and cross-run reference intact — only
 the cheap label-assignment step is approximated. So a scale knob never
 invalidates the reference set or shifts novelty scores.
+
+**Naming cadence must track whichever pass minted the clusters, and mint+name
+must share one flock hold, not two.** `name playbooks` just names the newest
+completed cluster run — it carries no window concept itself. Item 58 found
+that the weekly full-corpus mint (`cluster sessions --novel-pool
+--window-days 0`) never called `name playbooks` afterward, so 83.8% of the
+novel pool sat permanently unnamed: the 6h chain's own naming step only ever
+saw ITS 30-day-windowed run. The first fix attempt added naming as a second,
+separate `ExecStart` line — review caught that `flock` in this codebase is
+acquired/released per `ExecStart=` line, not held for a unit's whole run, so
+the gap between two lines let the 6h chain's own windowed mint+name pair
+interleave and overwrite "latest run_summary," silently reproducing the same
+bug. The shipped fix combines mint+name into one `flock`-wrapped shell
+invocation (`mint && { name || true; }`) so the lock is held continuously
+between them; any other unit's flock'd step blocks (no `-n`) rather than
+racing in. Mint keeps hard-fail semantics unchanged; naming's failure is
+swallowed so it still never blocks downstream IP/prune work.
 
 **The privacy gate is fail-safe.** Untagged per-sensor data is treated as
 confidential, propagated most-restrictive-wins, and confidential data never
@@ -258,6 +364,39 @@ run.)
   is worse than a briefly stale list), and an invalid `status` in a bulk request
   is now one HTTP 400 instead of N identical per-id errors under HTTP 200.
 
+- **Structural predicates are decomposed into per-command sub-signals, not stored
+  as the 7 composed booleans.** `eval_predicate_falsification.py` (item 29) computes
+  its 7 predicates over a whole session's joined command text in one pass, but
+  enrichment (`commands.py`) only ever sees one command at a time. Storing the 7
+  composed booleans per command and OR-folding them at session-vector build time is
+  only correct for the 3 pure evidence-presence predicates — `appliance_menu_only`
+  is an AND-fold over every command, `multi_arch_targeting` needs the *distinct*
+  architecture-token set pooled across commands (not just an any-token flag), and
+  `key_write_immutability`/`hetero_target_fallback` each OR-pool two independent
+  conditions before ANDing them. `predicates.py` stores the constituent regex
+  sub-signals instead (`has_uname_m`, `arch_tokens`, `has_case_token`, `has_c2_launch`,
+  `has_self_spread`, `is_appliance_verb`, `has_host_recon`, `has_key_write`,
+  `has_immutability`, `has_multi_dir_cd`, `has_multi_tool_fallback`) and
+  `lexical.build_session_predicate_vectors` recomposes the 7 predicates with each
+  one's correct fold. Verified byte-for-byte against the reference implementation on
+  all 148 labelled real eval sessions (`smoke_test_predicates.py`). The known gap:
+  OR-pooling per-command sub-signals is not literally identical to a regex over the
+  whole session's *joined* text in the rare case a match would only appear by two
+  adjacent commands' text landing next to each other across the join boundary — an
+  accepted approximation inherent to precomputing per command, and the falsification
+  script's own patterns are written to match within one shell command.
+
+- **A below-tau rescue only fires when the anchor's predicate signature is modal
+  (>= 0.5), not merely nonzero.** `playbook_anchors.predicate_signature` is a
+  per-predicate member-session frequency in [0, 1]. Gating "the anchor fires this
+  predicate" on any nonzero frequency would let one incidental member session with,
+  say, `key_write_immutability` open every unrelated below-tau session sharing that
+  one predicate to a rescue against that anchor. `predicates.ANCHOR_MODAL_THRESHOLD`
+  (0.5) requires the predicate to be the majority behavior among the anchor's sampled
+  members before it counts as rescue evidence — this is on top of, not instead of,
+  the hard evidence gate (an all-false session vector, or a missing/all-zero anchor
+  signature, never rescues regardless of threshold).
+
 ## Dead-ends — measured and rejected
 
 Don't re-attempt these without new evidence; each was tried against the live
@@ -319,3 +458,55 @@ corpus and recorded as a null result.
   writes one summary doc the console reads O(1) (`samples` gated on
   `releasable_filter` — literal command lines are per-sensor). Don't re-add a
   full-scan console endpoint.
+- **Shipping the below-tau structural-predicate rescue tier** — item 30's rescue
+  band `[rescue_tau, tau)` is wired end-to-end and correct, but measured on the real
+  anchor library it buys coverage and nothing else, so `assignment_rescue_tau` stays
+  at `assignment_tau` (0.94, a no-op). The three-arm ablation
+  (`eval_assignment_faithful.py --anchors ... --rescue-tau-sweep`, gate on / forced
+  True / forced False) over 70 scored eval sessions against the 19-anchor snapshot:
+  lowering to 0.88 raises assigned rate 0.77 -> 0.99, and **every rescued session is
+  assigned to the wrong playbook** — `n_rescued_correct` is 0 at every candidate,
+  including the 10 rescues whose ground truth the snapshot library actually contains.
+  Correct in-library assignments stay pinned at 20 while the denominator grows 20 ->
+  30, so `accuracy_in_library` falls 1.0000 -> 0.6667. The predicate gate is also
+  barely selective on this geometry: it blocks only 6-9% of what pure tau-lowering
+  would rescue, against 34-52% on the earlier label-prototype prototypes — live anchor
+  signatures are saturated (three of seven predicates fire on 71-87% of sessions),
+  while label-grouped signatures were artificially tight. Only 9 of 19 snapshot
+  anchors are armed at all (a signature at or above the modal threshold) and only 54
+  of 70 sessions fold to any predicate evidence. Do not re-derive a `rescue_tau` from
+  the label-prototype sweep — it does not read the snapshot and is not the production
+  geometry. Reopen only behind a rarity-weighted or multi-predicate overlap rule
+  (`docs/roadmap.md`).
+
+### `assignment_tfidf_tau` is 0.50 — a valley placement, not a tuned value
+
+The band's TF-IDF confirm cutoff moved 0.80 → 0.50. Measured corpus-wide over 8,825
+band checks at the deployed `assignment_tau`, the traced `tfidf_cos` distribution is
+**bimodal with an empty valley**: ~2,813 checks at 0.12–0.2 (genuinely dissimilar
+sessions the band should reject), only **108 across the whole of 0.2–0.7**, then
+~2,382 at 0.7–0.8 sitting immediately below ~3,522 confirms at 0.8–1.0. The old 0.80
+cut a continuous 0.7–1.0 mass in half and discarded its lower 2,382 as false
+conflations — sessions whose command-cluster bag profiles match the *assigned* members
+of the same playbook to within ~1% on every common token.
+
+Any value in roughly 0.25–0.65 produces the same partition, so this is a placement in
+a gap, not an optimum on a curve. Do not nudge it; re-measure the distribution with
+`scripts/eval_novel_pool.py`'s `band_tfidf_diagnosis` if the corpus changes shape.
+
+**The band is kept, not retired.** On the 148-session labelled subset the 0.50 arm and
+a band-disabled arm are indistinguishable (identical 92/56 assigned/novel, macro-F1
+0.4212 vs 0.4181 inside overlapping CIs), which reads as "the band does nothing". That
+reading is wrong: the labelled subset contains **one** band check below 0.5 while the
+corpus contains **2,813** below 0.2. The band still rejects that entire low mode; the
+labelled sample simply contains none of it.
+
+Labelled evidence for the change is a **non-result in both directions** — macro-F1
+0.4124 → 0.4212 against CI half-widths of ~0.08 — but it establishes no harm: purity
+holds (0.9302 → 0.9348), no session changes label while assigned, and the 6 that flip
+novel→assigned are 5 `host_recon` plus 1 `ssh_key_chattr_persistence`. The coverage
+gain (~2,382 recovered checks) is corpus-measured and label-unconfirmed; the 148
+labelled sessions produce only 17 band checks, ~500× under-sampling the band.
+
+Note `scripts/eval_assignment_faithful.py` hardcodes `TFIDF_TAU` and does not read
+config — both must be changed together or the replay silently reports old behaviour.

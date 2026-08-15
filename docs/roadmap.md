@@ -34,8 +34,9 @@ Remove an item from this file when it ships; add new open items as they surface.
   Note: an `ip.cluster_svd_dim` (fit-only SVD like commands=128 / sessions=96;
   the core `run_layer_clustering` already accepts `svd_dim`, the IP caller just
   doesn't pass one) is a cheap ~6–8× constant-factor palliative but doesn't change
-  the O(n²) shape — the window/incremental path is the real fix. Measurements:
-  [`eval/results/B0-preflight-loadtest.md`](../eval/results/B0-preflight-loadtest.md) §B0.3.
+  the O(n²) shape — the window/incremental path is the real fix. Measured by
+  `scripts/loadtest_ip_recluster.py` (writes to the gitignored `eval/results/`;
+  re-run it for current numbers).
 - **Behavior↔infrastructure campaign convergence** flag — when the two miners
   start overlapping, that overlap is itself signal (the Operation promotion is
   the first cut; a standing convergence finding is the follow-up).
@@ -79,6 +80,16 @@ Remove an item from this file when it ships; add new open items as they surface.
   is adversarial by design (attacker-controlled command text reaching an LLM and
   a browser). Prompt-injection fencing + output-schema validation are in place;
   this is the standing review of everything around them.
+- **One shared HTML escaper in the console front-end.** `escapeHtml` is currently
+  redefined per-file (`app.js`, `artifact_ip.js`, `artifact_rule_modal.js`,
+  `explore.js`), which means the invariant "attacker-controlled text is escaped
+  before it reaches `innerHTML`" is enforced by convention across ~90 `innerHTML`
+  sites rather than by construction. Hoist one escaper into a shared module, have
+  every renderer use it, and prefer `textContent` where no markup is needed. Two
+  known stragglers to fix in the same pass: the `drawer-body` error paths in
+  `findings.js` interpolate raw server response text, and `app.js` truncates
+  *after* escaping so a slice can land mid-entity. Neither is known-exploitable
+  today — this is about removing the class, not patching instances.
 
 ## Console UX
 
@@ -102,9 +113,28 @@ space rescue, `scripts/diagnose_ip_rescue.py` tunes the percentile.)
   `sweep_embedding_model_prod.py`, `eval_production_scale.py`,
   `prod_corpus.py`, `sweep_embed_input_order.py`,
   `inspect_small_clusters.py`) import its metric-core functions as shared
-  utilities, and it's wired into `.github/workflows/eval.yml:37` +
+utilities, and it's wired into `.github/workflows/eval.yml:37` +
   CLAUDE.md's CI checklist. Split the reusable cores out before deleting the
   CLI/report/baseline/CI step, so the 6 dependents don't break.
+- **Activate the production-path assignment gate with representative public
+  anchors** — `eval_assignment_faithful.py` now exercises TF-IDF confirmation,
+  cascade, whole-behavior novelty, grouped uncertainty, and protected
+  provenance, but label-derived prototypes do not match production anchor
+  geometry. Commit a representative public anchor/sample snapshot with capture
+  identity, then establish the new baseline without retuning the shipped
+  thresholds to the eval set.
+- **Make the structural predicates discriminative** — the rescue tier is measured
+  and stays off (`docs/decisions.md`); the blocker is that three of the seven
+  predicates fire on 71-87% of sessions, so set-overlap is nearly unconditional.
+  Unmeasured options: weight overlap by corpus rarity (IDF-like), require >=2
+  overlapping predicates, or split the saturated predicates into finer
+  sub-behaviours. The four rare predicates are the discriminative ones and already
+  separate the confusable label pairs at 0.9091-1.0000
+  (`scripts/eval_predicate_falsification.py`) — the separation signal exists, the
+  unweighted overlap rule dilutes it. Re-run
+  `eval_assignment_faithful.py --anchors ... --rescue-tau-sweep` to score any
+  candidate rule; the bar is a gated arm that rescues *correctly*, which today it
+  never does.
 - **Prompt paths are CWD-relative, not install-root-anchored** — `cfg.prompts.*`
   (`playbook_name`, `command_deep_dive`, `cluster_pair_explanation`,
   `playbook_disambiguate`) are bare relative strings, loaded via plain
@@ -114,5 +144,6 @@ space rescue, `scripts/diagnose_ip_rescue.py` tunes the percentile.)
   raises `FileNotFoundError` on the first prompt load. Fix: resolve these paths
   at config-load time relative to the config file's directory (or the package
   install root) instead of leaving them CWD-relative — one change in the config
-  loader instead of four call sites. See
-  `_bmad-output/implementation-artifacts/investigations/no-playbooks-after-reinstall-investigation.md`.
+  loader instead of four call sites. Surfaced by a "no playbooks after
+  reinstall" investigation: the reinstall left CWD elsewhere, so
+  `name-playbooks` died on its first prompt read.

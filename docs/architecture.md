@@ -146,7 +146,12 @@ adversary tradecraft (see below). Code:
   **cosine-anchored** to a write-once anchor index, so a playbook keeps its
   identity across re-analysis runs even as its membership changes. Naming uses
   the local LLM only and anchors on the commands/IOCs that most sessions share
-  (session coverage), not on a handful of samples.
+  (session coverage), not on a handful of samples. Because an anchor's centroid
+  never updates after mint, a growing/drifting playbook's own newer members can
+  fall outside its radius; an opt-in drift remedy (`anchor_satellite_minting_enabled`)
+  mints an *additional* anchor doc for the same id — a distinct `_id`, same
+  `playbook_id` — rather than updating the pinned centroid, keeping the
+  anti-chaining guarantee intact. See [reference.md](reference.md#tunable-knobs).
 - **Campaign** — coordinated multi-session activity, mined two independent ways:
   - **behavior** (`cmp-bhv-…`) — frequent-itemset mining (FP-growth) over each
     IP's set of playbooks: "these IPs all run this exact combination."

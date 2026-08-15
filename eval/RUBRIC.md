@@ -44,7 +44,7 @@ once and is consulted dozens of times.
    ```bash
    console/.venv/bin/python scripts/validate_eval_labels.py \
      --labels eval/labels.yaml \
-     --unlabeled eval/sessions.unlabeled.jsonl
+     --unlabeled eval/sessions.unlabeled.jsonl.gz
    ```
    Catches schema mistakes early, before you make the same mistake 200
    times. Use `--min-records 200` once you're done to gate the final

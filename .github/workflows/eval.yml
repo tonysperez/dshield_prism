@@ -13,7 +13,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      # The eval is pure-function: it reads eval/sessions.unlabeled.jsonl
+      # The eval is pure-function: it reads eval/sessions.unlabeled.jsonl.gz
       # + eval/labels.yaml from HEAD and re-runs the production
       # clustering math (L2-normalize + scalar augment + HDBSCAN) on the
       # pinned eval set. No ES connection needed.
@@ -50,6 +50,13 @@ jobs:
         # visibility but never fails a build; the assignment + novelty numbers
         # gate in eval_operational.py. mean_auc_novel is threshold-free (the
         # pipeline ships one fixed cosine point, not an AUC).
+      - name: Run production-path faithful assignment eval (temporary diagnostic)
+        run: python scripts/eval_assignment_faithful.py --no-json
+        # Replays the shipped TF-IDF band confirmation and candidate cascade,
+        # including whole-behavior novelty trials and the declared threshold
+        # grid. It remains diagnostic, with no baseline, until representative
+        # public production-anchor geometry is committed. Explicit baselines
+        # are fail-closed.
       - name: Run prod-scale assignment eval (real anchors) + gate
         run: |
           python scripts/eval_assignment_prod.py \
@@ -59,7 +66,8 @@ jobs:
         # snapshot the operator captures + commits via capture_anchor_snapshot.py).
         # Gracefully SKIPS (exit 0) until eval/anchor-snapshot-v1.jsonl.gz exists, so this
         # step is a harmless no-op on an untagged corpus and activates once the snapshot
-        # + baseline are committed. Re-base via `eval_assignment_prod.py --write-baseline`.
+        # + baseline are committed. Snapshot/baseline anchor-count mismatches fail; re-base
+        # via `eval_assignment_prod.py --write-baseline`.
 
   production-scale-gate:
     # E6.2: production-scale eval. The eval-isolated gate above scores

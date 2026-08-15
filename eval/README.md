@@ -26,16 +26,15 @@ measurements found, see [`docs/evaluation.md`](../docs/evaluation.md).
 
 | File | Status | Tracked? | What it is |
 |---|---|---|---|
-| `sessions.unlabeled.jsonl` | generated | yes | Output of `scripts/build_eval_set.py`. Public-only (classification-gated), defanged, variety-first sample. Committed because it's safe to publish post-defang; not analyst-readable. |
+| `sessions.unlabeled.jsonl.gz` | generated | yes | Output of `scripts/build_eval_set.py`. Public-only (classification-gated), defanged, variety-first sample. Committed because it's safe to publish post-defang; not analyst-readable. Gzipped, and carries no per-command `embedding` — those were 79% of the bytes and no consumer reads them back (the sweeps that pool per-command vectors go to live ES), which put the plain file over GitHub's 100 MB blob ceiling. Readers accept either spelling via `scripts/eval_jsonl.py`. |
 | `sessions/<session_id>.md` | generated | no | Per-session human-readable rendering from `scripts/render_eval_set.py`. |
 | `labels.yaml` | hand-edited | yes | The labels — one block per `session_id`. Deliverable. |
 | `labeling-prompt.md` | hand-written | yes | Self-contained LLM prompt to automate labeling. |
 | `RUBRIC.md` | hand-written | yes | Labeling rubric. |
-| `labels-relabel.yaml` | hand-edited | no | Optional delayed blind re-label of a subset, same schema — the intra-annotator agreement input. Not committed. |
+| `labels-relabel-*.yaml`, `labels-secondary.yaml` | generated skeleton, hand-filled | no | Second-pass label files, same schema as `labels.yaml` — intra-annotator (delayed self-relabel, via `scripts/build_relabel_subset.py`) or inter-annotator (concurrent second annotator) agreement input. Gitignored: a committed second pass is readable by the next annotator, which destroys the blindness the measurement depends on. |
 | `baseline-operational.json` | generated | yes | Metric snapshot `eval_operational.py` (the actual CI gate) diffs against. |
 | `baseline.json` | generated | yes | Metric snapshot `eval_clustering.py` (diagnostic-only, doesn't gate) diffs against. |
-| `results/` | generated | no | Per-run JSON + per-experiment markdown verdicts from the `eval_*.py` / `sweep_*.py` / `exp_*.py` scripts. Rebuildable; gitignored. |
-| `archive/` | frozen | yes | Retired experiments (see the note above). |
+| `results/` | generated | no | Per-run JSON + per-experiment markdown verdicts from the `eval_*.py` / `sweep_*.py` / `exp_*.py` scripts. Rebuildable; gitignored, so don't cite a path under it from a tracked doc. |
 
 ## Labeling workflow
 
@@ -58,7 +57,7 @@ After every ~25 entries, run the validator:
 ```bash
 console/.venv/bin/python scripts/validate_eval_labels.py \
   --labels eval/labels.yaml \
-  --unlabeled eval/sessions.unlabeled.jsonl
+  --unlabeled eval/sessions.unlabeled.jsonl.gz
 ```
 
 When you're done, gate the final set on a minimum record count:
@@ -66,7 +65,7 @@ When you're done, gate the final set on a minimum record count:
 ```bash
 console/.venv/bin/python scripts/validate_eval_labels.py \
   --labels eval/labels.yaml \
-  --unlabeled eval/sessions.unlabeled.jsonl \
+  --unlabeled eval/sessions.unlabeled.jsonl.gz \
   --min-records 200
 ```
 
@@ -76,6 +75,22 @@ novelty precision/recall, minted-playbook purity:
 ```bash
 console/.venv/bin/python scripts/eval_operational.py --baseline eval/baseline-operational.json --no-json
 ```
+
+For decision-path fidelity, also run:
+
+```bash
+console/.venv/bin/python scripts/eval_assignment_faithful.py --no-json
+```
+
+This fits one shared TF-IDF/SVD space per fold/trial and calls the same
+`assign_batch` cascade as production. It reports deployed thresholds
+(`tau=0.94`, `confident_tau=0.98`, `tfidf_tau=0.80`) plus the fixed
+low/deployed/high operating curve, exact confusion/path counts, grouped
+intervals, margins, and per-behavior novelty. Current anchors are folded
+analyst-label prototypes, not representative production anchors, so the result
+is a temporary diagnostic and no baseline is committed. An explicit baseline
+protects corpus, rubric, representation, sample design, thresholds, code,
+dependencies, Git revision, capture identity, seed, and exclusions.
 
 `scripts/eval_clustering.py --baseline eval/baseline.json --no-json` also
 runs against this set but is diagnostic-only (prints, never fails a build) —
@@ -90,17 +105,63 @@ graded against.
 
 **Intra-annotator (the headline workflow, single operator).** After finishing a
 labeling batch, wait long enough to forget the specifics, then blind re-label a
-subset into a second file (same schema, e.g. `eval/labels-relabel.yaml`) —
-don't peek at the originals. Score self-consistency:
+subset — don't peek at the originals. `scripts/build_relabel_subset.py` picks
+the subset and emits the empty skeletons:
+
+```bash
+console/.venv/bin/python scripts/build_relabel_subset.py
+```
+
+It writes **two** files, because one subset can't do both jobs:
+
+| File | What it is | How to read it |
+|---|---|---|
+| `labels-relabel-core.yaml` | Uniform random draw (default 60) over every annotated session | **The quotable number.** Representative, so its agreement is *the* reliability estimate. At n=60 and true agreement ~0.85 the 95% CI is roughly ±0.09 — enough to separate "at the ceiling" from "real headroom" |
+| `labels-relabel-supplement.yaml` | Every member of a category with n < 10 that core didn't already draw | Per-label detail only. **Never pool it into the core number** — it over-weights the hard tail and understates reliability |
+
+Blocks are emitted with every label field empty and in shuffled order, so
+walking a file top-to-bottom won't retrace the original labeling sequence.
+The script refuses to overwrite existing output (pass `--force`) and warns
+when the first pass is too recent for the re-label to be blind — run it a day
+later and you measure recall, not reproducibility.
+
+Label against [`RUBRIC.md`](RUBRIC.md) v2 only, without opening `labels.yaml`.
+Then score core first and alone:
 
 ```bash
 console/.venv/bin/python scripts/eval_agreement.py \
   --labels-a eval/labels.yaml \
-  --labels-b eval/labels-relabel.yaml
+  --labels-b eval/labels-relabel-core.yaml
+
+# separately — per-label detail, not the headline
+console/.venv/bin/python scripts/eval_agreement.py \
+  --labels-a eval/labels.yaml \
+  --labels-b eval/labels-relabel-supplement.yaml
 ```
 
-**Inter-annotator (when a second annotator exists).** Same command, two
-annotators' files. The tool is agnostic to which mode.
+**Inter-annotator (concurrent second label set).** Same command, two
+annotators' files — the tool is agnostic to which mode, and the two
+files can be produced at any time relative to each other (not just a
+delayed self-relabel). To run one:
+
+```bash
+# 1. Fresh empty skeleton at a second path — never touches labels.yaml
+console/.venv/bin/python scripts/render_eval_set.py \
+  --labels-yaml eval/labels-secondary.yaml
+
+# 2. Label it (by hand, or via eval/labeling-prompt.md — set its
+#    "Target labels file" line to eval/labels-secondary.yaml). Do this
+#    blind: the second labeler must not see eval/labels.yaml.
+
+# 3. Score
+console/.venv/bin/python scripts/eval_agreement.py \
+  --labels-a eval/labels.yaml \
+  --labels-b eval/labels-secondary.yaml
+```
+
+Same mechanism as the intra-annotator flow above, minus the subset draw —
+a concurrent second annotator labels the whole set, so there is no
+core/supplement split to make.
 
 It reports Cohen's κ, PABAK, and overall + per-label percent agreement, each with
 a bootstrap CI, over the annotated **overlap** (sessions `annotated: true` in
@@ -111,6 +172,16 @@ as the disagreement it is. Read κ *alongside* PABAK and the per-label breakdown
 on this prevalence-skewed set κ alone hits the paradox (high agreement, deflated
 κ). It is a diagnostic — it never fails a build; the only error exit is an empty
 overlap or an unreadable file.
+
+**`aligned_agreement`** is reported next to the raw number. Agreement is scored
+on label *strings*, so two annotators naming the same behavior differently score
+as a total mismatch. The alignment block finds the best 1:1 renaming and
+re-scores under it; a category present in **both** vocabularies is locked to
+itself, because both annotators knew that term and chose differently — genuine
+disagreement, not naming. The raw number is the headline; the gap is the naming
+component, and the residual is behavioral. Since rubric v2 the vocabulary is
+closed (`validate_eval_labels.py` enforces it), so on a clean pair the gap should
+be zero — a non-zero gap means someone labeled outside the rubric.
 
 ## YAML schema (committed file)
 
@@ -150,7 +221,7 @@ number `> 0`, `labeled_at` a real `YYYY-MM-DD` date, `annotator` /
 
 ## Unlabeled JSONL schema (rebuildable, not tracked)
 
-Each line of `sessions.unlabeled.jsonl`:
+Each line of `sessions.unlabeled.jsonl.gz`:
 
 ```jsonc
 {

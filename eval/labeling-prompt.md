@@ -121,7 +121,7 @@ assignment.
 7. **Validate.** Run:
        console/.venv/bin/python scripts/validate_eval_labels.py \
          --labels eval/labels.yaml \
-         --unlabeled eval/sessions.unlabeled.jsonl
+         --unlabeled eval/sessions.unlabeled.jsonl.gz
    The output must report `EXIT=0`. If errors are reported, fix them
    in a single Edit and re-validate. Common failures: missing field;
    missing `annotator` / `labeled_at` / `rubric_version` (all three are

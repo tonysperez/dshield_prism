@@ -42,7 +42,7 @@ Here's the tool I built to achieve this.
 
 - **Measured, not assumed.** Clustering quality is graded automatically against a hand-labeled answer key on every change. When my measurements showed my central assumption was wrong, I recentered on and rebuilt around the evidence. ([the gates, the numbers, the methodology](docs/evaluation.md))
 
-- **Private by default.** The AI runs locally, on your own hardware — nothing about your honeypot traffic leaves the box unless you say so. Cloud escalation is opt-in and budget-capped. Data from a sensor classified as non-public is never sent off-platform unless explicitly and deliberately requested by the operator.
+- **Private by default — enforced, not promised.** The AI runs locally, on your own hardware; cloud escalation and external CTI lookups are off by default and hard-capped per day when enabled. The load-bearing part is *how* that holds: every path off the box routes through one fail-safe check, and only records explicitly classified `public` pass it. Untagged data is treated as confidential, so a missing tag can't leak. It's a default-deny boundary in code, not a rule the operator has to remember. ([the boundary](#data-governance--egress-control))
 
 - **Hardened by real-world operation.** Prism has run continuously against live DShield sensors, and the safety rails earned their place: a daily cloud-spend cap, validation that catches the local model hallucinating data, and hash-based cache invalidation that can't be forgotten. Each one fixed a real production failure, not a hypothetical one.
 
@@ -58,24 +58,26 @@ Prism runs continuously on one live DShield sensor and has ingested 4+ years of 
 
 *Most of the ~9.6M sessions are credential brute-force that never reach a shell. The ~247K that do carry 336,723 distinct command forms between them — and those collapse to 215 command behaviors and 150 named session playbooks, plus 12 campaigns where infrastructure and behavior converge. (Source IPs cluster on a separate axis — 82K into ~3,000 behavioral groups.) That reduction — tens of millions of raw events down to a few hundred named behaviors an analyst can actually reason about — is exactly the point of this pipeline.*
 
-**But are those groupings any good?** Reduction means nothing if the buckets are wrong. Quality is graded against ~100 analyst labeled sessions — spread across attack types, not just easy commodity traffic — and re-checked in CI on every change so clustering quality does not regress:
+**But are those groupings any good?** Reduction means nothing if the buckets are wrong. Quality is graded against 156 hand-labeled sessions across 10 behaviors — spread across attack types, not just easy commodity traffic — and re-checked in CI on every change so quality does not regress. Every figure below is the committed baseline in [`eval/`](eval/), not a best run:
 
-- **It agrees with the analyst 84% of the time.** Tested on sessions it wasn't allowed to learn from, Prism assigns the same playbook an analyst would — and it's just as reliable on rare behaviors as common ones (0.84 accuracy, 0.83 macro-F1).
-- **It catches behavior it has never seen.** Hand it activity that isn't in its reference set and it flags the new behavior ahead of a known one about three times in four (0.74 AUC).
-- **The groups it forms are clean.** When Prism buckets activity, 92–97% of each group shares the same behavior rather than being a mixed bag (0.97 command-intent / 0.92 label purity).
+- **It agrees with the analyst just under four times in five.** On sessions held out from its reference set, nearest-prototype assignment picks the analyst's playbook at **0.79 accuracy / 0.75 macro-F1** (`eval/baseline-assignment.json`). Macro-F1 trails accuracy because the rare behaviors are genuinely harder, so the gate floors every label *individually* — a collapse on a rare behavior can't hide behind the common ones.
+- **It catches behavior it has never seen — and over-calls it.** Hold out a whole behavior and it reads as novel at **0.89 recall**, ranking unseen above known at **0.73 AUC**. But novel **precision is 0.58** (`eval/baseline-operational.json`): roughly two in five novelty flags are false alarms. That is the weakest number in the system and the one an analyst feels first.
+- **Purity depends on which layer you ask about — so here are all of them.** Command clusters are **0.97** intent-pure (against the *model's own* intent label, so read it as self-consistency, not ground truth) and the 15 committed production anchors are **0.99** label-pure. Those are the easy layers. Unsupervised session clustering at full production scale scores **0.51 homogeneity / 0.088 ARI** against the analyst partition (`eval/baseline-prod-scale.json`) — which is exactly why Prism ships *assignment* rather than that clustering. At production anchors only **51% of sessions clear τ** and land on a playbook (`eval/baseline-assignment-prod.json`); the rest fall to the novel pool.
 
-[Full methodology, the weak spots, and the measured dead-ends](docs/evaluation.md).
+The gates print current-vs-baseline deltas on every run and fail the build on regression, so these numbers are checkable rather than asserted. [Full methodology, the weak spots, and the measured dead-ends](docs/evaluation.md).
 
-**Scope, stated plainly.** This is one operator's tool, validated on a single live sensor plus a 4-year backfill from a second, not a fleet. The quality gates run against ~100 hand-labeled sessions: enough to catch regressions on every change, not a published benchmark. Ingestion is Cowrie (SSH/Telnet) today; webhoneypot and firewall sources are on the roadmap. Read the cluster and campaign counts as evidence the method works on real adversarial traffic — not as a claim about how it behaves at fleet scale.
+**Scope, stated plainly.** This is one operator's tool, validated on a single live sensor plus a 4-year backfill from a second, not a fleet. The quality gates run against 156 hand-labeled sessions from a single annotator: enough to catch regressions on every change, not a published benchmark — and wide enough confidence intervals that the gate tolerances are correspondingly loose. Ingestion is Cowrie (SSH/Telnet) today; webhoneypot and firewall sources are on the roadmap. Read the cluster and campaign counts as evidence the method works on real adversarial traffic — not as a claim about how it behaves at fleet scale.
 
-<!--
-TODO — replace this comment with one real finding.
-
-> **A find worth the build.** Prism flagged a novel persistence playbook that recurred
-> across N source IPs sharing one staging URL. Each IP looked like commodity scanning on
-> its own — the shared *behavior* plus shared *infrastructure* promoted them to a single
-> tracked Operation that artifact-by-artifact pivoting would never have linked.
--->
+> **The 0.8% that had no name.** Of 8,536 command-bearing sessions observed over three months, 89%
+> sorted into 25 named behaviors. The remaining 70 did not just fail to match — they were flagged
+> outright as outliers: 57 source IPs, 52 distinct command streams, every one scored
+> maximally novel against the sensor's own history. Among them: four sessions
+> that wrote an ELF binary to disk through ~2,000 consecutive `echo` statements of base64,
+> with no download URL and no file hash to pivot on; droppers that branch on `uname -m`
+> across seven architectures; and one that remounts `/tmp` executable before doing anything
+> else. No signature would have caught these, because no signature existed yet — they were
+> ranked on being unlike the sensor's own history, not on matching a rule. Seventy sessions
+> reach the inbox; the commodity remainder stays quiet.
 
 > **A few things running this in production taught me** ([more below](#lessons-learned)):
 > - A per-day cloud-LLM cost cap, built day one, later saved me when a bug caused an endless query loop.
@@ -158,12 +160,9 @@ Four more surfaces round out the workflow:
 
 ## Data governance & egress control
 
-Honeypot capture can be sensitive. A single session can hold real credentials, a victim's data, or detail that identifies the sensor. Prism treats leaving the box as a default-deny boundary enforced in code:
+Honeypot capture can be sensitive: a single session can hold real credentials, a victim's data, or detail that identifies the sensor. So every record is classified per-sensor at ingest (`dshield.classification`: `public` | `confidential`), and every egress path — the intel queue, command escalation, finding narratives — routes through one centralized check, [`is_releasable` / `releasable_filter`](src/enrich/classification.py). That check is fail-safe: it matches *only* explicitly-`public` records, so both confidential and untagged data stay put. Mark a sensor confidential and nothing it sees leaves the box, regardless of what else is switched on.
 
-- **Classified at ingest.** Every record carries a per-sensor `dshield.classification` (`public` | `confidential`). Mark a sensor confidential and nothing it sees ever leaves the box — independent of whether cloud escalation or CTI lookups are enabled.
-- **Fail-safe, not fail-open.** The releasable filter matches *only* explicitly-`public` records; untagged data is treated as confidential, so a missing tag can't leak.
-- **Egress is opt-in and budget capped.** The local pipeline is fully self-contained. Cloud-LLM escalation and external CTI feeds are both off by default; when enabled, all egress is hard-capped per day (LLM by token cost, CTI by query count).
-- **One enforced boundary.** Every egress path — the intel queue, command escalation, finding narratives — routes through a single, centralized check ([`is_releasable` / `releasable_filter`](src/enrich/classification.py)), minimizing the risk of sprawl-induced drift.
+Prism's own weak points are enumerated rather than buried — the console ships with **no authentication** (which is why its systemd unit binds loopback), secrets live in `.env`, and the ad-hoc analyst query path is deliberately *not* classification-gated. All three, with mitigations and the reasoning, are in [SECURITY.md](SECURITY.md#known-limitations--read-before-deploying).
 
 ## Lessons Learned
 

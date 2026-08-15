@@ -206,7 +206,7 @@ Five timers, all serialised on `flock /var/lib/dshield_prism/.lock` (the manual
 |---|---|---|---|
 | `dshield_prism-forward.timer` | every 30 min | `healthcheck --scope llm` → `enrich` → `rollup sessions` → `rollup ips` | LLM down → unit fails, retries next cycle |
 | `dshield_prism-backward.timer` | every 6 h | full-corpus recompute: re-enrich/reembed stale → conditional re-pool → rollups → `cluster commands` → `reference-heal` → `assign_sessions` → `cluster sessions --novel-pool` → `cluster ips` → `prune-clusters` → `escalate` → `name playbooks` → `name ip-clusters` → `mine campaigns` → `track lifecycles` → `mine findings` | most steps soft-fail (log and continue). `mine findings` runs **last** so names + lifecycle snapshots exist before findings reference them |
-| `dshield_prism-recluster-full.timer` | weekly (Mon 03:30 UTC) | full all-time `assign_sessions` sweep (catches sessions that fell outside the 6h pass's 30-day window) → novel-pool re-cluster + reference refresh + retire dead anchors | a failed full pass marks the unit failed; aborts nothing else |
+| `dshield_prism-recluster-full.timer` | weekly (Mon 03:30 UTC) | full all-time `assign_sessions` sweep (catches sessions that fell outside the 6h pass's 30-day window) → novel-pool re-cluster + `name playbooks` (one flock hold; item 58: names the full-corpus clusters just minted, which the 6h chain's own windowed naming never sees) → IP re-cluster + reference refresh → retire dead anchors | a failed mint aborts the unit; a failed naming pass does not (soft, swallowed) |
 | `dshield_prism-grounding-coverage.timer` | daily (02:15 UTC) | `track grounding-coverage` (spec-grounding-precompute) — full `cowrie.commands` scan, classifies via `enrich.command_grounding`, overwrites the single report doc in `prism.metrics.grounding_coverage` that the console reads O(1) | hard-fail (no `-` prefix); last-good report doc stays in place so Health/Tune degrade gracefully, not to an error |
 | `dshield_prism-analytics.timer` | daily (04:15 UTC) | daily write-leaves split out of the 6h backward chain: `intel refresh` → `apply-artifact-rules` → `track threshold-distributions` → `mine file-crossref` — nothing reads their output same-cycle | all soft-fail (log and continue); failures surface in `prism.ops` |
 
@@ -215,6 +215,10 @@ full-corpus recomputes. The weekly full pass is the other half of the windowed-
 clustering hybrid: the 6 h cycle clusters a rolling 30-day window
 (`session.cluster_window_days`), the weekly pass re-pools the long tail and
 refreshes the reference-centroid set the windowed runs score novelty against.
+`name playbooks` follows the same split — it names whatever cluster run just
+completed, so each cadence (6h windowed, weekly full) calls it itself, right
+after its own mint, under the same `flock` hold (so neither cadence's naming
+call can race the other's and name the wrong run).
 The grounding-coverage timer is isolated on its own cadence rather than folded
 into forward/backward specifically because its full-corpus commands scan is
 expensive (spec-grounding-precompute; see `docs/decisions.md`).
@@ -258,6 +262,7 @@ most-used verbs:
 | `re-enrich-stale` | Re-call local LLM on docs whose `llm_config_hash` drifted |
 | `re-triage --backward [--window-days N]` | Re-evaluate `triage_reasons` against current rules (no LLM) |
 | `bless-cache` / `backfill-shape` | One-shot legacy-cache / shape-hash stamping |
+| `backfill-predicates [--dry-run]` | One-shot: stamp structural-predicate sub-signals (item 30) onto existing command docs. No LLM. Idempotent |
 
 ### Rollup + clustering (needs `.[cluster]` extras)
 | Verb | Does |
@@ -273,6 +278,7 @@ most-used verbs:
 | `escalate` | Cloud-escalate locally-enriched docs by novelty + confidence band |
 | `name playbooks [--force]` | Two-pass local-LLM naming for session clusters (never escalates) |
 | `name ip-clusters` | Annotate IP cluster centroids with their dominant playbook |
+| `backfill-anchor-signatures [--dry-run] [--per-anchor N] [--force]` | One-shot: stamp `predicate_signature` (item 30) onto existing `playbook_anchors` docs from member sessions. No LLM. Skips already-signed anchors unless `--force` |
 | `mine campaigns [--kind behaviour\|infrastructure\|all] [--window-days N]` | FP-growth + shared-artifact campaign miners |
 | `mine findings [--dry-run]` | Emit coverage / drift / discovery findings into `prism.finding` |
 | `track lifecycles [--dry-run]` | Snapshot per-run lifecycle state; retire long-silent artifacts |
