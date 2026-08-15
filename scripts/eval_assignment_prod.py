@@ -3,8 +3,16 @@ REAL pinned anchor library (a captured snapshot), the counterpart to
 `eval_production_scale.py` for the assignment era.
 
 Where `eval_assignment.py` builds coarse per-label prototypes (tests the algorithm),
-this assigns the labelled sessions to the *actual* 155-ish anchors and checks they cover
-and separate the analyst behaviours:
+this assigns the labelled sessions to the *actual* production anchors and checks they
+cover and separate the analyst behaviours:
+
+The snapshot's ceiling is the number of playbooks with at least `--min-public` public
+sessions, because `capture_anchor_snapshot.py` recomputes every centroid from public
+sessions only (the pinned production centroids are mixed-classification and cannot be
+committed). On a fully-public corpus that ceiling is the whole anchor library; on a mixed
+one it is a subset, and the gap — not any fixed target count — is what makes the geometry
+more or less representative. Read `n_anchors` in the report against the live anchor count
+rather than against a number in a docstring.
 
   * **assigned_rate** — labelled (all known-behaviour) sessions should mostly assign at
     the production τ; a high novel rate would mean anchor-coverage gaps.
@@ -82,10 +90,26 @@ def score_against_anchors(embs, labels, anchor_ids, anchor_mat, *,
 _GATED = ("assigned_rate", "homogeneity", "anchor_label_purity")
 
 
+def baseline_anchor_count_error(report: dict, baseline: dict | None) -> str | None:
+    if baseline is None or "n_anchors" not in baseline:
+        return None
+    baseline_n = baseline["n_anchors"]
+    current_n = report.get("n_anchors")
+    if baseline_n == current_n:
+        return None
+    return (
+        "Anchor snapshot/baseline mismatch: "
+        f"baseline n_anchors={baseline_n}, current n_anchors={current_n}. "
+        "The snapshot must be rebaselined. Re-capture the anchor snapshot if needed, "
+        "then rebaseline with "
+        "scripts/eval_assignment_prod.py --write-baseline."
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--labels", default="eval/labels.yaml")
-    ap.add_argument("--unlabeled", default="eval/sessions.unlabeled.jsonl")
+    ap.add_argument("--unlabeled", default="eval/sessions.unlabeled.jsonl.gz")
     ap.add_argument("--snapshot", default="eval/anchor-snapshot-v1.jsonl.gz")
     ap.add_argument("--baseline", default="eval/baseline-assignment-prod.json")
     ap.add_argument("--tau", type=float, default=0.94)
@@ -121,8 +145,11 @@ def main() -> int:
     if not args.no_json:
         print(json.dumps(report, indent=2))
     base = json.loads(Path(args.baseline).read_text()) if Path(args.baseline).exists() else None
+    count_error = baseline_anchor_count_error(report, base)
+    if count_error:
+        print(f"\n{count_error}")
     print(f"\n  {'metric':22}{'baseline':>10}{'current':>10}{'tol':>8}{'delta':>9}  status")
-    ok = True
+    ok = count_error is None
     for m in _GATED:
         cur = report.get(m)
         if base is None:

@@ -3,15 +3,27 @@
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
+import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # scripts/
 
-from capture_anchor_snapshot import centroid
-from eval_assignment_prod import score_against_anchors
+import capture_anchor_snapshot
+from capture_anchor_snapshot import (
+    anchor_row,
+    background_query_filters,
+    centroid,
+    cohort_is_informative,
+    explicitly_public_filters,
+    require_public_command_taxonomy,
+)
+from eval_assignment_prod import baseline_anchor_count_error, score_against_anchors
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -57,6 +69,20 @@ empty = score_against_anchors(embs, labels, [], np.zeros((0, 4), dtype=np.float3
 check("empty anchors → assigned_rate 0.0, homogeneity None",
       empty["assigned_rate"] == 0.0 and empty["homogeneity"] is None, str(empty))
 
+# --- baseline/snapshot anchor-count compatibility guard (pure; no snapshot file) ---
+current_report = {"n_anchors": 31}
+check("matching baseline n_anchors passes compatibility guard",
+      baseline_anchor_count_error(current_report, {"n_anchors": 31, "metrics": {}}) is None)
+stale_error = baseline_anchor_count_error(current_report, {"n_anchors": 19, "metrics": {}})
+check("stale baseline n_anchors fails compatibility guard",
+      stale_error is not None
+      and "baseline n_anchors=19" in stale_error
+      and "current n_anchors=31" in stale_error
+      and "rebaseline" in stale_error,
+      str(stale_error))
+check("legacy baseline without n_anchors preserves metric-gate behavior",
+      baseline_anchor_count_error(current_report, {"metrics": {}}) is None)
+
 # --- public-derived centroid math (capture_anchor_snapshot.centroid) ---
 import math  # noqa: E402
 
@@ -67,6 +93,140 @@ c = centroid([[1, 0], [0, 1]])
 check("centroid of orthogonal pair ~ [.707,.707]",
       abs(c[0] - math.sqrt(0.5)) < 1e-6 and abs(c[1] - math.sqrt(0.5)) < 1e-6, str(c))
 check("zero mean → returned as-is (no div-by-zero)", centroid([[0.0, 0.0]]) == [0.0, 0.0])
+
+# --- public command taxonomy guard (capture_anchor_snapshot, no ES) ---
+def taxonomy_error(taxonomy: dict[str, str]) -> str:
+    try:
+        require_public_command_taxonomy(taxonomy)
+    except ValueError as exc:
+        return str(exc)
+    return ""
+
+
+for name, taxonomy in (
+    ("empty", {}),
+    ("all-outlier", {"h1": "cluster_outlier", "h2": "cluster_outlier"}),
+    ("one-real-cluster", {"h1": "cluster_1", "h2": "cluster_outlier"}),
+):
+    error = taxonomy_error(taxonomy)
+    check(f"{name} public taxonomy fails closed with classify/rebuild remediation",
+          "lacks lexical diversity" in error and "Classify and rebuild" in error,
+          error)
+
+valid_taxonomy = {"h1": "cluster_1", "h2": "cluster_2", "h3": "cluster_outlier"}
+check("two real cluster IDs are accepted unchanged",
+      require_public_command_taxonomy(valid_taxonomy) is valid_taxonomy)
+
+fail_open_cfg = SimpleNamespace(
+    classification=SimpleNamespace(unclassified_is_confidential=False),
+)
+strict_filters = explicitly_public_filters(fail_open_cfg)
+check("capture filters require explicit public under fail-open config",
+      {"term": {"dshield.classification.keyword": "public"}} in strict_filters,
+      str(strict_filters))
+
+# --- background cohort selection + degeneracy guard (item 44b) ---
+_CMDSET_EXISTS = {"exists": {"field": "dshield.cowrie.enrichment.session.command_set"}}
+base_filters = [{"term": {"dshield.classification.keyword": "public"}}]
+bg_filters = background_query_filters(base_filters)
+check("background cohort requires a session that actually ran commands",
+      _CMDSET_EXISTS in bg_filters, str(bg_filters))
+check("background cohort keeps the caller's public filters ahead of the command clause",
+      bg_filters[: len(base_filters)] == base_filters, str(bg_filters))
+check("background_query_filters does not mutate the caller's list",
+      base_filters == [{"term": {"dshield.classification.keyword": "public"}}], str(base_filters))
+
+check("all-empty cohort is rejected (the observed 2000x cluster_empty capture)",
+      not cohort_is_informative(["cluster_empty"] * 2000))
+check("all-outlier cohort is rejected", not cohort_is_informative(["cluster_outlier"] * 50))
+check("one real token is not enough to express a document difference",
+      not cohort_is_informative(["cluster_7 cluster_7", "cluster_7 cluster_outlier"]))
+check("two distinct real tokens make the cohort informative",
+      cohort_is_informative(["cluster_7 cluster_outlier", "cluster_9 cluster_empty"]))
+check("empty cohort is not informative", not cohort_is_informative([]))
+
+# The expected taxonomy failure is handled at the CLI boundary before either
+# capture query or output path can be reached. Use pre-existing sentinel files
+# to prove every invalid shape leaves prior operator artifacts intact.
+def check_invalid_taxonomy_cli(name: str, taxonomy: dict[str, str]) -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        anchor_out = temp_path / "anchor.jsonl.gz"
+        background_out = temp_path / "background.jsonl.gz"
+        anchor_sentinel = b"anchor sentinel"
+        background_sentinel = b"background sentinel"
+        anchor_out.write_bytes(anchor_sentinel)
+        background_out.write_bytes(background_sentinel)
+        cfg = SimpleNamespace(
+            elasticsearch=SimpleNamespace(
+                indexes=SimpleNamespace(
+                    cowrie=SimpleNamespace(sessions_rollup="sessions", commands="commands"),
+                ),
+            ),
+        )
+        sampling_called = [False]
+
+        def unexpected_sampling(*args, **kwargs):
+            sampling_called[0] = True
+            raise AssertionError("invalid taxonomy must stop before session sampling")
+
+        replacements = {
+            "load_config": lambda config: cfg,
+            "load_secrets": lambda config: object(),
+            "make_client": lambda *args: object(),
+            "pull_hash_to_cluster": lambda *args, **kwargs: taxonomy,
+            "_public_playbook_ids": unexpected_sampling,
+            "_sample_sessions": unexpected_sampling,
+            "_sample_background_sessions": unexpected_sampling,
+        }
+        originals = {key: getattr(capture_anchor_snapshot, key) for key in replacements}
+        old_argv = sys.argv
+        stderr = io.StringIO()
+        try:
+            for key, replacement in replacements.items():
+                setattr(capture_anchor_snapshot, key, replacement)
+            sys.argv = [
+                "capture_anchor_snapshot.py", "--out", str(anchor_out),
+                "--background-out", str(background_out),
+            ]
+            with contextlib.redirect_stderr(stderr):
+                exit_code = capture_anchor_snapshot.main()
+        finally:
+            sys.argv = old_argv
+            for key, original in originals.items():
+                setattr(capture_anchor_snapshot, key, original)
+        check(f"{name} taxonomy CLI exits 2 before sampling without a traceback",
+              exit_code == 2 and not sampling_called[0] and "Traceback" not in stderr.getvalue(),
+              f"exit={exit_code}, stderr={stderr.getvalue()!r}")
+        check(f"{name} taxonomy CLI leaves existing anchor and background files unchanged",
+              anchor_out.read_bytes() == anchor_sentinel
+              and background_out.read_bytes() == background_sentinel,
+              f"anchor={anchor_out.read_bytes()!r}, background={background_out.read_bytes()!r}")
+
+
+for name, taxonomy in (
+    ("empty", {}),
+    ("all-outlier", {"h1": "cluster_outlier"}),
+    ("one-real-cluster", {"h1": "cluster_1", "h2": "cluster_outlier"}),
+):
+    check_invalid_taxonomy_cli(name, taxonomy)
+
+# --- anchor_row (capture_anchor_snapshot's pure per-anchor snapshot-row assembly) ---
+h2c = {"h1": "cluster_1", "h2": "cluster_2"}
+row = anchor_row("spb-A", [[1, 0], [1, 0]], [["h1", "h2"], ["h1"]], h2c, min_public=2)
+check("anchor_row bags pass through build_bag_texts unchanged",
+      row is not None and row["command_cluster_bags"]
+      == ["cluster_1 cluster_2", "cluster_1"], str(row))
+check("anchor_row keeps n_public_sessions == len(embs)",
+      row is not None and row["n_public_sessions"] == 2, str(row))
+
+below = anchor_row("spb-B", [[1, 0]], [["h1"]], h2c, min_public=2)
+check("anchor_row below min_public → None", below is None, str(below))
+
+empty_cs = anchor_row("spb-C", [[1, 0]], [[]], h2c, min_public=1)
+check("anchor_row empty command_set → cluster_empty token, no crash",
+      empty_cs is not None and empty_cs["command_cluster_bags"] == ["cluster_empty"],
+      str(empty_cs))
 
 print()
 print(f"=== {len(PASSED)} passed, {len(FAILED)} failed ===")
