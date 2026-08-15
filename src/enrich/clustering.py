@@ -1218,8 +1218,10 @@ def run_layer_clustering(
     # and the cross-run reference set all keep the full-dim `cluster_matrix`, so
     # the reference does NOT invalidate and the novel_embedding threshold is
     # unchanged — only the otherwise ~O(n²)-at-768-d label assignment runs in
-    # the cheaper reduced space. Command layer only (svd_dim>0); validated via
-    # scripts/sweep_command_svd.py.
+    # the cheaper reduced space. Shared by both callers when svd_dim>0: the
+    # command layer (commands.py, validated via scripts/sweep_command_svd.py)
+    # and the session layer (sessions.py, validated via
+    # scripts/sweep_session_svd.py) each pass their own `cluster_svd_dim`.
     fit_matrix = cluster_matrix
     if svd_dim and svd_dim > 0:
         log.info(

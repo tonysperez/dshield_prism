@@ -26,17 +26,20 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from ...clustering import compute_lexical_features
 from ...es_client import bulk_write
-from .assignment import ASSIGNED, NOVEL, assign_batch
-from .lexical import build_bag_texts, pull_hash_to_cluster
+from .assignment import ASSIGNED, NOVEL, compute_assignment_window
+from .lexical import (
+    build_bag_texts,
+    build_session_predicate_vectors,
+    pull_hash_to_cluster,
+    pull_hash_to_predicates,
+)
 
 _S = "dshield.cowrie.enrichment.session"
 _PB_FIELD = f"{_S}.playbook_id"
 _PBNAME_FIELD = f"{_S}.playbook_name"
 _EMB_FIELD = f"{_S}.embedding"
 _CMDSET_FIELD = f"{_S}.command_set"
-_BAG_SVD_COMPONENTS = 48
 
 
 def _sb(src: dict) -> dict:
@@ -85,20 +88,27 @@ def build_actions(ids: list[str], assignments: list, name_of: dict, now: str, *,
 # ES wiring
 # ---------------------------------------------------------------------------
 def _load_anchors(es, anch_idx):
+    """Returns `(ids, vecs, predicate_signatures)`: `predicate_signatures` (item 30) is
+    index-aligned with `ids`/`vecs`, each entry the anchor's `predicate_signature` dict
+    (a modal/frequency vector over the 7 structural predicates, see
+    `scripts/capture_anchor_snapshot.py:predicate_signature`) or `None` when the anchor
+    predates the feature / carries no signature."""
     import numpy as np
-    r = es.search(index=anch_idx, size=10000, _source=["playbook_id", "anchor_centroid"],
+    r = es.search(index=anch_idx, size=10000,
+                  _source=["playbook_id", "anchor_centroid", "predicate_signature"],
                   query={"exists": {"field": "anchor_centroid"}})
-    ids, vecs = [], []
+    ids, vecs, sigs = [], [], []
     for h in r["hits"]["hits"]:
         s = h["_source"]
         if s.get("anchor_centroid"):
             ids.append(s.get("playbook_id") or h["_id"])
             vecs.append(s["anchor_centroid"])
+            sigs.append(s.get("predicate_signature"))
     if not vecs:
-        return ids, np.zeros((0, 0), dtype=np.float32)
+        return ids, np.zeros((0, 0), dtype=np.float32), sigs
     m = np.array(vecs, dtype=np.float32)
     n = np.linalg.norm(m, axis=1, keepdims=True)
-    return ids, m / np.where(n == 0.0, 1.0, n)
+    return ids, m / np.where(n == 0.0, 1.0, n), sigs
 
 
 def _iter_scan(es, idx, filt, fields, page=2000):
@@ -182,18 +192,25 @@ def run_assignment(es, cfg, *, window_filter: list[dict], anchor_sample_filter: 
     """Assign the sessions matched by `window_filter` against the anchor library, with an
     in-batch TF-IDF fit for the band check. Writes (authoritative or shadow per
     `cfg.session.assignment_authoritative`) when `apply`. Returns a summary."""
-    import numpy as np
-
     sc = cfg.session
     authoritative = bool(getattr(sc, "assignment_authoritative", False))
     tau = float(getattr(sc, "assignment_tau", 0.94))
     confident_tau = float(getattr(sc, "assignment_confident_tau", 0.98))
     tfidf_tau = float(getattr(sc, "assignment_tfidf_tau", 0.80))
+    band_bypass_anchor_ids = {
+        normalized
+        for anchor_id in getattr(sc, "assignment_band_bypass_anchor_ids", [])
+        if (normalized := str(anchor_id).strip())
+    }
+    # Item 30 — below-tau structural-predicate rescue tier. Defaults equal to `tau` (a
+    # no-op): only when explicitly lowered below `tau` do we pay the extra
+    # `pull_hash_to_predicates` scan below.
+    rescue_tau = float(getattr(sc, "assignment_rescue_tau", tau))
     idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
     cmd_idx = cfg.elasticsearch.indexes.cowrie.commands
     anch_idx = cfg.elasticsearch.indexes.cowrie.playbook_anchors
 
-    anchor_ids, anchor_emb = _load_anchors(es, anch_idx)
+    anchor_ids, anchor_emb, anchor_predicate_signatures = _load_anchors(es, anch_idx)
     if anchor_emb.shape[0] == 0:
         return {"error": "no anchors", "authoritative": authoritative}
 
@@ -212,26 +229,24 @@ def run_assignment(es, cfg, *, window_filter: list[dict], anchor_sample_filter: 
             anc_sets.append(list(_sb(h["_source"]).get("command_set") or []))
             anc_pb.append(pb)
     h2c = pull_hash_to_cluster(es, cmd_idx)
-    n_anc = len(anc_sets)
-    tfidf_all = compute_lexical_features(build_bag_texts(anc_sets + win_sets, h2c),
-                                         n_components=_BAG_SVD_COMPONENTS)
-    has_tfidf = tfidf_all.shape[1] >= 2
-    anchor_tfidf: dict = {}
-    if has_tfidf:
-        ta = tfidf_all[:n_anc]
-        g = np.asarray(anc_pb)
-        for pb in dict.fromkeys(anc_pb):
-            m = ta[g == pb].mean(axis=0)
-            nn = np.linalg.norm(m)
-            anchor_tfidf[pb] = m / nn if nn > 0 else m
-    tfidf_win = tfidf_all[n_anc:]
-
-    def tfidf_cos(i, a):
-        c = anchor_tfidf.get(anchor_ids[a])
-        return float(tfidf_win[i] @ c) if (has_tfidf and c is not None) else None
-
-    res = assign_batch(W, anchor_emb, anchor_ids, tau=tau, confident_tau=confident_tau,
-                       tfidf_tau=tfidf_tau, tfidf_cos=tfidf_cos)
+    all_bags = build_bag_texts(anc_sets + win_sets, h2c)
+    # Item 30: only pull + fold predicate sub-signals when the rescue tier is actually
+    # active (rescue_tau < tau) — feature-off is a true no-op, no extra ES scan.
+    window_predicates = None
+    if rescue_tau < tau:
+        h2p = pull_hash_to_predicates(es, cmd_idx)
+        window_predicates = build_session_predicate_vectors(win_sets, h2p)
+    result = compute_assignment_window(
+        W, anchor_emb, anchor_ids,
+        all_bags[:len(anc_sets)], anc_pb, all_bags[len(anc_sets):],
+        tau=tau, confident_tau=confident_tau, tfidf_tau=tfidf_tau,
+        band_bypass_anchor_ids=band_bypass_anchor_ids,
+        rescue_tau=rescue_tau, window_predicates=window_predicates,
+        anchor_predicate_signatures=(
+            anchor_predicate_signatures if window_predicates is not None else None
+        ),
+    )
+    res = result.assignments
     now = datetime.now(timezone.utc).isoformat()
     name_of = (_resolve_names(es, idx, anchor_sample_filter,
                               {a.playbook_id for a in res if a.status == ASSIGNED})
@@ -240,7 +255,7 @@ def run_assignment(es, cfg, *, window_filter: list[dict], anchor_sample_filter: 
 
     from collections import Counter
     summary = {"authoritative": authoritative, "n_sessions": len(res),
-               "tfidf_available": has_tfidf,
+               "tfidf_available": result.tfidf_available,
                "status_counts": dict(Counter(a.status for a in res)),
                "written": 0, "errors": 0}
     if apply:

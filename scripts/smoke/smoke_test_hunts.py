@@ -905,7 +905,8 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "console" / "src"))
 
 try:
-    from fastapi.testclient import TestClient  # noqa: E402
+    import asyncio
+    import httpx
     from console import server as console_server  # noqa: E402
 except ImportError as exc:
     print(f"  SKIP  console routes — {exc} "
@@ -913,6 +914,36 @@ except ImportError as exc:
     console_server = None
 
 if console_server is not None:
+    import fastapi.routing as fastapi_routing
+
+    async def _run_sync_inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    fastapi_routing.run_in_threadpool = _run_sync_inline
+
+    class ASGIClient:
+        """Synchronous facade over httpx's async in-process ASGI transport."""
+        def __init__(self, app):
+            self.app = app
+
+        def request(self, method, path, **kwargs):
+            async def send():
+                transport = httpx.ASGITransport(app=self.app)
+                async with httpx.AsyncClient(
+                    transport=transport, base_url="http://testserver",
+                ) as client:
+                    return await client.request(method, path, **kwargs)
+            return asyncio.run(send())
+
+        def post(self, path, **kwargs):
+            return self.request("POST", path, **kwargs)
+
+        def put(self, path, **kwargs):
+            return self.request("PUT", path, **kwargs)
+
+        def delete(self, path, **kwargs):
+            return self.request("DELETE", path, **kwargs)
+
     # The routes log.exception() on the deliberate failures below; the
     # tracebacks are expected, so keep them out of the smoke output.
     logging.getLogger(console_server.__name__).setLevel(logging.CRITICAL)
@@ -934,7 +965,7 @@ if console_server is not None:
             app = console_server.build_app(str(REPO / "config" / "default.yaml"))
         finally:
             console_server.load_config = _real_load_config
-        client = TestClient(app)
+        client = ASGIClient(app)
 
         GOOD = {
             "id": "created-hunt",

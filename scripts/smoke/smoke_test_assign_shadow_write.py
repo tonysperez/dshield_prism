@@ -57,7 +57,12 @@ from enrich.config import SessionConfig  # noqa: E402
 sc = SessionConfig()
 check("assignment_tau default 0.94", sc.assignment_tau == 0.94, str(sc.assignment_tau))
 check("assignment_confident_tau default 0.98", sc.assignment_confident_tau == 0.98)
-check("assignment_tfidf_tau default 0.80", sc.assignment_tfidf_tau == 0.80)
+# 0.50 since item 62 (docs/decisions.md): the band's corpus-wide tfidf_cos
+# distribution is bimodal with an empty valley across 0.2-0.7; 0.80 sat inside the
+# upper mass and discarded ~2,382 checks as false conflations. This pin is
+# deliberate — changing it should require reading that entry first.
+check("assignment_tfidf_tau default 0.50", sc.assignment_tfidf_tau == 0.50,
+      str(sc.assignment_tfidf_tau))
 check("assignment_shadow_enabled default False", sc.assignment_shadow_enabled is False)
 
 print()

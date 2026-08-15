@@ -1,5 +1,5 @@
 {
-  "_comment": "Pinned playbook identity anchors. One write-once doc per `playbook_id` (`spb-<16hex>`), the document `_id`. `anchor_centroid` is the size-weighted, L2-normalised group centroid captured the first time the id was minted during the `name playbooks` pass — it is NEVER updated, so `_assign_playbook_id` matches against a fixed reference rather than a walking latest-centroid. This prevents transitive id chaining (A~B>=thr, B~C>=thr, A~C<thr collapsing under one id). `seed_playbook_id` records the membership hash that minted this anchor (audit trail). Created by `init-indexes --source cowrie`; populated as playbooks are named. Independent of the session_clusters index, so cluster-doc replacement across backward cycles can't move anchors.",
+  "_comment": "Pinned playbook identity anchors. One write-once doc per `playbook_id` (`spb-<16hex>`) normally, `_id == playbook_id`. `anchor_centroid` is the size-weighted, L2-normalised group centroid captured the first time the id was minted during the `name playbooks` pass — it is NEVER updated, so `_assign_playbook_id` matches against a fixed reference rather than a walking latest-centroid. This prevents transitive id chaining (A~B>=thr, B~C>=thr, A~C<thr collapsing under one id). `predicate_signature` (item 30) is a modal/frequency vector of the 7 structural predicates (src/enrich/sources/cowrie/predicates.py) over the anchor's member sessions, unindexed like `anchor_centroid` — read only by the below-tau rescue tier in assignment.py, never queried. `seed_playbook_id` records the membership hash that minted this anchor (audit trail). `is_satellite` (item 59, gated off by `anchor_satellite_minting_enabled`) marks a doc minted for an ALREADY-named `playbook_id` whose original anchor has drifted below `assignment_tau` of its own newer members — its `_id` is `<playbook_id>-sat-<8hex>` (distinct from `playbook_id`) so the index is no longer strictly one doc per id, but `_assign_playbook_id`/`assignment.py` already argmax over every loaded anchor and return the winning anchor's `playbook_id`, so satellites resolve identically to the primary on the read side. Created by `init-indexes --source cowrie`; populated as playbooks are named. Independent of the session_clusters index, so cluster-doc replacement across backward cycles can't move anchors.",
   "settings": {
     "number_of_shards": 1,
     "number_of_replicas": 0,
@@ -13,9 +13,14 @@
         "dims": 768,
         "index": false
       },
+      "predicate_signature": {
+        "type": "object",
+        "enabled": false
+      },
       "seed_playbook_id": { "type": "keyword" },
       "first_run_id":     { "type": "keyword" },
-      "first_seen":       { "type": "date" }
+      "first_seen":       { "type": "date" },
+      "is_satellite":     { "type": "boolean" }
     }
   }
 }

@@ -120,6 +120,21 @@
                       "scored_at":              { "type": "date" }
                     }
                   },
+                  "predicates": {
+                    "properties": {
+                      "has_uname_m":            { "type": "boolean" },
+                      "arch_tokens":            { "type": "text", "fields": { "keyword": { "type": "keyword" } } },
+                      "has_case_token":         { "type": "boolean" },
+                      "has_c2_launch":          { "type": "boolean" },
+                      "has_self_spread":        { "type": "boolean" },
+                      "is_appliance_verb":      { "type": "boolean" },
+                      "has_host_recon":         { "type": "boolean" },
+                      "has_key_write":          { "type": "boolean" },
+                      "has_immutability":       { "type": "boolean" },
+                      "has_multi_dir_cd":       { "type": "boolean" },
+                      "has_multi_tool_fallback": { "type": "boolean" }
+                    }
+                  },
                   "shape": {
                     "properties": {
                       "hash":                  { "type": "keyword" },

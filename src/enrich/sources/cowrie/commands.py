@@ -35,6 +35,7 @@ from ...es_client import bulk_write, make_client
 from ...llm import make_llm_client
 from ...llm.schemas import CommandEnrichment, CloudCommandEnrichment
 from ... import triage as triage_mod
+from .predicates import SUBSIGNAL_NAMES, command_subsignals
 
 log = logging.getLogger(__name__)
 
@@ -176,6 +177,19 @@ _BACKFILL_SHAPE_SCRIPT = (
     "en.shape.role = params.role;"
     "en.shape.linked_at = params.linked_at;"
     "if (params.confidence_at_link != null) { en.shape.confidence_at_link = params.confidence_at_link; }"
+)
+
+# Painless: backfill the `predicates` block (item 30) on an existing doc — the
+# same null-guard style as `_BACKFILL_SHAPE_SCRIPT`. Used by `backfill-predicates`
+# (item 51a) to retroactively stamp structural-predicate sub-signals onto commands
+# enriched before that feature shipped. Overwrites `predicates` wholesale (it's
+# derived purely from the stored `process.command_line`, so there's no partial-
+# merge concern the way there is for LLM-derived fields).
+_BACKFILL_PREDICATES_SCRIPT = (
+    "if (ctx._source.dshield == null) { ctx._source.dshield = [:]; }"
+    "if (ctx._source.dshield.cowrie == null) { ctx._source.dshield.cowrie = [:]; }"
+    "if (ctx._source.dshield.cowrie.enrichment == null) { ctx._source.dshield.cowrie.enrichment = [:]; }"
+    "ctx._source.dshield.cowrie.enrichment.predicates = params.predicates;"
 )
 
 # Painless: re-enrich a child via the inherit path. Overwrites the LLM-
@@ -416,6 +430,7 @@ def _build_ecs_doc(
     shape: Optional[dict] = None,
     analyst_artifacts: Optional[list[dict]] = None,
     classification: Optional[str] = None,
+    predicates: Optional[dict] = None,
 ) -> dict:
     enrichment_block = {
         "intent": intent,
@@ -429,6 +444,12 @@ def _build_ecs_doc(
         "command_truncated": truncated,
         "embedding": embedding,
     }
+    if predicates is not None:
+        # Item 30 — structural-predicate sub-signals (see .predicates). Always
+        # computed at write time going forward; written unconditionally (unlike
+        # analyst_artifacts/shape below) so "no predicate fired" is distinguishable
+        # from "not yet computed" for commands enriched before this feature shipped.
+        enrichment_block["predicates"] = predicates
     if triage_reasons:
         enrichment_block["triage_reasons"] = triage_reasons
     if notes:
@@ -1294,6 +1315,7 @@ def run_enrich(
                 # command's literals via the regex extractor.
                 indicators = _build_indicators(extract_iocs_regex(g["command"]))
                 analyst_artifacts = _apply_rules(g["command"], analyst_rules, cap=analyst_cap)
+                predicates = command_subsignals(g["command"])
 
                 shape_block = {
                     "hash": sh,
@@ -1326,6 +1348,7 @@ def run_enrich(
                     shape=shape_block,
                     analyst_artifacts=analyst_artifacts,
                     classification=g["classification"],
+                    predicates=predicates,
                 )
                 actions.append({"_op_type": "index", "_id": h, "_source": doc})
                 # Stamp the child cache row with the parent's llm hash so
@@ -1503,6 +1526,7 @@ def run_enrich(
                 }
 
             analyst_artifacts = _apply_rules(g["command"], analyst_rules, cap=analyst_cap)
+            predicates = command_subsignals(g["command"])
             doc = _build_ecs_doc(
                 now=now,
                 short_hash=h,
@@ -1529,6 +1553,7 @@ def run_enrich(
                 shape=shape_block_canon,
                 analyst_artifacts=analyst_artifacts,
                 classification=g["classification"],
+                predicates=predicates,
             )
             actions.append({"_op_type": "index", "_id": h, "_source": doc})
             if doc_provider in ("local", "claude"):
@@ -2146,6 +2171,133 @@ def run_backfill_shape(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
         es.indices.refresh(index=commands_idx)
     except Exception as exc:
         log.warning("backfill-shape refresh failed (continuing): %s", exc)
+
+    return dict(stats, dry_run=dry_run)
+
+
+# ---------------------------------------------------------------------------
+# Predicate backfill (item 51a — offline catch-up for item 30's structural
+# predicates, which only ever wrote on the `enrich` hot path)
+# ---------------------------------------------------------------------------
+
+def predicate_backfill_query() -> dict:
+    """Pure query-builder for `iter_docs_for_predicate_backfill`'s existence
+    filter: `process.command_line` exists AND NOT exists the first predicate
+    sub-signal field. Split out (mirroring `backfill_classification.py`'s
+    `build_backfill_query`) so the filter shape is smoke-testable without ES.
+
+    Any one `SUBSIGNAL_NAMES` field works as the "already stamped" probe —
+    `command_subsignals` always writes them together — so this references the
+    first name rather than a hardcoded literal, same convention as
+    `lexical.pull_hash_to_predicates`."""
+    base = "dshield.cowrie.enrichment.predicates"
+    return {"bool": {
+        "filter": [{"exists": {"field": "process.command_line"}}],
+        "must_not": [{"exists": {"field": f"{base}.{SUBSIGNAL_NAMES[0]}"}}],
+    }}
+
+
+def iter_docs_for_predicate_backfill(
+    es: Elasticsearch,
+    index: str,
+    page_size: int = 500,
+) -> Iterator[dict]:
+    """Yield {doc_id, command_line} for every commands-index doc that has a
+    command line but no structural-predicate sub-signals yet.
+
+    The existence filter (`predicate_backfill_query`) makes a re-run a
+    natural no-op: once a doc is stamped it drops out of the scan on the very
+    next pass, without needing `run_backfill_shape`'s recompute-and-compare
+    (`detect_noop`) style — predicate sub-signals never change once computed
+    from the same stored command text.
+
+    Yields a doc even when `command_line` is present-but-empty (an ES
+    `exists` match with `""` as the value) — `command_subsignals("")` is a
+    well-defined all-False result, and stamping it is what drops the doc out
+    of the `must_not` filter on the next pass. Skipping it here instead would
+    leave it matching the existence filter forever, silently breaking the
+    "second run touches zero docs" idempotency guarantee for that doc.
+    """
+    body: dict = {
+        "size": page_size,
+        "_source": ["process.command_line"],
+        "query": predicate_backfill_query(),
+        "sort": [{"@timestamp": "asc"}, {"_doc": "asc"}],
+    }
+    search_after = None
+    while True:
+        if search_after:
+            body["search_after"] = search_after
+        resp = es.search(index=index, **body)
+        hits = resp["hits"]["hits"]
+        if not hits:
+            return
+        for h in hits:
+            src = h["_source"]
+            cmd = (src.get("process") or {}).get("command_line") or ""
+            yield {"doc_id": h["_id"], "command_line": cmd}
+        search_after = hits[-1]["sort"]
+
+
+def run_backfill_predicates(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) -> dict:
+    """Stamp `enrichment.predicates.*` (item 30) on every existing commands doc
+    that doesn't carry it yet — a one-shot admin op for the 18,589+ command
+    docs written before the predicate precompute shipped (item 51a). Mirrors
+    `run_backfill_shape` exactly: no LLM, no embedding, pure regex over the
+    already-stored `process.command_line` via `.predicates.command_subsignals`,
+    200-doc bulk batches, refresh at the end.
+
+    Idempotent by construction: `iter_docs_for_predicate_backfill`'s existence
+    filter drops a doc from the scan the moment it's stamped, so a second run
+    naturally touches zero docs (no `--force` needed, unlike `backfill-shape`,
+    since predicate sub-signals are a pure deterministic function of stored
+    text and never need re-deriving).
+
+    No `releasable_filter` — matches the existing production-hot-path
+    convention (see `lexical.pull_hash_to_cluster`'s documented omission):
+    predicates are local structural booleans, never cloud/CTI-bound.
+    """
+    es = make_client(cfg.elasticsearch, secrets)
+    commands_idx = cfg.elasticsearch.indexes.cowrie.commands
+
+    log.info("backfill-predicates: index=%s dry_run=%s", commands_idx, dry_run)
+
+    stats: dict = defaultdict(int)
+    actions: list[dict] = []
+
+    for doc in iter_docs_for_predicate_backfill(es, commands_idx):
+        stats["docs_seen"] += 1
+        subsignals = command_subsignals(doc["command_line"])
+        stats["predicates_stamped"] += 1
+        if dry_run:
+            continue
+        actions.append({
+            "_op_type": "update",
+            "_id": doc["doc_id"],
+            "script": {
+                "source": _BACKFILL_PREDICATES_SCRIPT,
+                "params": {"predicates": subsignals},
+            },
+        })
+        if len(actions) >= 200:
+            ok, errs = bulk_write(es, commands_idx, actions)
+            stats["bulk_ok"] += ok
+            stats["bulk_errors"] += len(errs)
+            if errs:
+                log.warning("backfill-predicates bulk errors (%d): %s", len(errs), errs[:2])
+            actions = []
+
+    if actions:
+        ok, errs = bulk_write(es, commands_idx, actions)
+        stats["bulk_ok"] += ok
+        stats["bulk_errors"] += len(errs)
+        if errs:
+            log.warning("backfill-predicates bulk errors (%d): %s", len(errs), errs[:2])
+
+    try:
+        es.indices.refresh(index=commands_idx)
+    except Exception as exc:
+        log.warning("backfill-predicates refresh failed (continuing): %s", exc)
 
     return dict(stats, dry_run=dry_run)
 

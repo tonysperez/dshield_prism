@@ -1076,6 +1076,49 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true",
         help="Count docs that would be stamped without writing.")
 
+    # backfill-predicates — one-shot admin op. Stamps `predicates.*` (item 30's
+    # structural-predicate sub-signals) on every existing command doc, so the
+    # below-tau rescue tier has evidence for commands enriched before that
+    # feature shipped. No LLM. No embedding. spec-51a.
+    p_backfill_predicates = sub.add_parser(
+        "backfill-predicates",
+        help=(
+            "Stamp structural-predicate sub-signals (item 30) onto every "
+            "commands doc that doesn't have them yet. No LLM. Idempotent — "
+            "the existence-filter query makes a re-run a natural no-op. "
+            "spec-51a."
+        ),
+    )
+    p_backfill_predicates.add_argument(
+        "--source", default="cowrie", help="Source name (default: cowrie)")
+    p_backfill_predicates.add_argument(
+        "--dry-run", action="store_true",
+        help="Count docs that would be stamped without writing.")
+
+    # backfill-anchor-signatures — one-shot admin op. Stamps `predicate_signature`
+    # (item 30's anchor-side modal/frequency vector) onto every existing
+    # `playbook_anchors` doc from its member sessions. No LLM. No embedding.
+    # spec-51b.
+    p_backfill_anchor_sigs = sub.add_parser(
+        "backfill-anchor-signatures",
+        help=(
+            "Stamp `predicate_signature` (item 30) onto every playbook_anchors "
+            "doc from its member sessions. No LLM. Idempotent — already-signed "
+            "anchors are skipped unless --force. spec-51b."
+        ),
+    )
+    p_backfill_anchor_sigs.add_argument(
+        "--source", default="cowrie", help="Source name (default: cowrie)")
+    p_backfill_anchor_sigs.add_argument(
+        "--dry-run", action="store_true",
+        help="Count anchors that would be stamped without writing.")
+    p_backfill_anchor_sigs.add_argument(
+        "--per-anchor", type=int, default=500,
+        help="Member sessions sampled per anchor (default: 500).")
+    p_backfill_anchor_sigs.add_argument(
+        "--force", action="store_true",
+        help="Recompute + overwrite anchors that already carry a predicate_signature.")
+
     # prune-clusters — scale-hardening P2.1. Cap each cluster index by keeping
     # only the newest --keep-runs runs' cluster + run_summary docs; delete the
     # rest. reference_centroid generations are always preserved. Also wired
@@ -1742,6 +1785,31 @@ def _dispatch_verb(args, cfg, secrets) -> int:
             log.error("Source %r has no commands layer", args.source)
             return 1
         stats = mod.run_backfill_shape(cfg, secrets, dry_run=args.dry_run)
+        print(json.dumps(stats, indent=2, default=str))
+        return 0
+
+    if args.verb == "backfill-predicates":
+        mod = _commands_layer(args.source)
+        if mod is None:
+            log.error("Source %r has no commands layer", args.source)
+            return 1
+        stats = mod.run_backfill_predicates(cfg, secrets, dry_run=args.dry_run)
+        print(json.dumps(stats, indent=2, default=str))
+        return 0
+
+    if args.verb == "backfill-anchor-signatures":
+        mod = _load_source_layer(args.source, "sessions")
+        if mod is None:
+            log.error("Source %r has no `sessions` layer", args.source)
+            return 1
+        try:
+            stats = mod.run_backfill_anchor_signatures(
+                cfg, secrets, dry_run=args.dry_run,
+                per_anchor=args.per_anchor, force=args.force,
+            )
+        except ValueError as exc:
+            log.error("%s", exc)
+            return 1
         print(json.dumps(stats, indent=2, default=str))
         return 0
 

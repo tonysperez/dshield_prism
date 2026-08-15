@@ -34,6 +34,8 @@ from ...llm.schemas import (
     PlaybookName,
 )
 from .commands import hash_command, normalize
+from .lexical import build_session_predicate_vectors
+from .predicates import predicate_signature as _compute_predicate_signature
 
 log = logging.getLogger(__name__)
 
@@ -256,6 +258,42 @@ def _playbook_group_centroid(member_docs: list[dict]) -> Optional["np.ndarray"]:
 # ===========================================================================
 
 _SESSION_CLUSTER_ID_FIELD = "dshield.cowrie.enrichment.session.cluster.id"
+
+
+def effective_novel_pool_min_cluster_size(
+    scfg: SessionConfig,
+    *,
+    novel_pool_only: bool,
+) -> int:
+    """Resolve the session HDBSCAN floor for the novel-pool-only minting path.
+
+    Normal session clustering, external bootstrap, command clustering and IP
+    clustering keep their existing layer defaults. The override is validated
+    here as well as in config loading so standalone diagnostic callers fail
+    before fitting HDBSCAN if handed a malformed config-like object.
+    """
+    if int(scfg.cluster_min_cluster_size) != scfg.cluster_min_cluster_size:
+        raise ValueError("session.cluster_min_cluster_size must be an integer")
+    normal = int(scfg.cluster_min_cluster_size)
+    if normal < 2:
+        raise ValueError("session.cluster_min_cluster_size must be at least 2")
+    rare = getattr(scfg, "novel_pool_cluster_min_cluster_size", None)
+    if rare in (None, 0):
+        return normal
+    if int(rare) != rare:
+        raise ValueError("session.novel_pool_cluster_min_cluster_size must be an integer")
+    rare = int(rare)
+    if rare < 2:
+        raise ValueError(
+            "session.novel_pool_cluster_min_cluster_size must be 0/disabled "
+            "or at least 2; singleton minting is out of scope",
+        )
+    if rare > normal:
+        raise ValueError(
+            "session.novel_pool_cluster_min_cluster_size must be less than "
+            "or equal to session.cluster_min_cluster_size",
+        )
+    return rare if novel_pool_only else normal
 _SESSION_COMMAND_SET_FIELD = "dshield.cowrie.enrichment.session.command_set.keyword"
 
 
@@ -412,27 +450,287 @@ def _load_playbook_anchors(
     return anchors
 
 
+def _playbook_anchor_doc(
+    playbook_id: str, unit: "np.ndarray", seed_id: str, run_id: str,
+    predicate_signature: dict[str, float] | None = None,
+    is_satellite: bool = False,
+) -> dict:
+    """Pure ES-document builder for `_persist_playbook_anchor` (item 51c), split
+    out so the doc shape is smoke-testable without a live `es.index` call.
+    `predicate_signature` defaults to the all-zero signature
+    (`predicates.predicate_signature([])`) rather than being omitted — the
+    field must always be present on a freshly-minted anchor, even when the
+    caller has no member-session evidence to pass (e.g. a pure-seed mint with
+    no usable centroid), so downstream readers never have to special-case
+    'not yet computed' vs. 'genuinely no evidence'.
+
+    `is_satellite` (item 59) marks a doc minted for an ALREADY-named playbook_id
+    whose original anchor has drifted — see `_mint_satellite_anchor_id`. Always
+    present (not omitted when False) so a reader never has to special-case a
+    missing field vs. an honest primary anchor."""
+    from datetime import datetime, timezone
+    return {
+        "playbook_id": playbook_id,
+        "anchor_centroid": [float(x) for x in unit],
+        "seed_playbook_id": seed_id,
+        "first_run_id": run_id,
+        "first_seen": datetime.now(timezone.utc).isoformat(),
+        "predicate_signature": (
+            predicate_signature if predicate_signature is not None
+            else _compute_predicate_signature([])
+        ),
+        "is_satellite": is_satellite,
+    }
+
+
+def _mint_satellite_anchor_id(playbook_id: str, seed_id: str) -> str:
+    """Deterministic `_id` (item 59) for a satellite anchor doc that shares an
+    already-minted `playbook_id` — re-running the same drifted membership
+    through `_persist_playbook_anchor` overwrites the same doc rather than
+    duplicating it, mirroring the primary mint's `_id = playbook_id`
+    idempotency. Embeds the incumbent id so `playbook_anchors` stays
+    eyeball-auditable, and the literal `-sat-` marker never collides with a
+    primary `spb-<16hex>` id (`_mint_playbook_id` never emits it)."""
+    digest = hashlib.sha256(seed_id.encode("utf-8")).hexdigest()
+    return f"{playbook_id}-sat-{digest[:8]}"
+
+
 def _persist_playbook_anchor(
     es: Elasticsearch, anchor_idx: str, playbook_id: str,
     unit: "np.ndarray", seed_id: str, run_id: str,
+    predicate_signature: dict[str, float] | None = None,
+    anchor_id: str | None = None,
+    is_satellite: bool = False,
 ) -> None:
     """Pin the centroid of a freshly-minted playbook id. Idempotent on
-    `_id = playbook_id`: re-running the same membership through a clean
-    anchor index overwrites with the same centroid rather than
-    duplicating. Called only on a mint (no anchor matched), never on
-    reuse — the anchor stays fixed for the id's lifetime."""
-    from datetime import datetime, timezone
+    `_id = anchor_id or playbook_id`: re-running the same membership through a
+    clean anchor index overwrites with the same centroid rather than
+    duplicating. For a PRIMARY anchor (`anchor_id` omitted), called only on a
+    mint (no anchor matched), never on reuse — that anchor stays fixed for the
+    id's lifetime. A satellite call (see below) is the one deliberate
+    exception: it targets an already-named, already-anchored `playbook_id`,
+    but writes a distinct doc `_id` rather than reusing/overwriting the
+    primary's — the primary's own centroid is still never touched.
+
+    `predicate_signature` (item 30/51c) is the modal/frequency vector sampled
+    over the minted group's member sessions (see `_sample_predicate_vectors`);
+    see `_playbook_anchor_doc` for the never-missing default.
+
+    `anchor_id`/`is_satellite` (item 59): a satellite anchor for an
+    already-named, drifted playbook passes a distinct `anchor_id` (see
+    `_mint_satellite_anchor_id`) so its doc's `_id` differs from `playbook_id`
+    while the `playbook_id` field itself stays the incumbent id — `assignment.py`
+    and `_assign_playbook_id` already argmax over every loaded anchor and return
+    the winning anchor's `playbook_id`, so two docs sharing one `playbook_id`
+    resolve identically on the read side with no matching-code change. Omitting
+    both keeps the primary-mint call site byte-identical to before item 59."""
     es.index(
         index=anchor_idx,
-        id=playbook_id,
-        document={
-            "playbook_id": playbook_id,
-            "anchor_centroid": [float(x) for x in unit],
-            "seed_playbook_id": seed_id,
-            "first_run_id": run_id,
-            "first_seen": datetime.now(timezone.utc).isoformat(),
-        },
+        id=anchor_id or playbook_id,
+        document=_playbook_anchor_doc(
+            playbook_id, unit, seed_id, run_id, predicate_signature, is_satellite,
+        ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Predicate-signature sampling (item 51b/c) — shared by the anchor-signature
+# backfill and the mint-time anchor write.
+# ---------------------------------------------------------------------------
+
+_SESSION_PLAYBOOK_ID_FIELD = "dshield.cowrie.enrichment.session.playbook_id"
+_SESSION_COMMAND_SET_PLAIN_FIELD = "dshield.cowrie.enrichment.session.command_set"
+_COMMAND_PREDICATES_FIELD = "dshield.cowrie.enrichment.predicates"
+_SESSION_ASSIGNMENT_STATUS_FIELD = "dshield.cowrie.enrichment.session.cluster.assignment_status"
+
+
+def _sample_predicate_vectors(
+    es: Elasticsearch,
+    sessions_idx: str,
+    commands_idx: str,
+    playbook_id: str,
+    n: int,
+    *,
+    session_ids: Iterable[str] | None = None,
+) -> dict[str, float]:
+    """Predicate-signature sample shared by `run_backfill_anchor_signatures`
+    (item 51b) and the mint call site in `run_name_playbooks` (item 51c).
+
+    Default mode (`session_ids=None`): terms-query `sessions_idx` for up to
+    `n` sessions already tagged `session.playbook_id == playbook_id` — the
+    anchor-signature backfill's case, where corpus sessions carry the id from
+    a prior naming run.
+
+    `session_ids=` override: sample from this explicit id list instead of
+    querying by playbook_id. The mint call site needs this — at mint time
+    (`sessions.py` around the `_persist_playbook_anchor` call) the group's
+    member sessions (`cov_sids`) have NOT been stamped with the brand-new
+    `playbook_id` yet (`_apply_playbook_name` writes that afterwards), so a
+    term-query on the fresh id would always see zero rows. `session_ids` are
+    RAW `cowrie.session_id` values (as `cov_sids` are), not the rollup `_id`
+    — the rollup `_id` is sensor-namespaced (P6.2 / D3) — so this path queries
+    by the `cowrie.session_id` field, matching `_fetch_ioc_coverage`'s
+    documented convention, not an `mget` by `_id`.
+
+    Either way: pull each sampled session's `command_set`, `mget` only the
+    *referenced* command hashes from `commands_idx` (not
+    `lexical.pull_hash_to_predicates`'s full-index scan — see the spec's
+    Design Notes), fold via `lexical.build_session_predicate_vectors`, and
+    return the modal/frequency `predicates.predicate_signature` over the
+    sample. No sessions (or no evidence) -> the all-zero signature
+    (fail-closed, matching `predicate_signature([])`).
+
+    The `playbook_id` branch randomizes via ES `random_score` before capping
+    at `n` — an anchor with more member sessions than `n` must not always
+    sample the same (ES-default-order, typically earliest-indexed) subset,
+    or the modal frequency the below-tau rescue tier reads would be
+    systematically skewed rather than representative.
+    """
+    if session_ids is not None:
+        sids = list(session_ids)[:n] if n > 0 else []
+        command_sets = []
+        if sids:
+            resp = es.search(
+                index=sessions_idx,
+                size=min(len(sids), 10000),
+                _source=[_SESSION_COMMAND_SET_PLAIN_FIELD],
+                query={"terms": {"cowrie.session_id": sids}},
+            )
+            command_sets = [
+                list(deep_get(h["_source"], _SESSION_COMMAND_SET_PLAIN_FIELD) or [])
+                for h in resp["hits"]["hits"]
+            ]
+    else:
+        resp = es.search(
+            index=sessions_idx,
+            size=min(n, 10000) if n > 0 else 0,
+            _source=[_SESSION_COMMAND_SET_PLAIN_FIELD],
+            query={"function_score": {
+                "query": {"term": {_SESSION_PLAYBOOK_ID_FIELD: playbook_id}},
+                "random_score": {},
+            }},
+        )
+        command_sets = [
+            list(deep_get(h["_source"], _SESSION_COMMAND_SET_PLAIN_FIELD) or [])
+            for h in resp["hits"]["hits"]
+        ]
+
+    hashes = sorted({h for cs in command_sets for h in cs})
+    hash_source = fetch_source_subset(es, commands_idx, hashes, [_COMMAND_PREDICATES_FIELD])
+    hash_to_predicates = {
+        h: (deep_get(src, _COMMAND_PREDICATES_FIELD) or {}) for h, src in hash_source.items()
+    }
+    vectors = build_session_predicate_vectors(command_sets, hash_to_predicates)
+    return _compute_predicate_signature(vectors)
+
+
+def _anchor_signature_present(existing: dict | None) -> bool:
+    """True when a `playbook_anchors` doc already carries a (non-empty)
+    `predicate_signature` dict — the `--force`-gated skip condition for
+    `run_backfill_anchor_signatures`. Any non-empty dict counts as
+    'already signed', including an honestly all-zero one (e.g. a mint with
+    zero command evidence, or a prior backfill pass): `_persist_playbook_anchor`
+    always writes *something* once item 51c ships, so 'present' means
+    'already computed', not 'nonzero'."""
+    return isinstance(existing, dict) and bool(existing)
+
+
+def _should_backfill_anchor_signature(existing: dict | None, force: bool) -> bool:
+    """Pure skip/recompute decision for one anchor: recompute when forced, or
+    when it doesn't already carry a signature."""
+    return force or not _anchor_signature_present(existing)
+
+
+def _iter_playbook_anchors(es: Elasticsearch, anchor_idx: str, page_size: int = 2000):
+    """Yield every `playbook_anchors` hit carrying `playbook_id`, paginated via
+    `search_after` (mirrors `iter_docs_for_predicate_backfill`'s pattern) rather
+    than a single `size=10000` request — a hard-capped single page silently
+    drops every anchor past 10,000 with no truncation warning, a real cliff
+    given this project's stated multi-sensor/multi-year scale target."""
+    body: dict = {
+        "size": page_size,
+        "query": {"exists": {"field": "playbook_id"}},
+        "_source": ["playbook_id", "predicate_signature"],
+        "sort": [{"_doc": "asc"}],
+    }
+    search_after = None
+    while True:
+        if search_after:
+            body["search_after"] = search_after
+        resp = es.search(index=anchor_idx, **body)
+        hits = resp["hits"]["hits"]
+        if not hits:
+            return
+        yield from hits
+        search_after = hits[-1]["sort"]
+
+
+def run_backfill_anchor_signatures(
+    cfg: AppConfig, secrets: Secrets, dry_run: bool = False,
+    per_anchor: int = 500, force: bool = False,
+) -> dict:
+    """Stamp `predicate_signature` (item 30) onto every existing
+    `playbook_anchors` doc from its member sessions — a one-shot admin op
+    (item 51b) for the 30 live anchors minted before item 30/51c shipped.
+    `_persist_playbook_anchor` only writes the field on a NEW mint going
+    forward; this backfill catches up everything minted before that.
+
+    No LLM, no embedding — reads `sessions_idx` sub-signals only, via
+    `_sample_predicate_vectors`. Idempotent: an anchor already carrying a
+    (non-empty) `predicate_signature` is skipped unless `--force`
+    (`_should_backfill_anchor_signature`).
+
+    Raises `ValueError` for `per_anchor <= 0` before touching ES: a
+    non-positive sample size makes `_sample_predicate_vectors` return the
+    all-zero signature for every anchor regardless of real member-session
+    evidence, and once written that all-zero signature reads as "already
+    signed" (`_anchor_signature_present`) — silently and permanently
+    corrupting every anchor touched unless the operator remembers `--force`.
+    """
+    if per_anchor <= 0:
+        raise ValueError(
+            f"per_anchor must be positive, got {per_anchor!r} — a non-positive "
+            "sample size would silently stamp every anchor with a bogus "
+            "all-zero predicate_signature",
+        )
+    es = make_client(cfg.elasticsearch, secrets)
+    anchor_idx = cfg.elasticsearch.indexes.cowrie.playbook_anchors
+    sessions_idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
+    commands_idx = cfg.elasticsearch.indexes.cowrie.commands
+
+    log.info(
+        "backfill-anchor-signatures: index=%s per_anchor=%d force=%s dry_run=%s",
+        anchor_idx, per_anchor, force, dry_run,
+    )
+
+    stats: dict = defaultdict(int)
+    for h in _iter_playbook_anchors(es, anchor_idx):
+        stats["anchors_seen"] += 1
+        src = h["_source"]
+        pid = src.get("playbook_id") or h.get("_id")
+        if not pid:
+            stats["errors"] += 1
+            continue
+        if not _should_backfill_anchor_signature(src.get("predicate_signature"), force):
+            stats["anchors_skipped_existing"] += 1
+            continue
+        try:
+            sig = _sample_predicate_vectors(es, sessions_idx, commands_idx, pid, per_anchor)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("backfill-anchor-signatures: failed for %s: %s", pid, exc)
+            stats["errors"] += 1
+            continue
+        stats["anchors_stamped"] += 1
+        if dry_run:
+            continue
+        try:
+            es.update(index=anchor_idx, id=h["_id"], doc={"predicate_signature": sig})
+        except Exception as exc:  # noqa: BLE001
+            log.warning("backfill-anchor-signatures: write failed for %s: %s", pid, exc)
+            stats["errors"] += 1
+            stats["anchors_stamped"] -= 1
+
+    return dict(stats, dry_run=dry_run)
 
 
 def _assign_playbook_id(
@@ -451,6 +749,55 @@ def _assign_playbook_id(
         if float(sims[j]) >= threshold:
             return anchors[j][1]
     return _mint_playbook_id(seed_id)
+
+
+# ---------------------------------------------------------------------------
+# Satellite anchors (item 59) — write-once anchor drift remedy.
+# ---------------------------------------------------------------------------
+
+
+def _anchor_drift_fraction(drifted: int, total: int) -> float:
+    """Fraction of an already-named playbook's members that carry its
+    `playbook_id` yet replay as assignment-novel. `total == 0` returns 0.0
+    (fail-closed toward "don't mint" — no evidence is not drift evidence).
+    Clamped to `[0.0, 1.0]`: `_measure_anchor_drift` takes `total` and
+    `drifted` as two sequential, unsynchronized `es.count` calls against a
+    live-ingesting index, so a concurrent write between them could otherwise
+    surface `drifted > total`."""
+    if total <= 0:
+        return 0.0
+    return max(0.0, min(1.0, drifted / total))
+
+
+def _should_mint_satellite(drifted: int, total: int, threshold: float) -> bool:
+    """Pure decision core for `run_name_playbooks`'s already-named branch
+    (item 59): mint a satellite anchor only when there is at least one member
+    to measure and the drift fraction meets the configured threshold."""
+    return total > 0 and _anchor_drift_fraction(drifted, total) >= threshold
+
+
+def _measure_anchor_drift(es: Elasticsearch, sessions_idx: str, playbook_id: str) -> tuple[int, int]:
+    """Count `(drifted, total)` for an already-named playbook: `total` is every
+    session carrying `playbook_id`, `drifted` is the subset whose latest
+    assignment-path replay calls them novel (`cluster.assignment_status ==
+    "novel"`) despite the naming path still recognising them. Same fields and
+    method as Finding 45's production measurement (1,242/5,628 = 22% on
+    `spb-afafb73ec79a60cb`) — reused rather than re-cosining sessions here, so
+    this can never disagree with what `assign_runner` itself just wrote."""
+    total = es.count(
+        index=sessions_idx,
+        query={"term": {_SESSION_PLAYBOOK_ID_FIELD: playbook_id}},
+    )["count"]
+    if total == 0:
+        return 0, 0
+    drifted = es.count(
+        index=sessions_idx,
+        query={"bool": {"filter": [
+            {"term": {_SESSION_PLAYBOOK_ID_FIELD: playbook_id}},
+            {"term": {_SESSION_ASSIGNMENT_STATUS_FIELD: "novel"}},
+        ]}},
+    )["count"]
+    return drifted, total
 
 
 def merge_clusters_into_playbooks(
@@ -1658,6 +2005,7 @@ def iter_session_docs_with_text(
     index: str,
     page_size: int = 1000,
     window_days: Optional[int] = None,
+    novel_pool_only: bool = False,
 ) -> Iterator[tuple[str, list[float], str, dict, str]]:
     """Yield (doc_id, embedding, session_id, scalars, command_stream_text).
 
@@ -1674,8 +2022,8 @@ def iter_session_docs_with_text(
     ``scripts/backfill_command_stream_text.py`` to populate older
     rollups.
 
-    ``window_days`` (P1.2): when > 0, only sessions with a recent
-    ``@timestamp`` are yielded (see ``_session_cluster_query``).
+    ``window_days`` and ``novel_pool_only`` mirror ``iter_session_docs`` so
+    late-fusion clustering sees the same population as the HDBSCAN path.
     """
     base = "dshield.cowrie.enrichment.session"
     body: dict = {
@@ -1690,7 +2038,7 @@ def iter_session_docs_with_text(
             f"{base}.command_stream_text",
             "cowrie.session_id",
         ],
-        "query": _session_cluster_query(window_days),
+        "query": _session_cluster_query(window_days, novel_pool_only),
         "sort": [{"@timestamp": "asc"}, {"_doc": "asc"}],
     }
     search_after = None
@@ -2147,6 +2495,17 @@ def run_cluster(
         log.info("[%s] novel-pool-only clustering: assignment_status=novel "
                  "(Option A cutover — minting anchors from the novel tail only)",
                  layer_label)
+    effective_min_cluster_size = effective_novel_pool_min_cluster_size(
+        scfg,
+        novel_pool_only=effective_novel_pool,
+    )
+    if effective_novel_pool and effective_min_cluster_size != int(scfg.cluster_min_cluster_size):
+        log.info(
+            "[%s] novel-pool-only min_cluster_size override: normal=%d rare=%d",
+            layer_label,
+            int(scfg.cluster_min_cluster_size),
+            effective_min_cluster_size,
+        )
 
     cluster_fn = None
     docs_iter_for_core = iter_session_docs(
@@ -2168,6 +2527,7 @@ def run_cluster(
         _core_docs: list = []
         for doc_id, emb, sid, sc, text in iter_session_docs_with_text(
             es, sessions_idx, scfg.page_size, window_days=effective_window,
+            novel_pool_only=effective_novel_pool,
         ):
             session_texts.append(text)
             _core_docs.append((doc_id, np.asarray(emb, dtype=np.float32), sid, sc))
@@ -2206,7 +2566,7 @@ def run_cluster(
         mapping_path=_SESSION_CLUSTERS_MAPPING,
         update_script=_SESSION_CLUSTER_UPDATE_SCRIPT,
         scalar_block_builder=build_session_scalar_block,
-        min_cluster_size=scfg.cluster_min_cluster_size,
+        min_cluster_size=effective_min_cluster_size,
         min_samples=scfg.cluster_min_samples,
         scalar_weight=scfg.cluster_scalar_weight,
         batch_size=scfg.batch_size,
@@ -3089,6 +3449,7 @@ def run_name_playbooks(
     sessions_idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
     session_clusters_idx = cfg.elasticsearch.indexes.cowrie.session_clusters
     events_idx = cfg.elasticsearch.indexes.cowrie.sessions_raw
+    commands_idx = cfg.elasticsearch.indexes.cowrie.commands
 
     clusters: list[dict] = []
     try:
@@ -3121,7 +3482,7 @@ def run_name_playbooks(
                 {"term": {"run_id": run_id}},
             ]}},
             _source=["cluster_id", "size", "sample_session_ids", "playbook_name",
-                     "run_id", "centroid"],
+                     "playbook_id", "run_id", "centroid"],
         )
         clusters = [h["_source"] for h in resp2["hits"]["hits"]]
     except RuntimeError:
@@ -3218,7 +3579,87 @@ def run_name_playbooks(
             # state (some named, some not) → re-process so the whole group
             # ends up consistent.
             if not force and members and all(c.get("playbook_name") for c in members):
+                # Item 59 — write-once anchor drift. Before skipping outright,
+                # check whether this already-named group's own members have
+                # drifted past their pinned anchor (Finding 45: 22% on one
+                # playbook). Off by default; see config.py's
+                # `anchor_satellite_minting_enabled` docstring. `skipped_already_named`
+                # keeps its pre-item-59 meaning (aggregate "did not mint") for every
+                # exit below; the `satellite_*` counters give the granular reason so
+                # an operator running with the flag on can tell "off"/"no drift"/
+                # "no evidence" apart in the run summary.
                 stats["skipped_already_named"] += 1
+                if not cfg.session.anchor_satellite_minting_enabled:
+                    continue
+                incumbent_ids = {c.get("playbook_id") for c in members if c.get("playbook_id")}
+                if len(incumbent_ids) > 1:
+                    # Item 60-adjacent: a group's own members disagree on which
+                    # playbook_id they carry (e.g. a merge-threshold change since
+                    # the last run folded two previously-distinct ids together).
+                    # Never guess which one is authoritative — same "ask first,
+                    # don't guess" posture as the rest of this pass.
+                    log.warning(
+                        "Playbook group %s (clusters %s) has inconsistent "
+                        "playbook_id across members (%s) — skipping satellite "
+                        "drift check", group_id, member_cids, sorted(incumbent_ids),
+                    )
+                    stats["satellite_inconsistent_playbook_id"] += 1
+                    continue
+                incumbent_id = next(iter(incumbent_ids), None)
+                if not incumbent_id:
+                    stats["satellite_no_incumbent_id"] += 1
+                    continue
+                try:
+                    drifted, total = _measure_anchor_drift(es, sessions_idx, incumbent_id)
+                except Exception as exc:  # noqa: BLE001 — one group's ES hiccup
+                    # must not abort naming for every other group in this run.
+                    log.warning(
+                        "satellite drift measurement failed for %s: %s", incumbent_id, exc,
+                    )
+                    stats["satellite_errors"] += 1
+                    continue
+                if not _should_mint_satellite(
+                    drifted, total, cfg.session.anchor_satellite_drift_fraction,
+                ):
+                    stats["satellite_drift_below_threshold"] += 1
+                    continue
+                try:
+                    group_unit = _playbook_group_centroid(members)
+                    member_sids_union: set[str] = set()
+                    for cid in member_cids:
+                        member_sids_union.update(members_by_cid.get(cid, set()))
+                    if group_unit is None or not member_sids_union:
+                        # No centroid or no member sessions to mint a satellite from.
+                        stats["satellite_no_centroid_or_members"] += 1
+                        continue
+                    cov_sids = _subsample_sids(
+                        member_sids_union, cfg.session.playbook_naming_session_cap,
+                    )
+                    seed_id = _compute_seed_id(member_sids_union)
+                    satellite_id = _mint_satellite_anchor_id(incumbent_id, seed_id)
+                    if dry_run:
+                        log.info(
+                            "[dry-run] would mint satellite anchor %s for playbook %s "
+                            "(drift %d/%d)", satellite_id, incumbent_id, drifted, total,
+                        )
+                        stats["satellite_would_mint"] += 1
+                        continue
+                    satellite_signature = _sample_predicate_vectors(
+                        es, sessions_idx, commands_idx, incumbent_id,
+                        len(cov_sids), session_ids=cov_sids,
+                    )
+                    _persist_playbook_anchor(
+                        es, anchor_idx, incumbent_id, group_unit, seed_id, run_id,
+                        predicate_signature=satellite_signature,
+                        anchor_id=satellite_id, is_satellite=True,
+                    )
+                    anchors.append((group_unit, incumbent_id))
+                    stats["satellite_minted"] += 1
+                except Exception as exc:  # noqa: BLE001 — same isolation as the
+                    # drift-measurement try above: this group's failure must not
+                    # abort naming for every other group in this run.
+                    log.warning("satellite mint failed for %s: %s", incumbent_id, exc)
+                    stats["satellite_errors"] += 1
                 continue
 
             # A handful of illustrative session ids for the prompt's
@@ -3304,9 +3745,19 @@ def run_name_playbooks(
                 if playbook_id not in known_anchor_ids:
                     known_anchor_ids.add(playbook_id)
                     anchors.append((group_unit, playbook_id))
+                    # item 51c: sample the predicate signature over the
+                    # group's own member sessions (`cov_sids`) rather than
+                    # querying by playbook_id — this id was JUST minted, so
+                    # no session doc carries it yet (`_apply_playbook_name`
+                    # stamps that below, after the anchor is pinned).
+                    mint_signature = _sample_predicate_vectors(
+                        es, sessions_idx, commands_idx, playbook_id,
+                        len(cov_sids), session_ids=cov_sids,
+                    )
                     _persist_playbook_anchor(
                         es, anchor_idx, playbook_id,
                         group_unit, seed_id, run_id,
+                        predicate_signature=mint_signature,
                     )
                     stats["id_minted"] += 1
                 else:

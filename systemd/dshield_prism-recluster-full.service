@@ -10,6 +10,14 @@ Group=dshield_prism
 WorkingDirectory=/opt/dshield_prism
 EnvironmentFile=/opt/dshield_prism/.env
 
+# Unlike every sibling unit (backward=6h, forward/analytics/grounding-coverage=2h),
+# this unit had no ceiling — review flagged it twice as a gap once the combined
+# mint+name ExecStart (below) could both run longer (full-corpus naming backlog)
+# AND block indefinitely on lock contention. 6h matches backward.service's budget
+# for a chain that also does LLM naming + escalate; this unit fires weekly so a
+# long run has no self-collision risk.
+TimeoutStartSec=6h
+
 # Owning-unit stamp for pipeline telemetry. `enrich.ops.run_start` copies this
 # onto every `prism.ops` verb_run doc the unit's steps write, so the console's
 # /health "Pipeline & schedule" panel groups runs by unit. `%n` expands to this
@@ -17,7 +25,7 @@ EnvironmentFile=/opt/dshield_prism/.env
 # to drift. Set AFTER the EnvironmentFile so it wins.
 Environment=PRISM_SYSTEMD_UNIT=%n
 
-# Post-Option-A-cutover this weekly unit does three things:
+# Post-Option-A-cutover this weekly unit does four things:
 #   * SESSIONS (assign): a single all-time `assign_sessions --window-days 0` — sweeps
 #     every session (not just the 6h backward pass's trailing 30d) against the current
 #     anchor set. Without this, any session older than 30 days at the time it first
@@ -27,9 +35,26 @@ Environment=PRISM_SYSTEMD_UNIT=%n
 #     novel pool, never re-sweep assignment. Found the hard way: a full reprocess left
 #     633K rollups with only ~8.5K command-bearing/eligible, and roughly half of THOSE
 #     sat unassigned indefinitely because nothing unwindowed ever ran assign_sessions.
-#   * SESSIONS (mint): `cluster sessions --novel-pool` — HDBSCAN over the FULL novel
-#     pool (whatever the assign sweep above just marked novel), so older novel sessions
-#     that never got an anchor finally do.
+#   * SESSIONS (mint + name): `cluster sessions --novel-pool` — HDBSCAN over the FULL
+#     novel pool (whatever the assign sweep above just marked novel), so older novel
+#     sessions that never got an anchor finally do — followed by `name playbooks` in
+#     the SAME flock hold (item 58, clustering-quality investigation Finding 44). The
+#     6h backward chain only ever names clusters from ITS OWN 30-day-windowed
+#     `cluster sessions` step; it never sees this unit's full-corpus mint, so 83.8% of
+#     the novel pool was permanently unnamed by construction. Naming must run here,
+#     right after the mint. It is combined into ONE `ExecStart` (`mint && { name ||
+#     true; }`) rather than two separate lines: `flock` is acquired/released per
+#     `ExecStart=` line, not held for the unit's duration, so two lines would leave a
+#     gap where the 6h chain's own windowed mint+name pair could interleave, overwrite
+#     "latest run_summary", and make this unit name the WRONG (windowed) run —
+#     silently reproducing item 58. One flock spanning both commands closes that: any
+#     other unit's flock'd step blocks (no `-n`) until this line's shell fully exits.
+#     Mint keeps hard-fail semantics (`&&` short-circuits on mint failure, aborting
+#     the unit before IP work, unchanged from before); naming's failure is swallowed
+#     (`|| true`) so it never blocks the IP work below — the CLI verb still records
+#     its own failure to `prism.ops`. `run_name_playbooks` already skips already-named
+#     clusters, so repeat invocation (6h + weekly) is safe and cheap. Local LLM only,
+#     never cloud.
 #   * IPS: the full O(n^2) IP HDBSCAN + `--refresh-reference` (unchanged by the session
 #     cutover) — the only periodic full IP fit + IP reference refresh (backlog B0.5).
 # Identity is preserved: playbook ids re-match by centroid anchor, so this does not churn
@@ -56,7 +81,7 @@ ExecStart=-/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/
 # assignment-owned (below-τ / band-reject), not reference-centroid-scored, and re-minting
 # the reference from the novel pool only would mis-calibrate it. If you REVERSE the
 # cutover, restore `cluster sessions --window-days 0 --refresh-reference` here.
-ExecStart=/usr/bin/flock /var/lib/dshield_prism/.lock /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml cluster sessions --novel-pool --window-days 0
+ExecStart=/usr/bin/flock /var/lib/dshield_prism/.lock /bin/sh -c '/opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml cluster sessions --novel-pool --window-days 0 && { /opt/dshield_prism/.venv/bin/python -m enrich.cli --config /opt/dshield_prism/config/default.yaml name playbooks || true; }'
 
 # Backlog scale-hardening B0.5 — the IP layer has no windowing escape valve, so
 # its full O(n^2) HDBSCAN is the dominant scale wall (~23 min at 50K embedded

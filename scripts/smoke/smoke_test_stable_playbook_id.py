@@ -30,9 +30,11 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from enrich.sources.cowrie.predicates import PREDICATE_NAMES
 from enrich.sources.cowrie.sessions import (
     _assign_playbook_id,
     _mint_playbook_id,
+    _playbook_anchor_doc,
     _playbook_group_centroid,
     _unit_vector,
 )
@@ -128,6 +130,27 @@ id_c = _assign8(c8, "sescl-C")
 check("8a B reuses A's pinned id", id_b == id_a, f"{id_b} != {id_a}")
 check("8b C does NOT chain into A's id (mints fresh)", id_c != id_a,
       f"C chained: {id_c} == {id_a}")
+
+# [9] `_playbook_anchor_doc` (item 51c) — predicate_signature is always
+# present, never missing, on the anchor doc shape `_persist_playbook_anchor`
+# writes.
+doc_no_sig = _playbook_anchor_doc("spb-x", same, "sescl-x", "run-1")
+check("9a no predicate_signature given -> all-zero, not missing",
+      doc_no_sig.get("predicate_signature") == dict.fromkeys(PREDICATE_NAMES, 0.0),
+      str(doc_no_sig.get("predicate_signature")))
+
+given_sig = {**dict.fromkeys(PREDICATE_NAMES, 0.0), "multi_arch_targeting": 0.75}
+doc_with_sig = _playbook_anchor_doc("spb-y", same, "sescl-y", "run-1",
+                                     predicate_signature=given_sig)
+check("9b given predicate_signature is written through unchanged",
+      doc_with_sig.get("predicate_signature") == given_sig, str(doc_with_sig))
+
+check("9c doc shape still carries the other fields (playbook_id/centroid/seed/run)",
+      doc_no_sig["playbook_id"] == "spb-x"
+      and doc_no_sig["seed_playbook_id"] == "sescl-x"
+      and doc_no_sig["first_run_id"] == "run-1"
+      and len(doc_no_sig["anchor_centroid"]) == len(same),
+      str(doc_no_sig))
 
 
 for n in PASSED:

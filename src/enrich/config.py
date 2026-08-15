@@ -266,6 +266,11 @@ class CommandClusterConfig(BaseModel):
 class SessionConfig(BaseModel):
     embed_version: str = "v1"
     cluster_min_cluster_size: int = 3
+    # Item 72 — rare-behaviour minting is allowed only on the novel-pool-only
+    # session clustering path. None/0 disables the override; otherwise the floor
+    # must stay in [2, cluster_min_cluster_size]. Singleton minting remains out
+    # of scope because one session cannot establish embedding coherence.
+    novel_pool_cluster_min_cluster_size: Optional[int] = None
     # min_samples=2 avoids collapsing HDBSCAN's mutual-reachability distance
     # to raw distance (single-linkage), which can let one mega-cluster
     # swallow the bulk on a duplicate-heavy corpus. ROADMAP issue #5.
@@ -324,19 +329,62 @@ class SessionConfig(BaseModel):
     # is a conflation and we cascade to the next-nearest); < tau is novel.
     assignment_tau: float = 0.94
     assignment_confident_tau: float = 0.98
-    assignment_tfidf_tau: float = 0.80
+    # 0.50, not 0.80 (item 62 / docs/decisions.md). Measured corpus-wide, the band's
+    # TF-IDF cosines are BIMODAL with an empty valley: 2,813 checks at 0.12-0.2
+    # (genuinely dissimilar), only 108 across the whole of 0.2-0.7, then 2,382 at
+    # 0.7-0.8 sitting immediately below 3,522 confirms at 0.8-1.0. The old 0.80 sliced
+    # a continuous 0.7-1.0 mass in half. Any value in ~0.25-0.65 behaves the same, so
+    # this is a valley placement, not a tuned figure — do not "optimise" it without
+    # re-measuring the distribution (scripts/eval_novel_pool.py's band_tfidf_diagnosis).
+    assignment_tfidf_tau: float = 0.50
+    # Item 81 — explicit anchor-scoped band bypass. Anchor ids listed here still need
+    # `assignment_tau <= emb_cos < assignment_confident_tau`, but then assign by
+    # embedding rather than the TF-IDF band check. Default empty: do not use this as a
+    # substitute for lowering `assignment_confident_tau` globally.
+    assignment_band_bypass_anchor_ids: list[str] = Field(default_factory=list)
+    # Item 30 — structural-predicate below-tau rescue tier. Extends the cascade past
+    # `assignment_tau` down to `assignment_rescue_tau`: a session whose nearest anchor's
+    # cosine falls in [assignment_rescue_tau, assignment_tau) is rescued from NOVEL to
+    # ASSIGNED when its structural predicate vector (src/enrich/sources/cowrie/predicates.py)
+    # positively overlaps that anchor's `predicate_signature` (never on an all-false match
+    # on either side — src/enrich/sources/cowrie/predicates.py:predicate_overlap). Defaults
+    # equal to `assignment_tau` itself, i.e. the rescue tier is empty by default and
+    # `assign_batch`'s output stays byte-identical to before this feature. Lowering it is an
+    # Ask-First operator decision made from the rescue_tau sweep (spec-30 A4/A5), not a
+    # default this file changes unilaterally.
+    assignment_rescue_tau: float = 0.94
+    # Item 59 — satellite anchors for write-once anchor drift. `_persist_playbook_anchor`
+    # pins a playbook's centroid once and never updates it (prevents transitive id
+    # chaining), so a growing/drifting cluster's own newer members can fall below
+    # `assignment_tau` of their pinned anchor and become permanently novel even though
+    # `name playbooks` still recognises the group (measured: 22% of one playbook's
+    # members, Finding 45 of the clustering-quality investigation). When enabled, an
+    # already-named group whose drift fraction (sessions carrying its `playbook_id` that
+    # replay as assignment-novel, over all such sessions) is >= this threshold mints an
+    # *additional* anchor doc for the same `playbook_id` instead of being skipped. Off by
+    # default — this widens what one playbook id covers, which is exactly the conflation
+    # risk the write-once rule guards against, so enabling it in production and
+    # re-measuring `anchor_label_purity`/`homogeneity` is an operator decision, not a
+    # default this file changes unilaterally. Depends on `cluster.assignment_status`
+    # being populated on sessions, i.e. `assign_sessions` having run at least once —
+    # true today since `assignment_authoritative` is live in production (see below);
+    # a deployment that has never run the assignment path will always measure zero
+    # drift (fail-closed toward "don't mint", not an error).
+    anchor_satellite_minting_enabled: bool = False
+    anchor_satellite_drift_fraction: float = 0.15
     # Flag gate for the I3 shadow write (non-authoritative; writes cluster.assignment_*
     # without touching playbook_id). Off by default.
     assignment_shadow_enabled: bool = False
     # I4 cutover gate. When True, the `assign_sessions` runner writes `playbook_id`/
     # `playbook_name` authoritatively (assigned), clears them (novel), and bumps
     # `playbook_named_at` so IP rollups self-heal — replacing HDBSCAN as the labeller for
-    # the assignable bulk. **Inert until the runner is wired into the pipeline** (it is
-    # not in any systemd unit by default), so this default only takes effect once the
-    # operator runs `scripts/assign_sessions.py --apply` or swaps it into the backward
-    # service in place of `cluster sessions` + `name playbooks`. Reversal: set False +
-    # re-run the HDBSCAN `cluster sessions`/`name playbooks` steps (playbook_id is
-    # recomputable from embeddings). When False the runner writes shadow fields only.
+    # the assignable bulk. **Already live**: `dshield_prism-backward.service` runs
+    # `assign_sessions.py --window-days 30 --apply` every 6h and
+    # `dshield_prism-recluster-full.service` runs the unwindowed `--window-days 0 --apply`
+    # sweep weekly, so this default is authoritative in production, not merely a script an
+    # operator can opt into. Reversal: set False + re-run the HDBSCAN `cluster
+    # sessions`/`name playbooks` steps (playbook_id is recomputable from embeddings). When
+    # False the runner writes shadow fields only.
     assignment_authoritative: bool = True
     # ROADMAP #4 — cluster specificity. Max keys stored per centroid in each
     # of `ip_specificity` / `command_specificity`. Set well past realistic
@@ -418,6 +466,29 @@ class SessionConfig(BaseModel):
     # (scripts/sweep_session_svd.py) to push lower — the windowed 6h runs are
     # small, so this only bites the full-corpus paths.
     cluster_svd_dim: int = 96
+
+    def model_post_init(self, __context: object) -> None:
+        if int(self.cluster_min_cluster_size) != self.cluster_min_cluster_size:
+            raise ValueError("session.cluster_min_cluster_size must be an integer")
+        normal = int(self.cluster_min_cluster_size)
+        if normal < 2:
+            raise ValueError("session.cluster_min_cluster_size must be at least 2")
+        rare = self.novel_pool_cluster_min_cluster_size
+        if rare in (None, 0):
+            return
+        if int(rare) != rare:
+            raise ValueError("session.novel_pool_cluster_min_cluster_size must be an integer")
+        rare = int(rare)
+        if rare < 2:
+            raise ValueError(
+                "session.novel_pool_cluster_min_cluster_size must be 0/disabled "
+                "or at least 2; singleton minting is out of scope",
+            )
+        if rare > normal:
+            raise ValueError(
+                "session.novel_pool_cluster_min_cluster_size must be less than "
+                "or equal to session.cluster_min_cluster_size",
+            )
 
 
 class IPConfig(BaseModel):

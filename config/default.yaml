@@ -250,6 +250,7 @@ command_cluster:
 
 # Session-level rollup + clustering + playbook naming.
 session:
+  assignment_tfidf_tau: float = 0.50
   # Bump when mean-pool inputs change to force full re-rollup.
   embed_version: "v1"
   # HDBSCAN params. min_cluster_size=5 picked by the brutal-review phase 3.2
@@ -261,6 +262,12 @@ session:
   # rises from 16% to 24% as a side effect — sessions that were marginally
   # cluster-assigned at mcs=3 fall to HDBSCAN noise at mcs=5.
   cluster_min_cluster_size: 5
+  # Item 72 / Finding 53: novel-pool-only tail minting may use a lower floor so
+  # tight rare behaviours such as the 3-session scp_upload group can flow through
+  # the normal cluster-doc -> naming -> write-once-anchor path. Normal session,
+  # command and IP clustering still use their own default floors; singletons stay
+  # out of scope.
+  novel_pool_cluster_min_cluster_size: 3
   # min_samples=2 keeps HDBSCAN's mutual-reachability density smoothing on
   # (min_samples=1 disables it = single-linkage, which can let one mega-
   # cluster swallow the bulk on a heavy-duplicate corpus — ROADMAP issue
@@ -307,6 +314,27 @@ session:
   # while homogeneity holds at 0.86 and density fragments are absorbed; 0.92
   # over-merges. See eval/results/F-spike-verdict.md.
   playbook_merge_threshold: 0.94
+  # Option A assignment thresholds. Embedding cosine to the nearest anchor:
+  # >= confident_tau assigns outright; [tau, confident_tau) is the band, confirmed
+  # by the TF-IDF secondary signal >= tfidf_tau (else the anchor is treated as a
+  # conflation and the cascade falls through to the next-nearest); < tau is novel.
+  assignment_tau: 0.94
+  assignment_confident_tau: 0.98
+  # 0.50, not 0.80 (item 62). Measured corpus-wide, the band's TF-IDF cosines are
+  # BIMODAL with an empty valley: 2,813 checks at 0.12-0.2 (genuinely dissimilar),
+  # only 108 across the whole of 0.2-0.7, then 2,382 at 0.7-0.8 immediately below
+  # 3,522 confirms at 0.8-1.0. The old 0.80 sliced a continuous 0.7-1.0 mass in
+  # half, discarding its lower 2,382 as false conflations. Any value in ~0.25-0.65
+  # behaves identically, so this is a VALLEY PLACEMENT, not a tuned figure — do not
+  # nudge it without re-measuring the distribution via eval_novel_pool.py's
+  # band_tfidf_diagnosis. Kept (rather than disabling the band) so the 2,813-check
+  # low mode stays rejected. See docs/decisions.md.
+  assignment_tfidf_tau: 0.50
+  # Item 81 — explicit anchor-scoped band bypass. Listed anchor ids still need
+  # `assignment_tau <= emb_cos < assignment_confident_tau`, but then assign by
+  # embedding rather than the TF-IDF band check. Empty by default; do not use as a
+  # substitute for a measured global `assignment_confident_tau` move.
+  assignment_band_bypass_anchor_ids: [spb-0b4058711471410d]
   # ROADMAP #4 — cluster specificity. Max keys kept per centroid in each of
   # ip_specificity / command_specificity. Set well past realistic cluster
   # sizes so every member carries a score (drawer / graph can show commodity

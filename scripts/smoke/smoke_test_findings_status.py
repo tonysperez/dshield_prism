@@ -512,7 +512,8 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "console" / "src"))
 
 try:
-    from fastapi.testclient import TestClient  # noqa: E402
+    import asyncio
+    import httpx
     from console import server as console_server  # noqa: E402
 except ImportError as exc:
     print(f"  SKIP  console routes — {exc} "
@@ -520,11 +521,40 @@ except ImportError as exc:
     console_server = None
 
 if console_server is not None:
+    import fastapi.routing as fastapi_routing
+
+    async def _run_sync_inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    # Python 3.13 + the pinned anyio can deadlock its worker portal in these
+    # in-process route tests. The handlers are pure fakes here, so execute the
+    # synchronous endpoint directly on the test loop.
+    fastapi_routing.run_in_threadpool = _run_sync_inline
+
+    class ASGIClient:
+        """Tiny synchronous facade over httpx's async ASGI transport.
+
+        Starlette's deprecated TestClient deadlocks with the pinned httpx on
+        Python 3.13; this exercises the same in-process HTTP surface without a
+        lifespan portal thread.
+        """
+        def __init__(self, app):
+            self.app = app
+
+        def post(self, path, **kwargs):
+            async def request():
+                transport = httpx.ASGITransport(app=self.app)
+                async with httpx.AsyncClient(
+                    transport=transport, base_url="http://testserver",
+                ) as client:
+                    return await client.post(path, **kwargs)
+            return asyncio.run(request())
+
     logging.getLogger(console_server.__name__).setLevel(logging.CRITICAL)
     es_http, ids_http = _seed_bulk_es(3)
     console_server.make_client = lambda *a, **k: es_http
     app = console_server.build_app(str(REPO / "config" / "default.yaml"))
-    client = TestClient(app)
+    client = ASGIClient(app)
 
     r = client.post("/api/findings/status", json={"ids": ids_http, "status": "bogus"})
     check("bulk invalid status → one 400, not N per-id errors",
