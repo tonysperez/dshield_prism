@@ -1,5 +1,5 @@
 {
-  "captured_at": "2026-07-27T16:31:30.542709+00:00",
+  "captured_at": "2026-07-28T14:15:59.683642+00:00",
   "captured_from": "scripts/eval_production_scale.py --write-baseline",
   "snapshot_at_capture": "eval/production-snapshot-v1.jsonl.gz",
   "snapshot_metadata": {
@@ -33,28 +33,28 @@
     "clustering_mode": "hdbscan"
   },
   "rollups_at_capture": 4064,
-  "eval_sessions_at_capture": 40,
+  "eval_sessions_at_capture": 38,
   "embedding_pipeline_at_capture": "embed_context=['intent', 'description'] cooccurrence.embed_cooccurrence=False merge_threshold=0.94 merged=True",
   "tolerance_semantic": "Each gated metric fails when current < baseline - tolerance. Per-label table fails when a label's cluster count exceeds baseline by more than 1. small_cluster_* are informational only.",
   "metrics": {
     "ari": {
-      "baseline": 0.0879,
+      "baseline": 0.0515,
       "tolerance": 0.05
     },
     "nmi": {
-      "baseline": 0.4846,
+      "baseline": 0.4615,
       "tolerance": 0.05
     },
     "homogeneity": {
-      "baseline": 0.508,
+      "baseline": 0.4684,
       "tolerance": 0.05
     },
     "completeness": {
-      "baseline": 0.4632,
+      "baseline": 0.4548,
       "tolerance": 0.05
     },
     "v_measure": {
-      "baseline": 0.4846,
+      "baseline": 0.4615,
       "tolerance": 0.05
     }
   },
@@ -84,8 +84,8 @@
       "n_hdbscan_clusters_assigned": 1
     },
     "single_command_probe": {
-      "n_sessions": 6,
-      "n_hdbscan_clusters_assigned": 2
+      "n_sessions": 4,
+      "n_hdbscan_clusters_assigned": 1
     },
     "ssh_key_chattr_persistence": {
       "n_sessions": 5,

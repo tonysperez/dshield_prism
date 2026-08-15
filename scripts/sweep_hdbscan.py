@@ -288,7 +288,7 @@ def main() -> int:
                     default=Path("eval/labels.yaml"),
                     help="Analyst-labeled YAML")
     ap.add_argument("--jsonl", type=Path,
-                    default=Path("eval/sessions.unlabeled.jsonl"),
+                    default=Path("eval/sessions.unlabeled.jsonl.gz"),
                     help="Unlabeled eval JSONL")
     ap.add_argument("--output", type=Path,
                     default=Path("eval/results/hdbscan-sweep.json"),

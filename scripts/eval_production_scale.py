@@ -14,7 +14,7 @@ This script:
      augment, HDBSCAN, optional noise rescue) — same hyperparameters as
      ``run_session_clustering``, but no ES writes.
   3. Filters the resulting cluster assignment to the session_ids
-     present in ``eval/sessions.unlabeled.jsonl`` (the analyst-
+     present in ``eval/sessions.unlabeled.jsonl.gz`` (the analyst-
      labeled subset).
   4. Scores ARI / NMI / homogeneity / completeness / v_measure against
      analyst labels.
@@ -134,6 +134,12 @@ def _cluster_at_production_scale(
         cluster_matrix = np.hstack([normalized, block])
     else:
         cluster_matrix = normalized
+    # Deliberately no fit-only SVD reduction here (production applies
+    # `cluster_svd_dim` via clustering.py's `run_layer_clustering`). Omission is
+    # measured output-neutral: SVD-96 reproduces the full-dim fit EXACTLY
+    # (ARI 1.0) across ~400 -> 60k sessions (config.py:410-419), so skipping it
+    # trades gate runtime for fidelity, not correctness — full-dim fit here is by
+    # design, not an oversight.
     clusterer = HDBSCAN(
         min_cluster_size=min_cluster_size,
         min_samples=min_samples,

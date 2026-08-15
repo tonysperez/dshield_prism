@@ -9,7 +9,7 @@ Run from the repo root via the console venv:
     /home/styx/git/dshield_prism/console/.venv/bin/python \\
       scripts/validate_eval_labels.py \\
       --labels eval/labels.yaml \\
-      --unlabeled eval/sessions.unlabeled.jsonl
+      --unlabeled eval/sessions.unlabeled.jsonl.gz
 """
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from collections import Counter
 from pathlib import Path
 
 import yaml
+from eval_jsonl import open_jsonl
 
 
 # Closed vocabulary for `expected_findings`. Mirrors the kinds emitted
@@ -50,6 +51,45 @@ REQUIRED_LABEL_FIELDS = (
     "annotated", "is_real", "playbook_label",
     "expected_findings", "notes",
 )
+
+
+# Closed vocabulary for `playbook_label` (rubric v2). Mirrors the canonical
+# table in eval/RUBRIC.md — keep the two in sync; the rubric is the prose,
+# this is the enforcement. Closed because an open vocabulary let two
+# compliant labeling passes over the same 160 sessions produce 11 and 12
+# labels with only 5 shared, which `eval_agreement.py` scores as total
+# disagreement even where the behavior calls matched. Adding a label is a
+# rubric change (bump `rubric_version`), never a labeling decision.
+KNOWN_PLAYBOOK_LABELS = frozenset({
+    "host_recon",
+    "single_command_probe",
+    "iot_cli_probe",
+    "credential_spray",
+    "payload_fetch_exec",
+    "botnet_loader",
+    "cryptominer_staging",
+    "inband_payload_drop",
+    "dropped_binary_exec",
+    "scp_upload",
+    "ssh_key_chattr_persistence",
+    "ssh_key_cron_persistence",
+    "account_backdoor_persistence",
+})
+
+# Synonyms and form-labels observed in prior labeling passes, mapped to the
+# canonical label. Used only to make the validator's error message
+# actionable — none of these are accepted values.
+RETIRED_LABEL_ALIASES = {
+    "uploaded_payload_staging": "scp_upload",
+    "uploaded_payload_execution": "dropped_binary_exec",
+    "inline_payload_staging": "inband_payload_drop",
+    "file_staging": "inband_payload_drop",
+    "shell_escape_probe": "iot_cli_probe",
+    "shell_wrapper_only": (
+        "the label for whatever the wrapped commands do (it names the "
+        "delivery form, not the behavior)"
+    ),
+}
 
 
 # Strict calendar-date shape: exactly `YYYY-MM-DD`, zero-padded. We anchor
@@ -177,6 +217,16 @@ def _check_block(sid: str, block: object, errors: list[str]) -> tuple[bool, str 
     if is_real:
         if not isinstance(pb, str) or not pb:
             err("playbook_label must be a non-empty string when is_real=true")
+        elif pb not in KNOWN_PLAYBOOK_LABELS:
+            alias = RETIRED_LABEL_ALIASES.get(pb)
+            if alias:
+                err(f"playbook_label={pb!r} is retired — use {alias!r} "
+                    "(see eval/RUBRIC.md 'Do not mint these')")
+            else:
+                err(f"playbook_label={pb!r} is not in the closed vocabulary "
+                    "(see eval/RUBRIC.md 'Canonical labels'). Adding a label "
+                    "is a rubric change: label with the closest canonical "
+                    "value, explain the misfit in notes, and raise it.")
     else:
         if pb not in (None, ""):
             err("playbook_label must be null when is_real=false")
@@ -191,7 +241,7 @@ def _check_block(sid: str, block: object, errors: list[str]) -> tuple[bool, str 
 
 def _load_jsonl_session_ids(path: Path) -> set[str]:
     out: set[str] = set()
-    with path.open("r", encoding="utf-8") as f:
+    with open_jsonl(path) as f:
         for lineno, line in enumerate(f, start=1):
             line = line.strip()
             if not line:
@@ -211,7 +261,7 @@ def _load_jsonl_divergent_pair_ids(path: Path) -> dict[str, str]:
     for v1 records — they carry no pair id, so the validator's
     cross-check is a no-op there."""
     out: dict[str, str] = {}
-    with path.open("r", encoding="utf-8") as f:
+    with open_jsonl(path) as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -238,7 +288,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--unlabeled", type=Path,
-        default=Path("eval/sessions.unlabeled.jsonl"),
+        default=Path("eval/sessions.unlabeled.jsonl.gz"),
         help=(
             "Unlabeled JSONL — used to detect orphan labels (in YAML "
             "but not in JSONL) and missing labels (in JSONL but not "

@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import yaml
+from eval_jsonl import open_jsonl
 
 
 # ---------------------------------------------------------------------------
@@ -464,7 +465,7 @@ def _write_labels_yaml(path: Path, data: dict, unlabeled_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def _read_jsonl(path: Path) -> Iterable[dict]:
-    with path.open("r", encoding="utf-8") as f:
+    with open_jsonl(path) as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -476,7 +477,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--input", type=Path,
-        default=Path("eval/sessions.unlabeled.jsonl"),
+        default=Path("eval/sessions.unlabeled.jsonl.gz"),
         help="Unlabeled JSONL from scripts/build_eval_set.py",
     )
     ap.add_argument(

@@ -1,8 +1,8 @@
 {
   "metrics": {
     "macro_f1": {
-      "baseline": 0.7515,
-      "tolerance": 0.1223,
+      "baseline": 0.7777,
+      "tolerance": 0.1954,
       "direction": "floor",
       "basis": "ci"
     },
@@ -17,19 +17,19 @@
       "basis": "diagnostic"
     },
     "novel_precision": {
-      "baseline": 0.5804,
-      "tolerance": 0.0608,
+      "baseline": 0.5865,
+      "tolerance": 0.0646,
       "direction": "floor",
       "basis": "ci"
     },
     "novel_recall": {
-      "baseline": 0.8904,
-      "tolerance": 0.0509,
+      "baseline": 0.8841,
+      "tolerance": 0.0524,
       "direction": "floor",
       "basis": "ci"
     },
     "false_familiar": {
-      "baseline": 0.1096,
+      "baseline": 0.1159,
       "direction": "ceiling",
       "basis": "diagnostic"
     }
@@ -39,5 +39,5 @@
   "confident_tau": 0.98,
   "holdout_k": 2,
   "captured_from": "eval_operational.py --write-baseline",
-  "tolerance_semantic": "Per-metric thresholds: macro-F1 / minted purity / novelty use a bootstrap-CI floor (baseline - half-width); per-label accuracy uses a hard absolute floor (collapse detector); minted-distinct + false-familiar are diagnostics; novelty is a CI floor (non-degenerate at tau); false-familiar (= 1 - novel recall) is always reported, never gated."
+  "tolerance_semantic": "Per-metric thresholds: macro-F1 / minted purity / novelty use a bootstrap-CI floor (baseline - half-width); per-label accuracy uses a hard absolute floor (collapse detector), except singleton labels (n<2), which are reported but excluded from the floor \u2014 no k-fold prototype is possible for them, so a 0.0 there is structural, not a regression; minted-distinct + false-familiar are diagnostics; novelty is a CI floor (non-degenerate at tau); false-familiar (= 1 - novel recall) is always reported, never gated."
 }

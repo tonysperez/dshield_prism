@@ -67,6 +67,32 @@ cls = classification_metrics(embs, labels, pids, pmat)
 check("perfect accuracy on separable labels", cls["accuracy"] == 1.0, str(cls["accuracy"]))
 check("macro_f1 == 1.0", cls["macro_f1"] == 1.0, str(cls["macro_f1"]))
 
+# --- classification_metrics: `scoreable` gates the macro mean, not per_label ---
+# A third label C that the prototypes cannot possibly predict (no prototype for
+# it) stands in for a corpus-singleton: it scores a structural F1 of 0.0. Held
+# in the macro mean it drags the score; excluded via `scoreable` it does not,
+# but it must still be REPORTED in per_label either way.
+_c = np.zeros((1, embs.shape[1]), dtype=np.float32)
+_c[0, -1] = 1.0
+emb3 = np.vstack([embs, _c])
+lab3 = labels + ["C"]
+cls_all = classification_metrics(emb3, lab3, pids, pmat)
+cls_sub = classification_metrics(emb3, lab3, pids, pmat, scoreable={"A", "B"})
+check("unlearnable label scores f1 0.0", cls_all["per_label"]["C"]["f1"] == 0.0,
+      str(cls_all["per_label"]["C"]))
+check("scoreable=None keeps the old behavior (C drags the mean)",
+      cls_all["macro_f1"] < cls_sub["macro_f1"], f"{cls_all['macro_f1']} {cls_sub['macro_f1']}")
+_ab = [cls_sub["per_label"][lb]["f1"] for lb in ("A", "B")]
+check("excluded macro_f1 is exactly the mean over scoreable labels",
+      abs(cls_sub["macro_f1"] - sum(_ab) / 2) < 1e-4, f"{cls_sub['macro_f1']} vs {_ab}")
+check("excluding from the mean does NOT erase C's misassignment cost "
+      "(its session still hurts A/B precision, so macro_f1 < 1.0)",
+      cls_sub["macro_f1"] < 1.0, str(cls_sub["macro_f1"]))
+check("per_label still reports the excluded label",
+      "C" in cls_sub["per_label"], str(sorted(cls_sub["per_label"])))
+check("accuracy is unaffected by scoreable (not a macro average)",
+      cls_all["accuracy"] == cls_sub["accuracy"], str((cls_all["accuracy"], cls_sub["accuracy"])))
+
 # --- _rank_auc: perfectly separated positives above negatives → 1.0 ---
 check("rank_auc perfect separation == 1.0",
       _rank_auc(np.array([0.9, 0.8]), np.array([0.1, 0.2])) == 1.0)

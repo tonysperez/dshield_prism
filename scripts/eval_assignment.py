@@ -2,7 +2,7 @@
 counterpart to eval_clustering.py, which now covers only the novel-pool HDBSCAN).
 
 Validates `enrich.sources.cowrie.assignment.assign_batch` against the analyst labels
-(`eval/labels.yaml` + `eval/sessions.unlabeled.jsonl`) — no live ES, so it runs in
+(`eval/labels.yaml` + `eval/sessions.unlabeled.jsonl.gz`) — no live ES, so it runs in
 CI. Builds per-label prototypes from the labelled embeddings (a stand-in for the live
 anchors — a production-scale anchor snapshot is a follow-up) and measures the two things
 the assignment era cares about:
@@ -28,8 +28,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import yaml
@@ -37,32 +40,252 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from enrich.sources.cowrie.assignment import assign_batch
+from eval_jsonl import open_jsonl
+from validate_eval_labels import KNOWN_PLAYBOOK_LABELS
 
 
 # ---------------------------------------------------------------------------
 # Data
 # ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class EvalRecord:
+    session_id: str
+    analyst_label: str
+    embedding: np.ndarray
+    production_playbook_id: str | None
+    command_cluster_bag: str | None
+    rubric_version: str | None
+    embed_version: str | None
+    embed_config_hash: str | None
+    capture_timestamp: str | None
+
+
+@dataclass
+class EvidenceLoad:
+    records: list[EvalRecord] = field(default_factory=list)
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def _session_block(rec: dict) -> dict:
+    return ((((rec.get("rollup_doc") or {}).get("dshield") or {}).get("cowrie") or {})
+            .get("enrichment", {}).get("session", {}))
+
+
+def _command_cluster_bag(rec: dict, command_set: list[str]) -> str | None:
+    cluster_of: dict[str, str] = {}
+    for command in rec.get("command_enrichments") or []:
+        if not isinstance(command, dict):
+            continue
+        cid = ((command.get("event") or {}).get("id")
+               or ((command.get("process") or {}).get("hash") or {}).get("sha256"))
+        cluster = (((command.get("dshield") or {}).get("cowrie") or {})
+                   .get("enrichment", {}).get("cluster", {}))
+        cluster_id = cluster.get("id")
+        if cid and cluster_id:
+            cluster_of[str(cid)[:16]] = (
+                "cluster_outlier"
+                if cluster.get("is_outlier") or cluster_id == "outlier"
+                else str(cluster_id)
+            )
+    if not command_set:
+        return "cluster_empty"
+    if not cluster_of:
+        return None
+    return " ".join(cluster_of.get(str(command_id)[:16], "cluster_outlier")
+                    for command_id in command_set)
+
+
+def load_records_detailed(labels_path: Path, jsonl_path: Path) -> EvidenceLoad:
+    """Load all annotated evidence without silently losing incompatible rows."""
+    raw = yaml.safe_load(labels_path.read_text()) or {}
+    annotated_blocks = {
+        str(sid): block for sid, block in raw.items()
+        if isinstance(block, dict) and block.get("annotated")
+    }
+    non_real_blocks = {
+        sid: block for sid, block in annotated_blocks.items()
+        if block.get("is_real") is False
+    }
+    scorable_blocks = {
+        sid: block for sid, block in annotated_blocks.items()
+        if sid not in non_real_blocks
+    }
+    label_blocks = {
+        sid: block for sid, block in scorable_blocks.items()
+        if block.get("playbook_label")
+    }
+    reasons: Counter[str] = Counter()
+    missing_labels = len(scorable_blocks) - len(label_blocks)
+    if missing_labels:
+        reasons["missing_analyst_label"] += missing_labels
+    invalid_membership = sum(
+        block.get("playbook_label") not in KNOWN_PLAYBOOK_LABELS
+        for block in label_blocks.values()
+    )
+    if invalid_membership:
+        reasons["unknown_analyst_label"] += invalid_membership
+    seen: Counter[str] = Counter()
+    candidates: list[tuple[str, dict, dict]] = []
+    parse_errors = 0
+    with open_jsonl(jsonl_path) as fh:
+        lines = fh.read().splitlines()
+    for line_number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except (TypeError, json.JSONDecodeError):
+            parse_errors += 1
+            reasons["malformed_json"] += 1
+            continue
+        if not isinstance(rec, dict):
+            reasons["invalid_record_shape"] += 1
+            continue
+        sid = str(rec.get("session_id") or "")
+        if sid:
+            seen[sid] += 1
+        if sid in label_blocks:
+            candidates.append((sid, label_blocks[sid], rec))
+
+    records: list[EvalRecord] = []
+    dimensions: Counter[int] = Counter()
+    duplicate_accounted: set[str] = set()
+    for sid, label_block, rec in candidates:
+        if seen[sid] != 1:
+            if sid not in duplicate_accounted:
+                reasons["duplicate_session_id"] += 1
+                duplicate_accounted.add(sid)
+            continue
+        session = _session_block(rec)
+        embedding = session.get("embedding")
+        if not isinstance(embedding, list) or not embedding:
+            reasons["missing_embedding"] += 1
+            continue
+        if any(isinstance(value, bool) for value in embedding):
+            reasons["nonnumeric_embedding"] += 1
+            continue
+        try:
+            vector = np.asarray(embedding, dtype=np.float32)
+        except (TypeError, ValueError, OverflowError):
+            reasons["nonnumeric_embedding"] += 1
+            continue
+        if vector.ndim != 1:
+            reasons["invalid_embedding_shape"] += 1
+            continue
+        if not np.isfinite(vector).all():
+            reasons["nonfinite_embedding"] += 1
+            continue
+        norm = float(np.linalg.norm(vector))
+        if not np.isfinite(norm):
+            reasons["overflow_embedding_norm"] += 1
+            continue
+        if norm == 0.0:
+            reasons["zero_norm_embedding"] += 1
+            continue
+        dimensions[len(vector)] += 1
+        command_set = list(session.get("command_set") or [])
+        commands = rec.get("command_enrichments") or []
+        if not isinstance(commands, list) or any(
+            not isinstance(command, dict) for command in commands
+        ):
+            reasons["invalid_command_enrichment"] += 1
+            commands = [command for command in commands if isinstance(command, dict)]
+        bag = _command_cluster_bag(rec, command_set)
+        if bag is None:
+            reasons["missing_lexical_evidence"] += 1
+        cluster = session.get("cluster") or {}
+        rubric_version = label_block.get("rubric_version")
+        embed_version = session.get("embed_version")
+        embed_config_hashes = {
+            (((command.get("dshield") or {}).get("cowrie") or {})
+             .get("enrichment", {}).get("embed_config_hash"))
+            for command in commands
+            if (((command.get("dshield") or {}).get("cowrie") or {})
+                .get("enrichment", {}).get("embed_config_hash"))
+        }
+        if len(embed_config_hashes) > 1:
+            reasons["mixed_record_embed_config_metadata"] += 1
+        embed_config_hash = sorted(embed_config_hashes)[0] if embed_config_hashes else None
+        capture_timestamp = (rec.get("rollup_doc") or {}).get("@timestamp")
+        for reason, value in (
+            ("missing_rubric_metadata", rubric_version),
+            ("missing_embed_version_metadata", embed_version),
+            ("missing_embed_config_metadata", embed_config_hash),
+            ("missing_capture_timestamp", capture_timestamp),
+        ):
+            if not value:
+                reasons[reason] += 1
+        if capture_timestamp:
+            try:
+                datetime.fromisoformat(str(capture_timestamp).replace("Z", "+00:00"))
+            except ValueError:
+                reasons["invalid_capture_timestamp"] += 1
+        records.append(EvalRecord(
+            session_id=sid,
+            analyst_label=str(label_block["playbook_label"]),
+            embedding=vector / norm,
+            production_playbook_id=(
+                session.get("playbook_id") or cluster.get("assigned_playbook_id")
+            ),
+            command_cluster_bag=bag,
+            rubric_version=rubric_version,
+            embed_version=embed_version,
+            embed_config_hash=embed_config_hash,
+            capture_timestamp=capture_timestamp,
+        ))
+
+    missing_ids = sorted(set(label_blocks) - set(seen))
+    if missing_ids:
+        reasons["labeled_session_missing_from_corpus"] += len(missing_ids)
+    expected_dimension = dimensions.most_common(1)[0][0] if dimensions else None
+    inconsistent = sum(n for dimension, n in dimensions.items()
+                       if dimension != expected_dimension)
+    if inconsistent:
+        reasons["inconsistent_embedding_dimension"] += inconsistent
+    diagnostics = {
+        "annotated_labeled": len(annotated_blocks),
+        "scorable_labeled": len(scorable_blocks),
+        "json_parse_errors": parse_errors,
+        "candidate_rows": len(candidates),
+        "duplicate_json_occurrences": sum(max(0, count - 1) for count in seen.values()),
+        "duplicate_labeled_entities": len(duplicate_accounted),
+        "accepted_records": len(records),
+        "excluded_records": max(0, len(annotated_blocks) - len(records)),
+        "exclusions": dict(sorted(reasons.items())),
+        "expected_exclusions": {"not_real": len(non_real_blocks)},
+        "missing_labeled_ids": missing_ids,
+        "embedding_dimensions": dict(sorted(dimensions.items())),
+        "lexical_records": sum(record.command_cluster_bag is not None for record in records),
+        "lexical_coverage": round(
+            sum(record.command_cluster_bag is not None for record in records) / len(records),
+            4,
+        ) if records else 0.0,
+    }
+    metadata = {
+        "rubric_versions": sorted({r.rubric_version for r in records if r.rubric_version}),
+        "embed_versions": sorted({r.embed_version for r in records if r.embed_version}),
+        "embed_config_hashes": sorted({
+            r.embed_config_hash for r in records if r.embed_config_hash
+        }),
+        "capture_timestamps": sorted({
+            r.capture_timestamp for r in records if r.capture_timestamp
+        }),
+    }
+    return EvidenceLoad(records=records, diagnostics=diagnostics, metadata=metadata)
+
+
 def load_labeled(labels_path: Path, jsonl_path: Path) -> tuple[list[str], np.ndarray]:
     """(labels, embeddings) for every annotated, non-null labelled session that has an
     embedding. Index-aligned."""
-    raw = yaml.safe_load(labels_path.read_text()) or {}
-    label_of = {sid: b.get("playbook_label") for sid, b in raw.items()
-                if isinstance(b, dict) and b.get("annotated") and b.get("playbook_label")}
-    labels, embs = [], []
-    for line in jsonl_path.read_text().splitlines():
-        if not line.strip():
-            continue
-        rec = json.loads(line)
-        sid = rec.get("session_id")
-        if sid not in label_of:
-            continue
-        enr = ((((rec.get("rollup_doc") or {}).get("dshield") or {}).get("cowrie") or {})
-               .get("enrichment", {}).get("session", {}))
-        emb = enr.get("embedding")
-        if isinstance(emb, list) and emb:
-            labels.append(label_of[sid])
-            embs.append(emb)
-    return labels, _l2(np.array(embs, dtype=np.float32))
+    records = load_records_detailed(labels_path, jsonl_path).records
+    labels = [record.analyst_label for record in records]
+    if not records:
+        return labels, np.zeros((0, 0), dtype=np.float32)
+    dimensions = {record.embedding.shape for record in records}
+    if len(dimensions) != 1:
+        raise ValueError(f"incompatible embedding dimensions: {sorted(dimensions)}")
+    return labels, np.stack([record.embedding for record in records])
 
 
 def _l2(m: np.ndarray) -> np.ndarray:
@@ -147,8 +370,25 @@ def build_prototypes(embs: np.ndarray, labels: list[str]) -> tuple[list[str], np
     return ids, _l2(mat)
 
 
-def classification_metrics(test_embs, test_labels, proto_ids, proto_mat) -> dict:
-    """1-NN nearest-prototype assignment (τ-free: assign everything, take nearest)."""
+def classification_metrics(test_embs, test_labels, proto_ids, proto_mat,
+                           scoreable: set[str] | None = None) -> dict:
+    """1-NN nearest-prototype assignment (τ-free: assign everything, take nearest).
+
+    `scoreable` restricts which labels enter the **macro-F1 mean**; `per_label`
+    always reports every label in the test set. Callers pass the labels that a
+    held-out split can actually learn — a label with one member corpus-wide has
+    zero training examples whenever that member is the test case, so it scores a
+    structural 0.0 that no prototype quality could move, while still dragging
+    1/n_labels of the macro mean. `eval_operational.gate` already excludes those
+    labels from the per-label floor for exactly this reason
+    (`n < 2` -> "structural, not a regression"); this makes macro-F1 agree with
+    that judgement instead of contradicting it. Default `None` scores everything,
+    preserving the old behavior for any caller that wants it.
+
+    Note this drops the excluded label's own structural 0.0 but NOT the cost of
+    its sessions: they are still in the test set and still get misassigned to
+    some other label, which costs that label precision. The exclusion forgives
+    only what no prototype could have fixed."""
     res = assign_batch(test_embs, proto_mat, proto_ids, tau=0.0, confident_tau=0.0)
     pred = [r.playbook_id for r in res]
     correct = sum(1 for p, t in zip(pred, test_labels) if p == t)
@@ -162,7 +402,8 @@ def classification_metrics(test_embs, test_labels, proto_ids, proto_mat) -> dict
         rec = tp / (tp + fn) if (tp + fn) else 0.0
         f1 = 2 * prec * rec / (prec + rec) if (prec + rec) else 0.0
         per[lb] = {"precision": round(prec, 4), "recall": round(rec, 4), "f1": round(f1, 4)}
-    macro_f1 = float(np.mean([m["f1"] for m in per.values()])) if per else 0.0
+    scored = [m["f1"] for lb, m in per.items() if scoreable is None or lb in scoreable]
+    macro_f1 = float(np.mean(scored)) if scored else 0.0
     return {
         "n_test": len(test_labels),
         "accuracy": round(correct / len(test_labels), 4) if test_labels else None,
@@ -231,12 +472,18 @@ _DEFAULT_K, _DEFAULT_REPEATS = 5, 3
 
 def evaluate(labels: list[str], embs: np.ndarray, *,
              k: int = _DEFAULT_K, repeats: int = _DEFAULT_REPEATS, seed: int = 0) -> dict:
+    # Labels with a single corpus-wide member cannot be learned by any held-out
+    # split (train has zero examples whenever that member is the test case), so
+    # their structural 0.0 is excluded from the macro mean — matching the
+    # per-label floor's existing n<2 exemption. per_label still reports them.
+    scoreable = {lb for lb, n in Counter(labels).items() if n >= 2}
     folds = repeated_stratified_kfold(labels, k=k, repeats=repeats, seed=seed)
     fold_acc, fold_f1 = [], []
     per_label_recall: dict[str, list[float]] = defaultdict(list)
     for train, test in folds:
         proto_ids, proto_mat = build_prototypes(embs[train], [labels[i] for i in train])
-        cls = classification_metrics(embs[test], [labels[i] for i in test], proto_ids, proto_mat)
+        cls = classification_metrics(embs[test], [labels[i] for i in test], proto_ids,
+                                    proto_mat, scoreable=scoreable)
         if cls["accuracy"] is not None:
             fold_acc.append(cls["accuracy"])
         fold_f1.append(cls["macro_f1"])
@@ -262,7 +509,7 @@ def evaluate(labels: list[str], embs: np.ndarray, *,
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--labels", default="eval/labels.yaml")
-    ap.add_argument("--unlabeled", default="eval/sessions.unlabeled.jsonl")
+    ap.add_argument("--unlabeled", default="eval/sessions.unlabeled.jsonl.gz")
     ap.add_argument("--baseline", default="eval/baseline-assignment.json")
     ap.add_argument("--write-baseline", action="store_true")
     ap.add_argument("--tolerance", type=float, default=0.05)

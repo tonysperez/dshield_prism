@@ -1,18 +1,18 @@
 {
-  "captured_at": "2026-07-27T00:00:00.000000+00:00",
-  "captured_from": "eval-system-hardening recapture (CAP-1..8): re-sampled via the classification-gated, defanged build_eval_set.py against the post-reprocess corpus; re-labeled (156 sessions, 10 distinct labels). Filenames dropped the v1/v2 suffix (see spec-eval-system-hardening.md Spec Change Log, 2026-07-27). Diagnostic only -- eval_clustering.py never gates; the operational gate is eval_operational.py.",
+  "captured_at": "2026-07-28T00:00:00.000000+00:00",
+  "captured_from": "rubric-v2 relabel recapture: 8 sessions carrying non-shell protocol framing (5 Redis RESP `PING`, 3 FTP `USER test`) reclassified is_real=false under the generalized protocol-leakage rule, dropping single_command_probe 27 -> 19 and the labeled set 156 -> 148. Prior capture was the eval-system-hardening recapture (CAP-1..8): re-sampled via the classification-gated, defanged build_eval_set.py against the post-reprocess corpus. Diagnostic only -- eval_clustering.py never gates; the operational gate is eval_operational.py.",
   "config_at_capture": {
     "min_cluster_size": 5,
     "min_samples": 2,
     "scalar_weight": 0.05
   },
   "input_at_capture": {
-    "labeled_blocks": 156,
-    "labeled_with_embed": 156,
+    "labeled_blocks": 148,
+    "labeled_with_embed": 148,
     "label_distribution": {
       "host_recon": 61,
-      "single_command_probe": 27,
       "ssh_key_chattr_persistence": 26,
+      "single_command_probe": 19,
       "payload_fetch_exec": 16,
       "botnet_loader": 10,
       "inband_payload_drop": 6,
@@ -26,23 +26,23 @@
   "tolerance_semantic": "Each metric fails the gate when current < baseline - tolerance. Tolerance is an absolute drop, not a relative percentage. DIAGNOSTIC ONLY -- eval_clustering.py never fails a build regardless of this comparison; the operational gate is eval_operational.py.",
   "metrics": {
     "ari": {
-      "baseline": 0.0348,
+      "baseline": 0.0294,
       "tolerance": 0.05
     },
     "nmi": {
-      "baseline": 0.4675,
+      "baseline": 0.4652,
       "tolerance": 0.05
     },
     "homogeneity": {
-      "baseline": 0.555,
+      "baseline": 0.5486,
       "tolerance": 0.05
     },
     "completeness": {
-      "baseline": 0.4038,
+      "baseline": 0.4039,
       "tolerance": 0.05
     },
     "v_measure": {
-      "baseline": 0.4675,
+      "baseline": 0.4652,
       "tolerance": 0.05
     }
   }

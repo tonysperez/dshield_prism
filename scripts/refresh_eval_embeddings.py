@@ -12,7 +12,10 @@ verify the new production state on the eval set:
   * Replaces just that field in-place; every other field (raw_events,
     command_enrichments, intel, stratum, divergent_pair_id, …) is left
     untouched so the redaction work and labeling join points stay
-    valid.
+    valid. Per-command embeddings are not persisted — see `_refresh_one`.
+
+The set is committed gzipped (``eval/sessions.unlabeled.jsonl.gz``); either
+spelling may be passed to ``--jsonls`` and is resolved to what exists.
 
 After this script runs, ``eval_clustering.py`` reflects whatever the
 production embedding pipeline currently produces.
@@ -26,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -34,10 +38,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
 
+from eval_jsonl import open_jsonl
+from eval_jsonl import resolve as resolve_jsonl
+
 log = logging.getLogger(__name__)
 
 _SESSION_ENRICHMENT_PATH = ("dshield", "cowrie", "enrichment", "session")
-_COMMAND_ENRICHMENT_PATH = ("dshield", "cowrie", "enrichment")
 
 
 def _dig(d: dict, *path: str) -> dict | None:
@@ -74,45 +80,17 @@ def _fetch_session_embeddings(
     return out
 
 
-def _fetch_command_embeddings(
-    es, commands_index: str, command_hashes: list[str],
-) -> dict[str, list[float]]:
-    """Return {hash: embedding} via mget. command-enrichment doc _ids
-    are the 16-hex normalized-command hash."""
-    if not command_hashes:
-        return {}
-    out: dict[str, list[float]] = {}
-    batch_size = 512
-    for i in range(0, len(command_hashes), batch_size):
-        batch = command_hashes[i : i + batch_size]
-        resp = es.mget(
-            index=commands_index, body={"ids": batch},
-            _source=["dshield.cowrie.enrichment.embedding"],
-        )
-        for doc in resp.get("docs") or []:
-            if not doc.get("found"):
-                continue
-            src = doc.get("_source") or {}
-            enr = _dig(src, *_COMMAND_ENRICHMENT_PATH) or {}
-            emb = enr.get("embedding")
-            if isinstance(emb, list):
-                out[doc["_id"]] = emb
-    return out
-
-
-def _refresh_one(
-    es, sessions_index: str, commands_index: str, jsonl_path: Path,
-) -> dict:
-    """Walk the JSONL, refresh session + per-command embeddings, write
-    back. Stats returned so the caller can sanity-check yield rate."""
+def _refresh_one(es, sessions_index: str, jsonl_path: Path) -> dict:
+    """Walk the JSONL, refresh session embeddings, write back. Stats
+    returned so the caller can sanity-check yield rate."""
+    jsonl_path = resolve_jsonl(jsonl_path)
     if not jsonl_path.exists():
         log.warning("missing JSONL: %s — skipping", jsonl_path)
         return {"skipped": 0, "refreshed_sessions": 0, "missing": 0}
 
     records: list[dict] = []
     session_ids: list[str] = []
-    command_hashes: set[str] = set()
-    with jsonl_path.open("r", encoding="utf-8") as f:
+    with open_jsonl(jsonl_path) as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -122,26 +100,12 @@ def _refresh_one(
             sid = rec.get("session_id")
             if isinstance(sid, str):
                 session_ids.append(sid)
-            for ce in rec.get("command_enrichments") or []:
-                # Persisted command_enrichment docs typically carry
-                # `process.hash.sha256` (full) but the index _id is the
-                # 16-hex prefix. We bypass by walking `event.id` which
-                # _build_ecs_doc stamps to the short hash.
-                ev = (ce.get("event") or {})
-                short = ev.get("id")
-                if isinstance(short, str):
-                    command_hashes.add(short)
 
-    log.info("%s: %d sessions, %d unique command-enrichment hashes",
-             jsonl_path.name, len(session_ids), len(command_hashes))
+    log.info("%s: %d sessions", jsonl_path.name, len(session_ids))
 
     sess_embeds = _fetch_session_embeddings(es, sessions_index, session_ids)
-    cmd_embeds = _fetch_command_embeddings(
-        es, commands_index, sorted(command_hashes),
-    )
-    log.info("  resolved %d/%d session embeddings, %d/%d command embeddings",
-             len(sess_embeds), len(session_ids),
-             len(cmd_embeds), len(command_hashes))
+    log.info("  resolved %d/%d session embeddings",
+             len(sess_embeds), len(session_ids))
 
     refreshed = 0
     missing = 0
@@ -153,35 +117,33 @@ def _refresh_one(
             missing += 1
             continue
         enr["embedding"] = sess_embeds[sid]
-        # Also refresh per-command embeddings so any downstream consumer
-        # that pools from per-command vectors (e.g. the E2.1 sweep, the
-        # E0.3 audit) sees fresh data.
-        for ce in rec.get("command_enrichments") or []:
-            short = (ce.get("event") or {}).get("id")
-            if not isinstance(short, str) or short not in cmd_embeds:
-                continue
-            ce_enr = _dig(ce, *_COMMAND_ENRICHMENT_PATH)
-            if ce_enr is not None:
-                ce_enr["embedding"] = cmd_embeds[short]
+        # Per-command embeddings are deliberately NOT written back. They were
+        # 147 MB of the 186 MB set (79%) and no consumer reads them from the
+        # JSONL: the sweeps that pool per-command vectors
+        # (`sweep_embed_input_order.py`, `sweep_embedding_model_prod.py`)
+        # fetch them from live ES via `_pull_command_enrichments`. Persisting
+        # them pushed the artifact past GitHub's 100 MB blob ceiling.
         refreshed += 1
 
-    with jsonl_path.open("w", encoding="utf-8") as f:
+    suffix = ".tmp.gz" if jsonl_path.name.endswith(".gz") else ".tmp"
+    tmp_path = jsonl_path.parent / (jsonl_path.name + suffix)
+    with open_jsonl(tmp_path, "wt") as f:
         for rec in records:
             f.write(json.dumps(rec, default=str) + "\n")
+    os.replace(tmp_path, jsonl_path)
 
     log.info("%s: refreshed %d session embeddings (%d missing)",
              jsonl_path.name, refreshed, missing)
     return {
         "refreshed_sessions": refreshed,
         "missing":            missing,
-        "command_embeddings_resolved": len(cmd_embeds),
     }
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--jsonls", type=Path, nargs="+",
-                    default=[Path("eval/sessions.unlabeled.jsonl")],
+                    default=[Path("eval/sessions.unlabeled.jsonl.gz")],
                     help="One or more JSONL files to refresh in place.")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
@@ -194,11 +156,10 @@ def main() -> int:
     sec = load_secrets()
     es = make_client(cfg.elasticsearch, sec)
     sessions_index = cfg.elasticsearch.indexes.cowrie.sessions_rollup
-    commands_index = cfg.elasticsearch.indexes.cowrie.commands
 
     total_refreshed = 0
     for p in args.jsonls:
-        stats = _refresh_one(es, sessions_index, commands_index, p)
+        stats = _refresh_one(es, sessions_index, p)
         total_refreshed += stats.get("refreshed_sessions", 0)
     log.info("total session embeddings refreshed across all JSONLs: %d",
              total_refreshed)

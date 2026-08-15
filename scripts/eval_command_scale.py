@@ -132,6 +132,12 @@ def _evaluate(embs, scalars, intents, ccfg) -> dict:
         cluster_matrix = np.hstack([normalized, block])
     else:
         cluster_matrix = normalized
+    # Deliberately no fit-only SVD reduction here (production applies
+    # `cluster_svd_dim` via clustering.py's `run_layer_clustering`). Omission is
+    # measured output-neutral: SVD-128 was validated at ~6x speed with no
+    # quality loss — purity +0.004, more clusters not fewer, lower outlier rate,
+    # not byte-identical to the full-dim partition (config.py:258-262) — so
+    # skipping it trades gate runtime for fidelity, not correctness.
     labels = HDBSCAN(min_cluster_size=ccfg.min_cluster_size,
                      min_samples=ccfg.min_samples,
                      metric="euclidean").fit_predict(cluster_matrix)

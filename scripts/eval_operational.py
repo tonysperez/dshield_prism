@@ -1,7 +1,7 @@
 """Operational quality gate — the post-partition CI gate (quality-metrics Slice A).
 
 Grades the operator jobs on the committed eval geometry (`eval/labels.yaml` +
-`eval/sessions.unlabeled.jsonl`), offline and deterministic — no live ES:
+`eval/sessions.unlabeled.jsonl.gz`), offline and deterministic — no live ES:
 
   * **assign**       — macro-F1 + per-label accuracy (nearest-prototype).
   * **mint-novel**   — novel precision/recall + false-familiar via a whole-label
@@ -220,6 +220,11 @@ def evaluate(labels: list[str], embs: np.ndarray, *, tau: float, confident_tau: 
     # 50/50 split: every label with >=1 member reaches a test fold, and the CI
     # is the across-fold spread (captures split variance, not just
     # test-resampling noise). Point estimate = mean over folds.
+    # Labels with a single corpus-wide member cannot be learned by any held-out
+    # split (train has zero examples whenever that member is the test case), so
+    # their structural 0.0 is excluded from the macro mean — matching the
+    # per-label floor's existing n<2 exemption. per_label still reports them.
+    scoreable = {lb for lb, n in Counter(labels).items() if n >= 2}
     folds = repeated_stratified_kfold(labels, k=k_folds, repeats=repeats, seed=seed)
     fold_f1: list[float] = []
     per_label_recall: dict[str, list[float]] = defaultdict(list)
@@ -227,7 +232,8 @@ def evaluate(labels: list[str], embs: np.ndarray, *, tau: float, confident_tau: 
     for train, test in folds:
         proto_ids, proto_mat = build_prototypes(embs[train], [labels[i] for i in train])
         test_embs, test_truth = embs[test], [labels[i] for i in test]
-        cls = classification_metrics(test_embs, test_truth, proto_ids, proto_mat)
+        cls = classification_metrics(test_embs, test_truth, proto_ids, proto_mat,
+                                     scoreable=scoreable)
         fold_f1.append(cls["macro_f1"])
         n_test_total += cls["n_test"]
         for lb, m in cls["per_label"].items():
@@ -373,7 +379,7 @@ def gate(report: dict, baseline: dict) -> tuple[list[str], bool]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--labels", default="eval/labels.yaml")
-    ap.add_argument("--unlabeled", default="eval/sessions.unlabeled.jsonl")
+    ap.add_argument("--unlabeled", default="eval/sessions.unlabeled.jsonl.gz")
     ap.add_argument("--baseline", default="eval/baseline-operational.json")
     ap.add_argument("--tau", type=float, default=0.94)
     ap.add_argument("--confident-tau", type=float, default=0.98)

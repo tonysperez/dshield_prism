@@ -53,6 +53,7 @@ from enrich.clustering import (
 )
 from enrich.config import load_config
 from enrich.sources.cowrie.sessions import build_session_scalar_block
+from eval_jsonl import open_jsonl
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +98,7 @@ def _load_labels(path: Path) -> dict[str, dict]:
 
 
 def _iter_jsonl(path: Path):
-    with path.open("r", encoding="utf-8") as f:
+    with open_jsonl(path) as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -660,7 +661,7 @@ def main() -> int:
                     default=Path("eval/labels.yaml"),
                     help="v1 analyst-labeled YAML")
     ap.add_argument("--jsonl", type=Path,
-                    default=Path("eval/sessions.unlabeled.jsonl"),
+                    default=Path("eval/sessions.unlabeled.jsonl.gz"),
                     help="v1 unlabeled eval JSONL")
     ap.add_argument("--output-dir", type=Path,
                     default=Path("eval/results"),

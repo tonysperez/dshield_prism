@@ -1,6 +1,6 @@
 """Export cowrie sessions for offline labeling.
 
-Stratified random sample of cowrie sessions → ``eval/sessions.unlabeled.jsonl``,
+Stratified random sample of cowrie sessions → ``eval/sessions.unlabeled.jsonl.gz``,
 the labeled-clustering eval set (`eval_clustering.py`).
 
 Stratification axes (recorded on every record):
@@ -47,10 +47,12 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from enrich.classification import is_releasable
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
+from eval_jsonl import open_jsonl
 
 
 _WS_RE = re.compile(r"\s+")
@@ -412,7 +414,13 @@ def _fetch_command_enrichments(
     ids = list(dict.fromkeys(i for i in ids if i))
     if not ids:
         return []
-    resp = es.mget(index=cmd_index, ids=ids)
+    # Exclude the per-command embedding: nothing reads it back out of the
+    # JSONL (the sweeps that pool per-command vectors go to live ES), and
+    # persisting it was 79% of the artifact's bytes.
+    resp = es.mget(
+        index=cmd_index, ids=ids,
+        _source_excludes=["dshield.cowrie.enrichment.embedding"],
+    )
     return [d["_source"] for d in resp.get("docs", []) if d.get("found")]
 
 
@@ -613,7 +621,7 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=20260531,
                     help="random_score seed; reproducible per (corpus, seed)")
     ap.add_argument("--output", type=Path,
-                    default=Path("eval/sessions.unlabeled.jsonl"),
+                    default=Path("eval/sessions.unlabeled.jsonl.gz"),
                     help="Output JSONL path.")
     ap.add_argument("--scan-cap", type=int, default=20000,
                     help="Hard ceiling on rollup docs scanned to fill the sample.")
@@ -686,7 +694,7 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     stratum_counts: dict[str, int] = defaultdict(int)
     written = 0
-    with args.output.open("w", encoding="utf-8") as f:
+    with open_jsonl(args.output, "wt") as f:
         for rollup in sampled:
             rec = _build_record(
                 es,

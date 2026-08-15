@@ -18,6 +18,7 @@ Run from the repo root via the console venv:
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import sys
 from collections import defaultdict
@@ -462,7 +463,7 @@ def _write_labels_yaml(path: Path, data: dict) -> None:
         "# Validate every ~25 entries with:\n"
         "#   console/.venv/bin/python scripts/validate_eval_labels.py \\\n"
         "#     --labels eval/labels.yaml \\\n"
-        "#     --unlabeled eval/sessions.unlabeled.jsonl\n"
+        "#     --unlabeled eval/sessions.unlabeled.jsonl.gz\n"
         "# Rubric: ./RUBRIC.md\n"
     )
     for sid, block in data.items():
@@ -481,7 +482,8 @@ def _write_labels_yaml(path: Path, data: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def _read_jsonl(path: Path) -> Iterable[dict]:
-    with path.open("r", encoding="utf-8") as f:
+    opener = gzip.open if str(path).endswith(".gz") else open
+    with opener(path, "rt", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -493,7 +495,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--input", type=Path,
-        default=Path("eval/sessions.unlabeled.jsonl"),
+        default=Path("eval/sessions.unlabeled.jsonl.gz"),
         help="Unlabeled JSONL from scripts/build_eval_set.py",
     )
     ap.add_argument(

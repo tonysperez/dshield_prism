@@ -182,6 +182,74 @@ def disagreements(pairs: list[tuple[str, str]]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Vocabulary alignment — separates renaming from disagreement
+# ---------------------------------------------------------------------------
+def _best_matching(cost: dict[tuple[str, str], int],
+                   rows: list[str], cols: list[str]) -> list[tuple[str, str]]:
+    """Max-weight 1:1 matching over `rows` x `cols`. Exact via scipy when the
+    `[cluster]` extra is installed; otherwise a greedy fallback (take the
+    largest remaining cell, strike its row and column). Greedy is not
+    guaranteed optimal, so it can only *understate* the recovered agreement —
+    the metric stays conservative either way."""
+    if not rows or not cols:
+        return []
+    try:
+        import numpy as np
+        from scipy.optimize import linear_sum_assignment
+    except ImportError:
+        out, used_r, used_c = [], set(), set()
+        for (r, c), n in sorted(cost.items(), key=lambda kv: (-kv[1], kv[0])):
+            if n <= 0 or r in used_r or c in used_c:
+                continue
+            used_r.add(r); used_c.add(c); out.append((r, c))
+        return out
+    M = np.zeros((len(rows), len(cols)), dtype=float)
+    for i, r in enumerate(rows):
+        for j, c in enumerate(cols):
+            M[i, j] = cost.get((r, c), 0)
+    ri, ci = linear_sum_assignment(-M)
+    return [(rows[i], cols[j]) for i, j in zip(ri, ci) if M[i, j] > 0]
+
+
+def vocabulary_alignment(pairs: list[tuple[str, str]]) -> dict:
+    """Diagnostic separating *label-vocabulary drift* from real disagreement.
+
+    `eval_agreement.py` compares label strings, so when two annotators name the
+    same behavior differently the pair scores as a total mismatch. This finds
+    the best 1:1 renaming and reports agreement under it.
+
+    A category present in **both** vocabularies is locked to itself: both
+    annotators knew the term and chose differently, which is genuine
+    disagreement, not a rename. Only one-sided categories are candidates for
+    matching. So `aligned_percent_agreement - percent_agreement` is an upper
+    bound on how much of the raw disagreement is naming, and the residual is
+    behavioral.
+    """
+    if not pairs:
+        return {"aligned_percent_agreement": None, "alignment": [],
+                "n_vocab_a": 0, "n_vocab_b": 0, "n_vocab_shared": 0,
+                "vocab_only_a": [], "vocab_only_b": []}
+    va = {x for x, _ in pairs}
+    vb = {y for _, y in pairs}
+    shared = va & vb
+    only_a, only_b = sorted(va - vb), sorted(vb - va)
+    counts = Counter(pairs)
+    matched = _best_matching({k: v for k, v in counts.items()
+                              if k[0] in set(only_a) and k[1] in set(only_b)},
+                             only_a, only_b)
+    mapping = {a: a for a in shared}
+    mapping.update(dict(matched))
+    agreed = sum(n for (x, y), n in counts.items() if mapping.get(x) == y)
+    return {
+        "aligned_percent_agreement": agreed / len(pairs),
+        "alignment": [{"a": a, "b": b, "count": counts.get((a, b), 0)}
+                      for a, b in sorted(matched)],
+        "n_vocab_a": len(va), "n_vocab_b": len(vb), "n_vocab_shared": len(shared),
+        "vocab_only_a": only_a, "vocab_only_b": only_b,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
 def evaluate(a: dict[str, str], b: dict[str, str], *, bootstrap: int, seed: int) -> dict:
@@ -197,6 +265,7 @@ def evaluate(a: dict[str, str], b: dict[str, str], *, bootstrap: int, seed: int)
             "pabak": pabak(pairs),
         },
         "kappa_undefined": kappa is None and len(pairs) > 0,
+        "vocabulary_alignment": vocabulary_alignment(pairs),
         "per_label_agreement": per_label_agreement(pairs),
         "disagreements": disagreements(pairs),
     }
@@ -245,6 +314,23 @@ def render(report: dict) -> list[str]:
         lines.append(f"  {name:20}{_fmt(m[name], 10)}{_fmt(hw.get(name), 10)}")
     if report["kappa_undefined"]:
         lines.append("  (κ undefined — single category in overlap; read PABAK + percent agreement)")
+    va = report.get("vocabulary_alignment") or {}
+    if va.get("aligned_percent_agreement") is not None:
+        raw = m["percent_agreement"] or 0.0
+        aligned = va["aligned_percent_agreement"]
+        lines.append(
+            f"  vocabulary: A={va['n_vocab_a']} B={va['n_vocab_b']} "
+            f"shared={va['n_vocab_shared']} categories")
+        lines.append(
+            f"  {'aligned_agreement':20}{_fmt(aligned, 10)}"
+            f"{'':>10}  (+{aligned - raw:.4f} vs raw = naming, not disagreement)")
+        if va["alignment"]:
+            lines.append("  1:1 renames recovered (a == b):")
+            for r in va["alignment"]:
+                lines.append(f"    {r['a']} == {r['b']} : {r['count']}")
+        if va["vocab_only_a"] or va["vocab_only_b"]:
+            lines.append(f"    unmatched in A: {', '.join(va['vocab_only_a']) or '—'}")
+            lines.append(f"    unmatched in B: {', '.join(va['vocab_only_b']) or '—'}")
     lines.append("  per-label positive specific agreement:")
     for cat, s in report["per_label_agreement"].items():
         lines.append(f"    {cat:34}{_fmt(s['specific_agreement'], 8)}"
@@ -272,11 +358,46 @@ def render(report: dict) -> list[str]:
 # fields, unlike eval_operational's baseline shape. Never read to fail a
 # build; `render_baseline_diff` is informational.
 # ---------------------------------------------------------------------------
-def build_baseline(report: dict) -> dict:
-    return {
+def build_baseline(report: dict, *, sources: dict | None = None) -> dict:
+    """Diagnostic snapshot. `sources` records WHICH pair produced it — without
+    that, a bare agreement number is uninterpretable: intra-annotator (same
+    person, delayed) and inter-annotator (two annotators, one possibly an LLM)
+    answer different questions, and a number captured under one rubric version
+    says nothing about another."""
+    out: dict = {
         "n_overlap": report["n_overlap"],
         "metrics": report["metrics"],
         "captured_from": "eval_agreement.py --write-baseline",
+    }
+    if sources:
+        out["sources"] = sources
+    va = report.get("vocabulary_alignment") or {}
+    if va.get("aligned_percent_agreement") is not None:
+        out["vocabulary"] = {
+            "n_vocab_a": va["n_vocab_a"], "n_vocab_b": va["n_vocab_b"],
+            "n_vocab_shared": va["n_vocab_shared"],
+            "aligned_percent_agreement": va["aligned_percent_agreement"],
+        }
+    return out
+
+
+def _provenance(path: Path) -> dict:
+    """Annotator + rubric version actually present in a labels file, so the
+    baseline records what produced it rather than what someone intended."""
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return {"path": str(path)}
+    ann: Counter = Counter()
+    rub: Counter = Counter()
+    for block in raw.values():
+        if isinstance(block, dict) and block.get("annotated"):
+            ann[block.get("annotator")] += 1
+            rub[block.get("rubric_version")] += 1
+    return {
+        "path": str(path),
+        "annotators": {str(k): v for k, v in ann.most_common()},
+        "rubric_versions": {str(k): v for k, v in rub.most_common()},
     }
 
 
@@ -340,7 +461,10 @@ def main() -> int:
     if args.write_baseline:
         baseline_path = Path(args.baseline)
         baseline_path.parent.mkdir(parents=True, exist_ok=True)
-        baseline_path.write_text(json.dumps(build_baseline(report), indent=2) + "\n")
+        sources = {"labels_a": _provenance(Path(args.labels_a)),
+                   "labels_b": _provenance(Path(args.labels_b))}
+        baseline_path.write_text(
+            json.dumps(build_baseline(report, sources=sources), indent=2) + "\n")
         print(f"wrote baseline {args.baseline}")
         return 0
 
