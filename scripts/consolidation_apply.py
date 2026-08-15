@@ -33,7 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -152,7 +152,7 @@ def main() -> int:
     es = make_client(cfg.elasticsearch, load_secrets(args.config))
     idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
     anch_idx = cfg.elasticsearch.indexes.cowrie.playbook_anchors
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
     # resolve canonical names + per-op preview
     names: dict[str, str] = {}
@@ -196,7 +196,7 @@ def main() -> int:
         try:
             ares = es.update(**ret)
             anchor_result = ares.get("result")
-        except Exception as e:  # noqa: BLE001 — record, don't abort the batch
+        except Exception as e:
             anchor_result = f"error: {e}"
         applied.append({"alias": op["alias"], "canonical": op["canonical"],
                         "sessions_repointed": r.get("updated"),
@@ -210,7 +210,7 @@ def main() -> int:
              "results": applied}
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     audit_path = out_dir / f"consolidation-applied-{ts}.json"
     audit_path.write_text(json.dumps(audit, indent=2))
     print(f"\nwrote audit {audit_path}")

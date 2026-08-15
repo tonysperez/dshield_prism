@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Optional
 
 import yaml
 from pydantic import BaseModel, Field
@@ -109,7 +108,7 @@ class ESBackpressureConfig(BaseModel):
 class ESConfig(BaseModel):
     hosts: list[str]
     verify_certs: bool = False
-    ca_certs: Optional[str] = None
+    ca_certs: str | None = None
     request_timeout: int = 60
     indexes: SourceIndexes
     backpressure: ESBackpressureConfig = Field(default_factory=ESBackpressureConfig)
@@ -117,12 +116,12 @@ class ESConfig(BaseModel):
 
 class LLMConfig(BaseModel):
     provider: str = "ollama"  # "ollama" | "openai_compat"
-    base_url: Optional[str] = None
+    base_url: str | None = None
     generation_model: str
     embedding_model: str
     request_timeout: int = 120
     max_retries: int = 2
-    api_key: Optional[str] = None  # for openai_compat servers that require it
+    api_key: str | None = None  # for openai_compat servers that require it
     embed_context: list[str] = Field(
         default_factory=lambda: ["intent", "description"]
     )
@@ -214,7 +213,7 @@ class CloudPricingConfig(BaseModel):
 class CloudConfig(BaseModel):
     enabled: bool = False
     provider: str = "anthropic"
-    base_url: Optional[str] = None
+    base_url: str | None = None
     model: str = "claude-sonnet-4-6"
     max_tokens: int = 1024
     request_timeout: int = 120
@@ -270,7 +269,7 @@ class SessionConfig(BaseModel):
     # session clustering path. None/0 disables the override; otherwise the floor
     # must stay in [2, cluster_min_cluster_size]. Singleton minting remains out
     # of scope because one session cannot establish embedding coherence.
-    novel_pool_cluster_min_cluster_size: Optional[int] = None
+    novel_pool_cluster_min_cluster_size: int | None = None
     # min_samples=2 avoids collapsing HDBSCAN's mutual-reachability distance
     # to raw distance (single-linkage), which can let one mega-cluster
     # swallow the bulk on a duplicate-heavy corpus. ROADMAP issue #5.
@@ -1016,7 +1015,7 @@ class WorkerConfig(BaseModel):
     state_db: str
     page_size: int = 1000
     command_max_chars: int = 4000
-    initial_lookback_days: Optional[int] = None
+    initial_lookback_days: int | None = None
     log_level: str = "INFO"
     # Directory for project-owned log files. The CLI installs a rotating
     # file handler at `<log_dir>/cli.log` when this path is writable;
@@ -1046,18 +1045,18 @@ class WorkerConfig(BaseModel):
 
 class PromptsConfig(BaseModel):
     command_enrichment: str
-    command_deep_dive: Optional[str] = None
-    playbook_name: Optional[str] = None
+    command_deep_dive: str | None = None
+    playbook_name: str | None = None
     # Pass-2 of `name playbooks`: re-prompts the LLM when multiple clusters
     # end up with the same pass-1 name, asking it to produce distinct
     # names that capture what makes each cluster substantively different.
     # Optional — when unset, pass 2 is skipped (collisions keep their
     # pass-1 names). ROADMAP issue #10.
-    playbook_disambiguate: Optional[str] = None
+    playbook_disambiguate: str | None = None
     # Console-facing: plain-language explanation of why two session clusters
     # weren't merged into the same playbook. Used by the /compare endpoint
     # and the explain_cluster_pair.py CLI's --explain flag.
-    cluster_pair_explanation: Optional[str] = None
+    cluster_pair_explanation: str | None = None
 
 
 class ShapeDedupConfig(BaseModel):
@@ -1225,17 +1224,17 @@ class Secrets(BaseSettings):
     """Secrets pulled from environment / .env."""
     model_config = SettingsConfigDict(env_file=None, extra="ignore")
 
-    es_username: Optional[str] = None
-    es_password: Optional[str] = None
-    es_api_key: Optional[str] = None
-    anthropic_api_key: Optional[str] = None
+    es_username: str | None = None
+    es_password: str | None = None
+    es_api_key: str | None = None
+    anthropic_api_key: str | None = None
     # Intel-subsystem provider keys (M2). Both free-tier:
     # GreyNoise Community (~10k req/month), AbuseIPDB (1000 checks/day).
     # When unset, the corresponding provider is silently skipped at
     # `intel.refresh._build_providers` construction time — no error,
     # the rest of the providers run normally.
-    greynoise_api_key: Optional[str] = None
-    abuseipdb_api_key: Optional[str] = None
+    greynoise_api_key: str | None = None
+    abuseipdb_api_key: str | None = None
     # M4: abuse.ch unified auth key. ONE key covers URLhaus,
     # ThreatFox, FeodoTracker, and the future MalwareBazaar provider.
     # Register at https://auth.abuse.ch/. Optional: the abuse.ch
@@ -1244,12 +1243,12 @@ class Secrets(BaseSettings):
     # as the `Auth-Key` request header; when unset, they fall back
     # to unauthenticated requests and just hope the rate limit
     # holds.
-    abuse_ch_auth_key: Optional[str] = None
+    abuse_ch_auth_key: str | None = None
     # #2: VirusTotal public API v3 key. Scaffold only — the provider is
     # disabled by default; even with a key it stays off unless
     # `intel.providers.virustotal_public.enabled` is set. Free tier is
     # 4 req/min / 500 per day, so it's budget-gated like GreyNoise.
-    virustotal_api_key: Optional[str] = None
+    virustotal_api_key: str | None = None
 
 
 def _deep_merge(base: dict, over: dict) -> dict:
@@ -1262,7 +1261,7 @@ def _deep_merge(base: dict, over: dict) -> dict:
     return out
 
 
-def load_config(path: Optional[str] = None) -> AppConfig:
+def load_config(path: str | None = None) -> AppConfig:
     """Load default.yaml, then deep-merge local.yaml override if it exists.
 
     Path resolution:
@@ -1292,7 +1291,7 @@ def load_config(path: Optional[str] = None) -> AppConfig:
     return AppConfig(**data)
 
 
-def _resolve_env_file(config_path: Optional[str]) -> Optional[Path]:
+def _resolve_env_file(config_path: str | None) -> Path | None:
     """Find the .env file. Search order:
       1. <ENV_PREFIX>ENV (explicit absolute path)
       2. Sibling of the resolved config file
@@ -1316,7 +1315,7 @@ def _resolve_env_file(config_path: Optional[str]) -> Optional[Path]:
     return None
 
 
-def load_secrets(config_path: Optional[str] = None) -> Secrets:
+def load_secrets(config_path: str | None = None) -> Secrets:
     """Load ES credentials. Reads OS env first; if a .env file is locatable,
     it is layered in too (OS env wins on conflict, per pydantic-settings).
     """
@@ -1367,7 +1366,7 @@ def _hash_prompt_files(cfg: AppConfig) -> str:
         except OSError:
             # Missing prompt file: fold the path into the digest so a typo
             # doesn't silently produce the same hash as a correct config.
-            digest = hashlib.sha256(f"missing:{path}".encode("utf-8")).hexdigest()
+            digest = hashlib.sha256(f"missing:{path}".encode()).hexdigest()
         else:
             digest = hashlib.sha256(content).hexdigest()
         parts.append(f"{name}={digest}")
@@ -1399,7 +1398,7 @@ def _hash_command_grounding() -> str:
         try:
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
         except OSError:
-            digest = hashlib.sha256(f"unreadable:{rel}".encode("utf-8")).hexdigest()
+            digest = hashlib.sha256(f"unreadable:{rel}".encode()).hexdigest()
         parts.append(f"{rel}={digest}")
     return "\n".join(parts)
 

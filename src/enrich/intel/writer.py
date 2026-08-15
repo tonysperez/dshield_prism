@@ -22,8 +22,9 @@ Pure-function cores have their own smoke test at
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
-from typing import Any, Iterable, Optional
+from collections.abc import Iterable
+from datetime import UTC, datetime
+from typing import Any
 
 from ..config import AppConfig
 from .artifact import Artifact
@@ -111,7 +112,7 @@ def compute_derived(provider_signals: Iterable[DerivedSignals]) -> dict[str, Any
 
     consensus_malicious: bool
     override_applied: str
-    label: Optional[str] = None
+    label: str | None = None
 
     if direct_malicious_signals:
         # Rule 1: direct evidence wins.
@@ -154,10 +155,7 @@ def compute_derived(provider_signals: Iterable[DerivedSignals]) -> dict[str, Any
                 seen.add(tag)
                 tags.append(tag)
 
-    if total == 0:
-        external_rarity_score = 1.0
-    else:
-        external_rarity_score = (total - with_data) / total
+    external_rarity_score = 1.0 if total == 0 else (total - with_data) / total
 
     # Rollups precomputed for downstream consumers (M3 triage gate,
     # M5 findings page). Cheap to compute here; expensive for callers
@@ -211,9 +209,9 @@ def _provider_block(r: ProviderResult) -> dict[str, Any]:
 def build_intel_doc(
     artifact: Artifact,
     new_results: Iterable[ProviderResult],
-    prior_doc: Optional[dict[str, Any]] = None,
+    prior_doc: dict[str, Any] | None = None,
     *,
-    now: Optional[datetime] = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Construct the full ES doc body for the artifact's intel index.
 
@@ -225,9 +223,9 @@ def build_intel_doc(
     refresh runs: a worker that only re-queried two of five providers
     keeps the other three's data intact.
     """
-    t = (now or datetime.now(timezone.utc)).isoformat()
+    t = (now or datetime.now(UTC)).isoformat()
     providers: dict[str, dict[str, Any]] = {}
-    first_observed_locally: Optional[str] = None
+    first_observed_locally: str | None = None
     if prior_doc:
         prior_providers = (prior_doc.get("providers") or {})
         if isinstance(prior_providers, dict):
@@ -279,7 +277,7 @@ def upsert_intel_doc(
     """Read the prior doc (if any), merge results, write back. Returns the new body."""
     idx = index_for_kind(cfg, artifact.kind)
     doc_id = artifact.value
-    prior: Optional[dict[str, Any]] = None
+    prior: dict[str, Any] | None = None
     try:
         resp = es.get(index=idx, id=doc_id, ignore=[404])
         if resp.get("found"):

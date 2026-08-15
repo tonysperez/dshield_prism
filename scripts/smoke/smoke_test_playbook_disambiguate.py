@@ -29,7 +29,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from enrich.sources.cowrie.sessions import _detect_name_collisions
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

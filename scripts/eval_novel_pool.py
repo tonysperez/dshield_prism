@@ -19,10 +19,10 @@ import json
 import math
 import sys
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 from sklearn.cluster import HDBSCAN
@@ -30,21 +30,26 @@ from sklearn.cluster import HDBSCAN
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# Sibling-script import; path prepended above (precedent: diagnose_unminted_playbook.py).
+from eval_assignment_faithful import _band_diagnosis
+
 from enrich.classification import CLASSIFICATION_KEYWORD, PUBLIC, releasable_filter
-from enrich.clustering import compute_centroids, l2_normalize, rescue_noise_points, svd_reduce
+from enrich.clustering import (
+    compute_centroids,
+    l2_normalize,
+    rescue_noise_points,
+    svd_reduce,
+)
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
-from enrich.sources.cowrie.assignment import ASSIGNED, NOVEL, compute_assignment_window
 from enrich.sources.cowrie.assign_runner import _load_anchors
+from enrich.sources.cowrie.assignment import ASSIGNED, NOVEL, compute_assignment_window
 from enrich.sources.cowrie.lexical import build_bag_texts, pull_hash_to_cluster
 from enrich.sources.cowrie.sessions import (
     build_session_scalar_block,
     effective_novel_pool_min_cluster_size,
     merge_clusters_into_playbooks,
 )
-
-# Sibling-script import; path prepended above (precedent: diagnose_unminted_playbook.py).
-from eval_assignment_faithful import _band_diagnosis  # noqa: E402
 
 DEFAULT_TAUS = (0.88, 0.90, 0.92, 0.94, 0.96, 0.98)
 _S = "dshield.cowrie.enrichment.session"
@@ -466,7 +471,7 @@ def analyze(inputs: NovelPoolInputs, cfg, taus: Iterable[float]) -> dict:
             )
         shape = cluster_novel_pool(
             embeddings[novel_mask],
-            [scalar for scalar, keep in zip(inputs.scalars, novel_mask) if keep],
+            [scalar for scalar, keep in zip(inputs.scalars, novel_mask, strict=False) if keep],
             min_cluster_size=novel_pool_min_cluster_size,
             min_samples=int(session_cfg.cluster_min_samples),
             scalar_weight=float(session_cfg.cluster_scalar_weight),
@@ -495,7 +500,7 @@ def analyze(inputs: NovelPoolInputs, cfg, taus: Iterable[float]) -> dict:
         })
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "read_only": True,
         "session_classification": "public_only",
         "command_taxonomy_classification": "public_only",

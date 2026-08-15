@@ -73,7 +73,7 @@ check("no label + is_real missing -> __reject__",
 a = {"s1": "host_recon", "s2": NOVEL, "s3": "botnet_loader"}
 b = {"s1": "host_recon", "s2": REJECT, "s4": "botnet_loader"}
 pairs = overlap_pairs(a, b)
-check("overlap is the shared keys only", {p for p in ("s1", "s2")} and len(pairs) == 2, str(pairs))
+check("overlap is the shared keys only", {"s1", "s2"} and len(pairs) == 2, str(pairs))
 check("novel-vs-reject counts as DISAGREEMENT",
       percent_agreement(pairs) == 0.5, str(pairs))  # s1 agree, s2 (novel vs reject) disagree
 

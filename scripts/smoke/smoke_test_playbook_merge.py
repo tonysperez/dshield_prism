@@ -107,6 +107,7 @@ check("pg0 is the 0/1 group", out["cluster_0"] == "pg0" and out["cluster_2"] == 
 # -------------------------------------------------------------------------
 print("\n[5] Transitive chain — complete linkage splits worst endpoint apart")
 import math as _m
+
 theta = 0.24
 A = _unit(_m.cos(0 * theta),       _m.sin(0 * theta),       0.0)
 B = _unit(_m.cos(1 * theta),       _m.sin(1 * theta),       0.0)
@@ -275,6 +276,7 @@ check("τ=1.0: 2 alone",     out["cluster_2"] != out["cluster_0"], f"got {out!r}
 # -------------------------------------------------------------------------
 print("\n[7] Determinism")
 import random
+
 rng = random.Random(42)
 n = 30
 dim = 8
@@ -339,6 +341,7 @@ except ValueError:
     check("empty input raises", True)
 
 import importlib
+
 mod = importlib.import_module("enrich.sources.cowrie.sessions")
 check("module-reloaded seed matches", mod._compute_seed_id(["a1", "b2", "c3"]) == pid1)
 

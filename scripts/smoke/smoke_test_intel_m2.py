@@ -20,7 +20,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from enrich.intel.providers.abuseipdb import classify_abuseipdb
 from enrich.intel.providers.greynoise import classify_greynoise
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

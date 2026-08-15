@@ -24,7 +24,7 @@ import argparse
 import gzip
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -84,7 +84,7 @@ def main() -> int:
     ccfg = cfg.command_cluster
     metadata = {
         "_metadata": True,
-        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "captured_at": datetime.now(UTC).isoformat(),
         "commands_index": idx,
         "label": args.label,
         "command_cluster_config_at_capture": {

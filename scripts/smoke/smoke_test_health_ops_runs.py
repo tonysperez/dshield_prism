@@ -22,19 +22,22 @@ Run from the repo root via the console venv:
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "console" / "src"))
 sys.path.insert(0, str(REPO / "src"))
 
-from console.queries import (  # noqa: E402
-    health_ops_runs, pipeline_running, _current_burst_start, _unit_rows,
-)
 # Use the CONSOLE's slim AppConfig (console._config), NOT enrich.config — the
 # console runs on its own config class, and `cfg.ops` must resolve there too.
 from console._config import load_config
+from console.queries import (
+    _current_burst_start,
+    _unit_rows,
+    health_ops_runs,
+    pipeline_running,
+)
 
 CFG = load_config(str(REPO / "config" / "default.yaml"))
 
@@ -270,7 +273,7 @@ check("pipeline_running.since = burst start, not the current step",
 # -----------------------------------------------------------------------------
 print("\n[6] _unit_rows groups run docs by owning systemd unit")
 
-NOW = datetime(2026, 6, 3, 16, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 6, 3, 16, 0, tzinfo=UTC)
 FWD = "dshield_prism-forward.service"
 BWD = "dshield_prism-backward.service"
 CAT = {

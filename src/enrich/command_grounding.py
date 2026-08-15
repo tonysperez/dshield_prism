@@ -39,7 +39,6 @@ import logging
 import re
 import shlex
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
@@ -81,9 +80,9 @@ _VALID_CMD_NAME_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 _MULTICALL_BINARIES = frozenset({"busybox"})
 
 
-_loaded: Optional[dict[str, dict]] = None
-_loaded_denylist: Optional[dict[str, str]] = None
-_loaded_analyst_notes: Optional[list[dict]] = None
+_loaded: dict[str, dict] | None = None
+_loaded_denylist: dict[str, str] | None = None
+_loaded_analyst_notes: list[dict] | None = None
 
 
 def _load_denylist() -> dict[str, str]:

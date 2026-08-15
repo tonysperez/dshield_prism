@@ -31,9 +31,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from enrich.config import CloudConfig
-from enrich.triage import _has_mixed_classes, reasons_to_escalate
 from enrich.llm.schemas import CommandEnrichment, IOCs
-
+from enrich.triage import _has_mixed_classes, reasons_to_escalate
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []

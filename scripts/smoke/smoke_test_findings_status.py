@@ -17,10 +17,13 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from enrich.findings.writer import (  # noqa: E402
-    add_note, bulk_mutate_status, bulk_upsert_findings, finding_id, mutate_status,
+from enrich.findings.writer import (
+    add_note,
+    bulk_mutate_status,
+    bulk_upsert_findings,
+    finding_id,
+    mutate_status,
 )
-
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -111,8 +114,7 @@ class FakeES:
 
 
 # Patch the elasticsearch helpers.bulk used by writer.bulk_upsert_findings.
-import enrich.findings.writer as writer_mod  # noqa: E402
-
+import enrich.findings.writer as writer_mod
 
 BULK_CALLS: list[int] = []
 
@@ -309,7 +311,7 @@ check("no refresh when nothing was written",
 print("\n[10] bulk missing id fails only that id")
 es_m, ids_m = _seed_bulk_es(3)
 n_upd, errs = bulk_mutate_status(
-    es_m, "findings-idx", ids_m + ["find-nonexistent"], new_status="confirmed",
+    es_m, "findings-idx", [*ids_m, "find-nonexistent"], new_status="confirmed",
 )
 check("survivors updated", n_upd == 3, f"n_updated={n_upd}")
 check("one error reported", len(errs) == 1, f"errors={errs}")
@@ -355,7 +357,7 @@ print("\n[14] a bulk confirm resolves the cluster run once and threads it to"
 # dispatcher would make `search_calls == 1` provable while the value it
 # resolved never reached `build_anchor_payload` — the half of the contract
 # that actually keeps every anchor in a batch keyed to the same run.
-import enrich.findings.lifecycle as lifecycle_mod  # noqa: E402
+import enrich.findings.lifecycle as lifecycle_mod
 
 _cfg = SimpleNamespace(
     elasticsearch=SimpleNamespace(
@@ -369,7 +371,7 @@ _cfg = SimpleNamespace(
         campaign_lifecycle="cmp-lc-idx",
     )),
 )
-COVERAGE_KIND = sorted(lifecycle_mod.COVERAGE_KINDS)[0]
+COVERAGE_KIND = min(lifecycle_mod.COVERAGE_KINDS)
 
 
 def _seed_coverage_es(n: int, status: str = "new") -> tuple[FakeES, list[str]]:
@@ -513,8 +515,10 @@ sys.path.insert(0, str(REPO / "console" / "src"))
 
 try:
     import asyncio
+
     import httpx
-    from console import server as console_server  # noqa: E402
+
+    from console import server as console_server
 except ImportError as exc:
     print(f"  SKIP  console routes — {exc} "
           "(fastapi/console not installed in this venv)")
@@ -565,7 +569,7 @@ if console_server is not None:
     check("bulk empty ids → 'no ids supplied'", "no ids supplied" in r.text, r.text)
 
     r = client.post("/api/findings/status",
-                    json={"ids": ids_http + ["find-nope"], "status": "ack"})
+                    json={"ids": [*ids_http, "find-nope"], "status": "ack"})
     check("bulk partial failure stays 200", r.status_code == 200,
           f"{r.status_code} {r.text}")
     body = r.json() if r.status_code == 200 else {}

@@ -28,7 +28,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from enrich.findings.miner import _tombstone_orphan_findings
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

@@ -45,7 +45,6 @@ import random
 import sys
 from itertools import combinations
 from pathlib import Path
-from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -53,7 +52,7 @@ from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
 
 
-def _latest_cluster_run_id(es, clusters_index: str) -> Optional[str]:
+def _latest_cluster_run_id(es, clusters_index: str) -> str | None:
     """Pick the latest run_id from the run_summary docs in the
     session-clusters index."""
     body = {
@@ -129,7 +128,7 @@ def _fetch_member_features(
 
 def _mean_pairwise_jaccard(
     members: list[set], rng: random.Random, sample_cap: int,
-) -> Optional[float]:
+) -> float | None:
     """Mean pairwise Jaccard over a (possibly sampled) member set.
     Returns None when fewer than 2 non-empty members are available."""
     pop = [m for m in members if m]
@@ -148,7 +147,7 @@ def _mean_pairwise_jaccard(
     return total / n if n > 0 else None
 
 
-def _modal_signature_share(members: list[dict]) -> Optional[float]:
+def _modal_signature_share(members: list[dict]) -> float | None:
     """Fraction of members whose command_signature equals the modal
     value within the cluster. None when no member carries a signature."""
     sigs = [m.get("command_signature") or "" for m in members]
@@ -156,13 +155,13 @@ def _modal_signature_share(members: list[dict]) -> Optional[float]:
     if not sigs:
         return None
     from collections import Counter
-    top_sig, top_count = Counter(sigs).most_common(1)[0]
+    _top_sig, top_count = Counter(sigs).most_common(1)[0]
     return top_count / len(sigs)
 
 
 def _print_table(rows: list[dict]) -> None:
     """Per-cluster table sorted by size DESC."""
-    def _fmt(v: Optional[float]) -> str:
+    def _fmt(v: float | None) -> str:
         return "    —" if v is None else f"{v:5.2f}"
     print(f"{'cluster_id':24} {'playbook_id':20} {'size':>6} "
           f"{'j_cmds':>7} {'j_seqs':>7} {'mod_sig':>8}  playbook_name")
@@ -196,7 +195,7 @@ def _print_histogram(rows: list[dict]) -> None:
                     counts[i] += 1
                     break
         print(f"\n  {metric}:")
-        for label, c in zip(labels, counts):
+        for label, c in zip(labels, counts, strict=False):
             bar = "#" * c
             print(f"    {label}  {c:>4}  {bar}")
         if none_count:

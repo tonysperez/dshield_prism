@@ -27,8 +27,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from enrich.findings.lifecycle import (
-    DRIFT_KINDS,
     COVERAGE_KINDS,
+    DRIFT_KINDS,
     kind_classification,
     record_drift_suppression,
     remove_anchors_by_source,
@@ -36,7 +36,6 @@ from enrich.findings.lifecycle import (
     write_provisional_anchor,
 )
 from enrich.findings.writer import _apply_lifecycle_side_effects
-
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -185,7 +184,7 @@ check("'campaign_growth' → drift", kind_classification("campaign_growth") == "
 check("'new_playbook' → discovery", kind_classification("new_playbook") == "discovery")
 check("'outlier_burst' → discovery", kind_classification("outlier_burst") == "discovery")
 check("DRIFT_KINDS covers 7 kinds", len(DRIFT_KINDS) == 7, f"got {len(DRIFT_KINDS)}")
-check("COVERAGE_KINDS == {playbook, campaign}", COVERAGE_KINDS == frozenset({"playbook", "campaign"}))
+check("COVERAGE_KINDS == {playbook, campaign}", frozenset({"playbook", "campaign"}) == COVERAGE_KINDS)
 
 
 # -----------------------------------------------------------------------------

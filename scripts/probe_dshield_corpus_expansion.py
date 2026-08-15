@@ -28,7 +28,7 @@ import ipaddress
 import json
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -148,7 +148,7 @@ def main() -> int:
                    "escalate to operator before building I3.")
 
     out = ["# I3.0 — DShield-firewall corpus-expansion probe", ""]
-    out.append(f"_Captured {datetime.now(timezone.utc).isoformat()}_")
+    out.append(f"_Captured {datetime.now(UTC).isoformat()}_")
     src = (", ".join(p.name for p in args.dshield_log)
            if args.dshield_log else args.ips_file.name)
     out.append(f"Source: `{src}`" + (f" · {events} firewall events parsed" if events else ""))
@@ -175,7 +175,7 @@ def main() -> int:
     print(md)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     p = args.output_dir / f"I3-corpus-expansion-{ts}.md"
     p.write_text(md, encoding="utf-8")
     print(f"\nwrote {p}")

@@ -26,15 +26,14 @@ LLM call is the slow part and is intentionally separated.
 from __future__ import annotations
 
 import statistics
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, Optional
 
 from elasticsearch import Elasticsearch
 
 from ...config import AppConfig
 from ...llm.schemas import CLUSTER_PAIR_EXPLANATION_JSON_SCHEMA, ClusterPairExplanation
 from .commands import hash_command, normalize
-
 
 SAMPLE_MEMBERS = 200
 TOP_K_COMMANDS = 15
@@ -52,7 +51,7 @@ def _cosine(a, b) -> float:
     dot = 0.0
     na = 0.0
     nb = 0.0
-    for x, y in zip(a, b):
+    for x, y in zip(a, b, strict=False):
         dot += x * y
         na += x * x
         nb += y * y
@@ -61,7 +60,7 @@ def _cosine(a, b) -> float:
     return float(dot / ((na ** 0.5) * (nb ** 0.5)))
 
 
-def _latest_run_id(es: Elasticsearch, clusters_idx: str) -> Optional[str]:
+def _latest_run_id(es: Elasticsearch, clusters_idx: str) -> str | None:
     # P3.1 — resolve via the run_summary completion sentinel (written LAST,
     # P3.3), not the newest `cluster` doc, so explain never anchors on a
     # half-built run; mirrors miner/lifecycle/console RunCache.
@@ -246,9 +245,9 @@ def _fetch_all_centroids(
 
 def _nearest_in_cluster_index(
     es: Elasticsearch, clusters_idx: str, target_id: str,
-    *, exclude_playbook_id: Optional[str] = None,
+    *, exclude_playbook_id: str | None = None,
     label_field: str = "playbook_name", top_n: int = 8,
-) -> tuple[Optional[str], list[dict]]:
+) -> tuple[str | None, list[dict]]:
     """Shared engine for the three cluster kinds (session / IP / command).
 
     Returns (run_id, peers[]) — peers descending by cosine to target. When
@@ -340,7 +339,7 @@ def _playbook_mean_centroids(
 
 def _nearest_playbooks(
     es: Elasticsearch, cfg: AppConfig, target_id: str, top_n: int,
-) -> tuple[Optional[str], list[dict]]:
+) -> tuple[str | None, list[dict]]:
     clusters_idx = cfg.elasticsearch.indexes.cowrie.session_clusters
     run_id = _latest_run_id(es, clusters_idx)
     if not run_id:
@@ -368,7 +367,7 @@ def _nearest_playbooks(
 
 def _nearest_campaigns(
     es: Elasticsearch, cfg: AppConfig, target_id: str, top_n: int,
-) -> tuple[Optional[str], list[dict]]:
+) -> tuple[str | None, list[dict]]:
     """Campaigns don't have embeddings — score via Jaccard over
     member_playbook_ids. Higher = more shared playbooks = more likely the
     same / overlapping campaign.
@@ -483,7 +482,7 @@ def nearest_peers(
 
 def _analyze_centroid_pair(
     es: Elasticsearch, clusters_idx: str, a_id: str, b_id: str,
-    *, merge_threshold: Optional[float] = None,
+    *, merge_threshold: float | None = None,
 ) -> dict:
     """Minimal centroid-only compare for ip_cluster / command_cluster.
     No top-command set diffs (those are session-specific) — just cosine

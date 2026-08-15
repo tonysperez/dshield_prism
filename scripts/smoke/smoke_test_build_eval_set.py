@@ -25,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import build_eval_set as bes  # noqa: E402
+import build_eval_set as bes
 
 
 def _rollup(classification: str | None, session_id: str = "sid1") -> dict:

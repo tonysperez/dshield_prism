@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from enrich.findings import operations as ops_mod  # noqa: E402
+from enrich.findings import operations as ops_mod
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -142,7 +142,8 @@ ops_mod.init_index = _stub_init
 ops_mod.make_client = _stub_make
 
 # Patch the cutoff so the test is self-contained.
-from enrich.findings import discovery as disc_mod  # noqa: E402
+from enrich.findings import discovery as disc_mod
+
 _orig_cutoff = disc_mod._convergence_ratio_cutoff
 disc_mod._convergence_ratio_cutoff = _stub_cutoff
 

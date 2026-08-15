@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Callable, Optional, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ _OVERLOAD_MARKERS = (
 )
 
 
-def _status_of(exc: BaseException) -> Optional[int]:
+def _status_of(exc: BaseException) -> int | None:
     """Best-effort HTTP status extraction across elasticsearch-py versions."""
     for attr in ("status_code", "status"):
         val = getattr(exc, attr, None)
@@ -57,7 +58,7 @@ def is_overload_error(exc: BaseException) -> bool:
     return any(marker in text for marker in _OVERLOAD_MARKERS)
 
 
-def parent_breaker_ratio(es: Any) -> Optional[float]:
+def parent_breaker_ratio(es: Any) -> float | None:
     """Return the max over nodes of ``parent.estimated/limit`` from
     ``_nodes/stats/breaker``, or ``None`` if it can't be determined.
 
@@ -65,11 +66,11 @@ def parent_breaker_ratio(es: Any) -> Optional[float]:
     probe must not itself be routed through the retry wrapper)."""
     try:
         resp = es.nodes.stats(metric="breaker")
-    except Exception:  # noqa: BLE001 — probing pressure must never raise
+    except Exception:
         return None
     try:
         nodes = (resp or {}).get("nodes") or {}
-        best: Optional[float] = None
+        best: float | None = None
         for node in nodes.values():
             parent = ((node or {}).get("breakers") or {}).get("parent") or {}
             limit = parent.get("limit_size_in_bytes")
@@ -79,9 +80,9 @@ def parent_breaker_ratio(es: Any) -> Optional[float]:
             ratio = float(used) / float(limit)
             if best is None or ratio > best:
                 best = ratio
-        return best
-    except Exception:  # noqa: BLE001 — malformed stats → unknown, not fatal
+    except Exception:
         return None
+    return best
 
 
 def _raw(es: Any) -> Any:
@@ -95,7 +96,7 @@ def wait_for_capacity(
     bp: Any,
     *,
     label: str,
-    deadline: Optional[float] = None,
+    deadline: float | None = None,
 ) -> None:
     """Block while the node's parent-breaker ratio is at/above the high
     watermark, until it drains below the resume watermark or the patience
@@ -149,7 +150,7 @@ def run_resilient(
     while True:
         try:
             return fn()
-        except Exception as exc:  # noqa: BLE001 — re-raised unless retryable
+        except Exception as exc:
             if not is_overload_error(exc):
                 raise
             attempt += 1

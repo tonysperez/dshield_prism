@@ -38,7 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -46,10 +46,11 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # scripts/ — reuse Exp 1
 
+from exp_prototype_assignment import _l2, load_anchors
+
 from enrich.classification import releasable_filter
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
-from exp_prototype_assignment import _l2, load_anchors
 
 _S = "dshield.cowrie.enrichment.session"
 _PB_FIELD = f"{_S}.playbook_id"
@@ -139,7 +140,7 @@ def sample_family_embeddings(es, index: str, filt: list[dict], family_ids: list[
                              n: int, seed: int) -> list[list[float]]:
     """Up to `n` seeded-random session embeddings whose playbook_id is in
     `family_ids`. Emits embeddings only — no other per-session fields."""
-    base = {"bool": {"filter": filt + [{"terms": {_PB_FIELD: family_ids}}]}}
+    base = {"bool": {"filter": [*filt, {"terms": {_PB_FIELD: family_ids}}]}}
     out: list[list[float]] = []
     seen: set[str] = set()
     batch = 0
@@ -236,8 +237,8 @@ def run(es, idx: str, anch_idx: str, filt: list[dict], *, n_families: int,
 
 def render_md(report: dict, meta: dict) -> str:
     L = ["# Experiment 2 — held-out novelty (OOD)\n",
-         f"_Captured {meta['captured_at']}. classification={meta['classification']}, "
-         f"family_tau={report.get('family_tau')}, prod_tau={report.get('prod_tau')}._\n"]
+         (f"_Captured {meta['captured_at']}. classification={meta['classification']}, "
+          f"family_tau={report.get('family_tau')}, prod_tau={report.get('prod_tau')}._\n")]
     if report.get("error") or "families" not in report:
         L.append(f"**{report.get('error', 'no result')}.** On the untagged corpus the "
                  "public-only filter returns 0 docs; operator may re-run with "
@@ -322,7 +323,7 @@ def main() -> int:
                  seed_anchor=args.seed_anchor)
 
     meta = {
-        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "captured_at": datetime.now(UTC).isoformat(),
         "classification": classification,
         "sessions_index": idx,
         "anchors_index": anch_idx,
@@ -333,7 +334,7 @@ def main() -> int:
     report.setdefault("prod_tau", prod_tau)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     stem = out_dir / f"exp-holdout-novelty-{ts}"
     stem.with_suffix(".json").write_text(json.dumps({"meta": meta, "report": report}, indent=2))
     stem.with_suffix(".md").write_text(render_md(report, meta))

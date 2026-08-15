@@ -37,7 +37,6 @@ from enrich.sources.cowrie.campaigns import (
     _campaign_id,
 )
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

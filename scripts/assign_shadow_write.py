@@ -25,7 +25,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -33,15 +33,15 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # scripts/
 
+from cluster_bag_prod import _BAG_SVD_COMPONENTS, build_bag_texts, pull_hash_to_cluster
+from exp_prototype_assignment import _l2, load_anchors
+from exp_tfidf_separation import group_centroids, sample_playbook
+
 from enrich.classification import releasable_filter
 from enrich.clustering import compute_lexical_features
 from enrich.config import load_config, load_secrets
 from enrich.es_client import bulk_write, make_client
 from enrich.sources.cowrie.assignment import assign_batch
-
-from cluster_bag_prod import _BAG_SVD_COMPONENTS, build_bag_texts, pull_hash_to_cluster
-from exp_prototype_assignment import _l2, load_anchors
-from exp_tfidf_separation import group_centroids, sample_playbook
 
 _S = "dshield.cowrie.enrichment.session"
 _PB_FIELD = f"{_S}.playbook_id"
@@ -112,7 +112,7 @@ def run(es, idx, cmd_idx, anch_idx, filt, *, sample, per_anchor, tau, confident_
     train_emb, train_sets, train_pb = [], [], []
     for pb in anchor_ids:
         embs, sets = sample_playbook(es, idx, filt, pb, per_anchor, seed)
-        for e, s in zip(embs, sets):
+        for e, s in zip(embs, sets, strict=False):
             train_emb.append(e); train_sets.append(s); train_pb.append(pb)
 
     write_set = sample_write_set(es, idx, filt, sample, seed)
@@ -136,8 +136,8 @@ def run(es, idx, cmd_idx, anch_idx, filt, *, sample, per_anchor, tau, confident_
 
     res = assign_batch(w_emb, anchor_emb, anchor_ids, tau=tau, confident_tau=confident_tau,
                        tfidf_tau=tfidf_tau, tfidf_cos=tfidf_cos)
-    now = datetime.now(timezone.utc).isoformat()
-    actions = [shadow_action(wid, a, now) for wid, a in zip(w_ids, res)]
+    now = datetime.now(UTC).isoformat()
+    actions = [shadow_action(wid, a, now) for wid, a in zip(w_ids, res, strict=False)]
     summary = {
         "n_anchors": len(anchor_ids), "tfidf_available": has_tfidf,
         "n_write": len(res),

@@ -26,7 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from itertools import product
 from pathlib import Path
 
@@ -47,10 +47,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import eval_clustering as ec
+
 from enrich.clustering import l2_normalize
 from enrich.config import load_config
 from enrich.sources.cowrie.sessions import build_session_scalar_block
-
 
 # Sweep grid per the brutal-review plan. {2, 3, 5, 8, 13} × {1, 2, 3, 5}
 # spans the "fine-grained" (mcs=2) and "noise-aggressive" (mcs=13) ends
@@ -187,7 +187,7 @@ def _render_prod_table(rows: list[dict]) -> str:
     out: list[str] = []
     out.append("# F4.1 — multi-mcs HDBSCAN sweep (production scale)")
     out.append("")
-    out.append(f"_Captured {datetime.now(timezone.utc).isoformat()}_")
+    out.append(f"_Captured {datetime.now(UTC).isoformat()}_")
     out.append("")
     out.append("All metrics over the full production corpus except ari / "
                "completeness / homogeneity / divergent-pair, which score the "
@@ -202,7 +202,7 @@ def _render_prod_table(rows: list[dict]) -> str:
     out.append("|" + "|".join(["---:"] * len(headers)) + "|")
     for r in rows:
         m = r["metrics"]
-        def _f(key):
+        def _f(key, m=m):
             v = m.get(key)
             return "—" if v is None else (f"{v:.4f}" if isinstance(v, float) else str(v))
         cells = [
@@ -225,10 +225,11 @@ def _run_prod_sweep(output_dir: Path) -> int:
     """F4.1: pull the live corpus once, sweep the 8-point (mcs, ms) grid,
     score each on all 7 binding metrics + the small-cluster axis."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from enrich.config import load_config, load_secrets
-    from enrich.es_client import make_client
     from eval_production_scale import _load_eval_session_ids_and_labels
     from prod_corpus import cluster_hdbscan, pull_session_corpus, score_full
+
+    from enrich.config import load_config, load_secrets
+    from enrich.es_client import make_client
 
     cfg = load_config()
     sec = load_secrets()
@@ -263,12 +264,12 @@ def _run_prod_sweep(output_dir: Path) -> int:
 
     md = _render_prod_table(rows)
     output_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     md_path = output_dir / f"hdbscan-prod-sweep-{ts}.md"
     json_path = output_dir / f"hdbscan-prod-sweep-{ts}.json"
     md_path.write_text(md, encoding="utf-8")
     json_path.write_text(json.dumps({
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "n_sessions": len(corpus),
         "grid": [list(p) for p in _PROD_SWEEP_GRID],
         "rows": rows,
@@ -328,7 +329,7 @@ def main() -> int:
     if not args.no_json:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         report = {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "input":        meta,
             "sweep_grid": {
                 "min_cluster_size": list(_SWEEP_MIN_CLUSTER_SIZE),

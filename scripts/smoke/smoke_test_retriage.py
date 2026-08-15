@@ -47,7 +47,6 @@ from enrich.sources.cowrie.commands import (
     run_retriage,
 )
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 
@@ -185,8 +184,8 @@ def _doc(doc_id: str, cmd: str, confidence: int,
 # Intercept bulk_write and make_client + load_centroids so the function runs
 # end-to-end without ES.
 # -----------------------------------------------------------------------------
-import enrich.sources.cowrie.commands as commands_mod
 import enrich.clustering as clustering_mod
+import enrich.sources.cowrie.commands as commands_mod
 
 _captured_bulk: list[dict] = []
 _orig_bulk_write = commands_mod.bulk_write
@@ -330,7 +329,7 @@ results = []
 for _ in range(2):
     es_stub = _StubES([dict(d) for d in stub_docs])
     commands_mod.bulk_write = _stub_bulk_write
-    commands_mod.make_client = lambda *a, **kw: es_stub
+    commands_mod.make_client = lambda *a, _es=es_stub, **kw: _es
     clustering_mod.load_centroids = _stub_load_centroids
     _captured_bulk.clear()
     try:

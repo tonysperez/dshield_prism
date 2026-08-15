@@ -17,8 +17,9 @@ import math
 import subprocess
 import sys
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 
@@ -26,22 +27,24 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from enrich.sources.cowrie.assignment import ASSIGNED, NOVEL, compute_assignment_window
-from enrich.sources.cowrie.predicates import (
-    ANCHOR_MODAL_THRESHOLD,
-    PREDICATE_NAMES,
-    command_subsignals,
-    fold_session_predicates,
-)
-# Private on purpose, imported on purpose: "armed signature" in the item-54 diagnostics must
-# mean exactly what `predicate_overlap` means by it — same coercion AND same threshold — so
-# reuse the gate's own helper rather than re-deriving one that can drift.
-from enrich.sources.cowrie.predicates import _coerce_modal_value
 from capture_anchor_snapshot import predicate_signature as _anchor_predicate_signature
 from eval_assignment import EvalRecord, EvidenceLoad, load_records_detailed
 from eval_jsonl import resolve as resolve_jsonl
 from eval_predicate_falsification import evaluate as evaluate_predicate_separation
 from eval_predicate_falsification import load_command_text
+
+from enrich.sources.cowrie.assignment import ASSIGNED, NOVEL, compute_assignment_window
+
+# Private on purpose, imported on purpose: "armed signature" in the item-54 diagnostics must
+# mean exactly what `predicate_overlap` means by it — same coercion AND same threshold — so
+# reuse the gate's own helper rather than re-deriving one that can drift.
+from enrich.sources.cowrie.predicates import (
+    ANCHOR_MODAL_THRESHOLD,
+    PREDICATE_NAMES,
+    _coerce_modal_value,
+    command_subsignals,
+    fold_session_predicates,
+)
 
 TAU = 0.94
 CONFIDENT_TAU = 0.98
@@ -283,7 +286,7 @@ def _replay(
     similarities = np.stack([record.embedding for record in windows]) @ anchor_matrix.T
     ordered = np.sort(similarities, axis=1)[:, ::-1]
     outcomes = []
-    for index, (record, assignment) in enumerate(zip(windows, assignments)):
+    for index, (record, assignment) in enumerate(zip(windows, assignments, strict=False)):
         predicted = assignment.playbook_id
         outcomes.append({
             "session_id": record.session_id,
@@ -447,7 +450,7 @@ def _candidate_trace_report(
                 for row in rows
             ],
         }
-        for record, rows in zip(scored, candidate_trace)
+        for record, rows in zip(scored, candidate_trace, strict=False)
     ]
 
 
@@ -517,8 +520,8 @@ def _rescue_metrics(
     ratio is not comparable across arms without it. `n_rescued_gt_in_library` is the same
     guard one level down: a rescue whose ground truth is not in the library is wrong by
     construction, so `n_rescued_correct` is only interpretable next to it."""
-    rescued = [(record, a) for record, a in zip(scored, assignments) if a.rescued]
-    assigned = [(record, a) for record, a in zip(scored, assignments) if a.status == ASSIGNED]
+    rescued = [(record, a) for record, a in zip(scored, assignments, strict=False) if a.rescued]
+    assigned = [(record, a) for record, a in zip(scored, assignments, strict=False) if a.status == ASSIGNED]
     in_library = [
         (record, a) for record, a in assigned if record.production_playbook_id in library
     ]
@@ -618,7 +621,7 @@ def _real_anchor_replay(
         anchor_predicate_signatures=anchor_predicate_signatures,
     )
     assignments = result.assignments
-    assigned = [(record, a) for record, a in zip(scored, assignments) if a.status == ASSIGNED]
+    assigned = [(record, a) for record, a in zip(scored, assignments, strict=False) if a.status == ASSIGNED]
     accuracy = (
         sum(record.production_playbook_id == a.playbook_id for record, a in assigned)
         / len(assigned) if assigned else None
@@ -671,7 +674,7 @@ def novelty_trials(eligible: list[str]) -> list[list[str]]:
         if len(labels) < 3:
             return []
         pairs = [labels[i:i + 2] for i in range(0, len(labels) - 3, 2)]
-        return pairs + [labels[-3:]]
+        return [*pairs, labels[-3:]]
     return [labels[i:i + 2] for i in range(0, len(labels), 2)]
 
 
@@ -723,7 +726,7 @@ def _path_metrics(
 
         result[path] = {
             "share": _measure(
-                outcomes, lambda rows: len(selected(rows)), lambda rows: len(rows),
+                outcomes, lambda rows: len(selected(rows)), len,
                 seed_offset=seed_base + index * 4, grouping=grouping,
             ),
             "accuracy": _measure(
@@ -756,19 +759,19 @@ def _band_report(
     return {
         "checks_per_outcome": _measure(
             outcomes, lambda rows: sum(row["band_checks"] for row in rows),
-            lambda rows: len(rows), seed_offset=seed_base, grouping=grouping,
+            len, seed_offset=seed_base, grouping=grouping,
         ),
         "rejections_per_outcome": _measure(
             outcomes, lambda rows: sum(row["band_rejections"] for row in rows),
-            lambda rows: len(rows), seed_offset=seed_base + 1, grouping=grouping,
+            len, seed_offset=seed_base + 1, grouping=grouping,
         ),
         "confirmed_share": _measure(
             outcomes, lambda rows: sum(row["band_confirmed"] for row in rows),
-            lambda rows: len(rows), seed_offset=seed_base + 2, grouping=grouping,
+            len, seed_offset=seed_base + 2, grouping=grouping,
         ),
         "abstention_share": _measure(
             outcomes, lambda rows: sum(row["predicted_novel"] for row in rows),
-            lambda rows: len(rows), seed_offset=seed_base + 3, grouping=grouping,
+            len, seed_offset=seed_base + 3, grouping=grouping,
         ),
         "totals": {
             "checks": sum(row["band_checks"] for row in outcomes),
@@ -807,7 +810,7 @@ def _cascade_slices(
                     row["path"] == "cascade_recovery" and row[field] == value
                     for row in rows
                 ),
-                lambda rows: len(rows),
+                len,
                 seed_offset=200 + len(result) * 20 + index,
                 grouping=grouping,
             )
@@ -816,7 +819,7 @@ def _cascade_slices(
     result["total"] = _measure(
         outcomes,
         lambda rows: sum(row["path"] == "cascade_recovery" for row in rows),
-        lambda rows: len(rows),
+        len,
         seed_offset=299,
         grouping=grouping,
     )
@@ -872,12 +875,12 @@ def _familiar_report(outcomes: list[dict[str, Any]], eligible: list[str]) -> dic
         "confusion": _confusion(outcomes),
         "accuracy": _measure(
             outcomes, lambda rows: sum(row["correct"] for row in rows),
-            lambda rows: len(rows), seed_offset=11,
+            len, seed_offset=11,
         ),
         "macro_f1": _macro_measure(outcomes, eligible),
         "coverage": _measure(
             outcomes, lambda rows: sum(not row["predicted_novel"] for row in rows),
-            lambda rows: len(rows), seed_offset=12,
+            len, seed_offset=12,
         ),
         "selective_risk": _measure(
             outcomes,
@@ -888,7 +891,7 @@ def _familiar_report(outcomes: list[dict[str, Any]], eligible: list[str]) -> dic
         ),
         "false_novel_rate": _measure(
             outcomes, lambda rows: sum(row["predicted_novel"] for row in rows),
-            lambda rows: len(rows), seed_offset=14,
+            len, seed_offset=14,
         ),
         "per_label": per_label,
         "paths": _path_metrics(outcomes, 500),
@@ -1164,7 +1167,7 @@ def evaluate(labels_path: Path, sessions_path: Path) -> dict[str, Any]:
     familiar = _familiar_report(familiar_outcomes, eligible) if familiar_outcomes else {}
     novelty = _novelty_report(novelty_outcomes, eligible) if novelty_outcomes else {}
     invalid.extend(_required_nulls({"familiar": familiar, "novelty": novelty}))
-    report = {
+    return {
         "schema_version": 2,
         "status": "INVALID" if invalid else "DIAGNOSTIC",
         "authority": "temporary_diagnostic_pending_representative_production_anchors",
@@ -1188,7 +1191,6 @@ def evaluate(labels_path: Path, sessions_path: Path) -> dict[str, Any]:
         "novelty": novelty,
         "operating_curve": operating_curve,
     }
-    return report
 
 
 def _identity_differences(expected: Any, actual: Any, path: str = "identity") -> list[str]:
@@ -1207,7 +1209,7 @@ def _identity_differences(expected: Any, actual: Any, path: str = "identity") ->
         if len(expected) != len(actual):
             return [f"{path}: length {len(expected)} != {len(actual)}"]
         differences = []
-        for index, (left, right) in enumerate(zip(expected, actual)):
+        for index, (left, right) in enumerate(zip(expected, actual, strict=False)):
             differences.extend(_identity_differences(left, right, f"{path}[{index}]"))
         return differences
     return [] if expected == actual else [f"{path}: {expected!r} != {actual!r}"]

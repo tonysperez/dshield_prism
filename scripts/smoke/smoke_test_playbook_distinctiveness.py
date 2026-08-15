@@ -32,7 +32,6 @@ from enrich.sources.cowrie.sessions import (
     _partition_mergeable,
 )
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

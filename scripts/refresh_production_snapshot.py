@@ -27,17 +27,16 @@ import argparse
 import gzip
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from enrich.config import load_config, load_secrets
-from enrich.es_client import make_client
-
 from build_eval_set import _redact_event  # type: ignore
 
+from enrich.config import load_config, load_secrets
+from enrich.es_client import make_client
 
 # Source fields the snapshot needs: the clustering inputs (embedding +
 # scalars + session_id) mirrored from iter_session_docs, plus the two
@@ -105,7 +104,7 @@ def main() -> int:
             f"Check elasticsearch.indexes.cowrie.sessions_rollup."
         )
 
-    captured_at = datetime.now(timezone.utc).isoformat()
+    captured_at = datetime.now(UTC).isoformat()
     metadata = {
         "_metadata":        True,
         "captured_at":      captured_at,

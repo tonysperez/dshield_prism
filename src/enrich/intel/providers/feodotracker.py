@@ -50,7 +50,7 @@ import threading
 import time
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -106,7 +106,7 @@ class FeodoTrackerProvider(Provider):
     # Bulk download once per refresh window; per-IP lookup is in-memory.
     rate_limit = RateLimit(capacity=1000, refill_per_second=1000.0, daily_budget=None)
 
-    def __init__(self, provider_cfg, auth_key: Optional[str] = None) -> None:
+    def __init__(self, provider_cfg, auth_key: str | None = None) -> None:
         super().__init__(provider_cfg)
         self._rows: dict[str, dict[str, Any]] = {}
         self._loaded_at: float = 0.0
@@ -123,7 +123,7 @@ class FeodoTrackerProvider(Provider):
             or (time.time() - self._loaded_at) >= self.cfg.refresh_minutes * 60
         )
 
-    def _load_from_cache_file(self) -> Optional[dict[str, dict[str, Any]]]:
+    def _load_from_cache_file(self) -> dict[str, dict[str, Any]] | None:
         p = Path(self.cfg.cache_file)
         if not p.exists():
             return None

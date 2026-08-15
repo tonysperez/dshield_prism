@@ -88,7 +88,7 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 
 proc = subprocess.run(
     [sys.executable, "-c", _CHILD.format(src=str(_REPO / "src"), chain=_CHAIN)],
-    capture_output=True, text=True, cwd=_REPO, timeout=180,
+    capture_output=True, text=True, cwd=_REPO, timeout=180, check=False,
 )
 out = (proc.stdout or "").strip()
 err = (proc.stderr or "").strip()[-400:]

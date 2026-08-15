@@ -22,8 +22,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from enrich.config import load_config, load_secrets  # noqa: E402
-from enrich.es_client import make_client  # noqa: E402
+import contextlib
+
+from enrich.config import load_config, load_secrets
+from enrich.es_client import make_client
 
 # In the backfill unit's ReadWritePaths (same dir as the state DB).
 _STATE = Path("/var/lib/dshield_prism/backfill-index-settings.json")
@@ -75,10 +77,8 @@ def restore(es, indices) -> None:
         except Exception as exc:
             print(f"[backfill-index-settings] restore {idx} FAILED ({exc}) — index may be "
                   f"left at refresh_interval=-1; fix manually", file=sys.stderr)
-    try:
+    with contextlib.suppress(FileNotFoundError):
         _STATE.unlink()
-    except FileNotFoundError:
-        pass
 
 
 def main() -> int:

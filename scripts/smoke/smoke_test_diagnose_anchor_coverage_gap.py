@@ -21,8 +21,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "src"))
 
-import diagnose_anchor_coverage_gap as target  # noqa: E402
-from enrich.classification import releasable_filter  # noqa: E402
+import diagnose_anchor_coverage_gap as target
+
+from enrich.classification import releasable_filter
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -179,12 +180,12 @@ def _window_source(sid, embedding):
 
 
 def _cfg(**session_overrides):
-    session = dict(
-        assignment_tau=0.94, assignment_confident_tau=0.98, assignment_tfidf_tau=0.80,
-        assignment_rescue_tau=0.94, playbook_merge_threshold=0.5,
-        cluster_min_cluster_size=2, cluster_min_samples=1,
-        cluster_scalar_weight=0.0, cluster_svd_dim=0,
-    )
+    session = {
+        "assignment_tau": 0.94, "assignment_confident_tau": 0.98, "assignment_tfidf_tau": 0.80,
+        "assignment_rescue_tau": 0.94, "playbook_merge_threshold": 0.5,
+        "cluster_min_cluster_size": 2, "cluster_min_samples": 1,
+        "cluster_scalar_weight": 0.0, "cluster_svd_dim": 0,
+    }
     session.update(session_overrides)
     return SimpleNamespace(
         session=SimpleNamespace(**session),

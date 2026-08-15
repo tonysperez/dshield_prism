@@ -23,13 +23,12 @@ Run from the repo root via the console venv:
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from enrich.clustering import _validate_reference, load_reference_centroids
-
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -76,7 +75,7 @@ class _StubES:
 # [1] Full payload: pure + augmented, generation picked, age computed.
 # -----------------------------------------------------------------------------
 print("\n[1] full reference payload (pure + augmented)")
-minted = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+minted = (datetime.now(UTC) - timedelta(days=10)).isoformat()
 es = _StubES(
     gen_lookup_hits=[{"_source": {"reference_generation": 7}}],
     fetch_hits=[
@@ -124,7 +123,7 @@ es = _StubES(
             "source_run_id": "run-B",
             "embedding_dims": 4,
             "scalar_weight": 0.05,
-            "reference_minted_at": (datetime.now(timezone.utc)).isoformat(),
+            "reference_minted_at": (datetime.now(UTC)).isoformat(),
         }},
     ],
 )

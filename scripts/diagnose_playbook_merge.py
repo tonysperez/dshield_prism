@@ -30,10 +30,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import numpy as np  # noqa: E402
+import numpy as np
 
-from enrich.config import load_config, load_secrets  # noqa: E402
-from enrich.es_client import make_client  # noqa: E402
+from enrich.config import load_config, load_secrets
+from enrich.es_client import make_client
 
 
 def main() -> int:
@@ -166,7 +166,7 @@ def main() -> int:
         print(f"!! {len(regressions)} possible regression(s) — pairs above threshold")
         print("   where the would-be merged group has every pairwise sim >= threshold,")
         print("   so complete-linkage should have merged them.")
-        for s, a, b, ws, wp in regressions:
+        for s, a, b, ws, _wp in regressions:
             print(f"   sim={s:.4f}  {a} <-> {b}  (worst sim in union = {ws:.4f})")
         return 1
 

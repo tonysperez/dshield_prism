@@ -28,13 +28,74 @@ dshield_prism = "enrich.cli:main"
 target-version = "py311"
 
 [tool.ruff.lint]
-# pyflakes (F) catches real bugs and stays on. The deferred E7xx rules are
-# cosmetic (multi-statement lines, ambiguous names, lambda assignment).
-ignore = ["E701", "E702", "E731", "E741"]
+# Pin the rule set explicitly. Without `select`, the enforced rules are whatever
+# the installed ruff calls "default" — 0.16 widened that from E/F to a ~470-rule
+# curated set, turning CI red with no code change. Adoption stays deliberate:
+# the ruff version is pinned in `.github/workflows/ci.yml` too, so the binary and
+# the rule set move only when someone changes them on purpose.
+select = [
+    "E4", "E7", "E9", "F",              # pycodestyle subset + pyflakes
+    "I",                                 # import sorting
+    "UP",                                # pyupgrade (target py311)
+    "B", "PLE", "PLW", "RET", "TRY",     # bug classes
+    "DTZ", "LOG", "G",                   # tz-aware datetimes, logging call shape
+    "C4", "SIM", "PIE", "PERF", "FURB", "FLY", "ISC",  # simplification / perf
+    "S",                                 # bandit — this is a security tool
+    "RUF",
+]
+ignore = [
+    # Cosmetic pycodestyle rules; multi-statement lines and short names are used
+    # deliberately in the numeric / clustering code.
+    "E701", "E702", "E731", "E741",
+    # `raise ValueError("...")` with an inline message is the house style; the
+    # rule wants every message hoisted into an exception subclass.
+    "TRY003",
+    # Ambiguous-unicode. The CLI output, docstrings and eval reports use →, ✓,
+    # box-drawing and NBSP on purpose.
+    "RUF001", "RUF002", "RUF003",
+    # subprocess with a literal argv and a PATH-resolved binary. Every call site
+    # is an ops script invoking a known tool, never user input.
+    "S603", "S607",
+    # `random` is used for sampling, jitter and synthetic test fixtures. Nothing
+    # security-relevant is seeded from it.
+    "S311",
+    # Flags `_OUTLIER_TOKEN`, `token_pattern=` (sklearn) and `_PASSWORD_MASK` as
+    # secrets. All are literal token names, none is a credential.
+    "S105", "S106",
+    # `try: ... except: pass` is the intended shape of the best-effort paths
+    # (client teardown, optional enrichment, narrative fallbacks). The pipeline
+    # degrades rather than aborts by design — see docs/architecture.md.
+    "S110", "S112",
+    # Same reason: `log.error(...)` in those handlers is a deliberate one-line
+    # degradation message. `log.exception` would emit a traceback per skipped
+    # record, which at pipeline volume buries the journal.
+    "TRY400",
+    # `int(round(x))` is load-bearing where x is a numpy scalar: `round()` on a
+    # np.float64 returns np.float64, so dropping the cast changes an ES field
+    # from integer to float.
+    "RUF046",
+    # Module-level caches (command_grounding) and loop-variable normalisation
+    # are idiomatic here; both rules are style, not correctness.
+    "PLW0603", "PLW2901",
+    # Fires almost entirely on the markdown/report builders, where the loop body
+    # interleaves conditions and formatting. `extend(<comprehension>)` is less
+    # readable and the lists are tens of rows, not a hot path.
+    "PERF401",
+    # Every hit is an `isinstance` shape check on parsed YAML/JSON. A malformed
+    # *document* is a ValueError here by design and callers catch ValueError;
+    # TypeError would mean "the caller passed the wrong thing".
+    "TRY004",
+    # `raise` inside `try` is deliberate control flow in the batch loops — the
+    # sibling `except` is what converts it into a per-item degradation.
+    "TRY301",
+]
 
 [tool.ruff.lint.per-file-ignores]
 # Standalone smoke tests prepend the repo root to sys.path before importing.
-"scripts/*" = ["E402"]
+"scripts/**" = ["E402"]
+# The smoke suite is plain asserts over namespace-class config stubs, with
+# literal /tmp paths and 0.0.0.0 as fixture data.
+"scripts/smoke/**" = ["S101", "B011", "S108", "S104"]
 
 [build-system]
 requires = ["setuptools>=68"]

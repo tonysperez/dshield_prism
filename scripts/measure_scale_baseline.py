@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -349,7 +349,7 @@ def _render(**k) -> str:
     # in the URL never lands in the committed doc.
     hosts = getattr(cfg.elasticsearch, "hosts", None) or []
     host = hosts[0].split("@")[-1] if hosts else "(unknown)"
-    o.append(f"_Captured {datetime.now(timezone.utc).isoformat()}_ · ES `{host}`")
+    o.append(f"_Captured {datetime.now(UTC).isoformat()}_ · ES `{host}`")
     o.append("")
     o.append("Read-only measurement that replaces the scale-hardening plan's "
              '"rough 90×" multiplier with the figure derived from the live '

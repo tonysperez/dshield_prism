@@ -16,7 +16,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from enrich.sources.cowrie.lexical import build_session_predicate_vectors
-from enrich.sources.cowrie.predicates import PREDICATE_NAMES, command_subsignals, predicate_signature
+from enrich.sources.cowrie.predicates import (
+    PREDICATE_NAMES,
+    command_subsignals,
+    predicate_signature,
+)
 from enrich.sources.cowrie.sessions import (
     _anchor_signature_present,
     _should_backfill_anchor_signature,

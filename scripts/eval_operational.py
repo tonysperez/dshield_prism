@@ -36,15 +36,16 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from enrich.clustering import cluster_deps_available, l2_normalize  # noqa: E402
-from enrich.sources.cowrie.assignment import NOVEL, assign_batch  # noqa: E402
-from eval_assignment import (  # noqa: E402  (reuse the smoke-tested metric cores)
+from eval_assignment import (
     build_prototypes,
     classification_metrics,
     fold_ci_half_width,
     load_labeled,
     repeated_stratified_kfold,
 )
+
+from enrich.clustering import cluster_deps_available, l2_normalize
+from enrich.sources.cowrie.assignment import NOVEL, assign_batch
 
 # Degeneracy floor: if measured novel-recall is at/below this at write-baseline
 # time, novelty is marked diagnostic rather than gated (geometry pinned it).
@@ -61,9 +62,9 @@ _MINT_MIN_SAMPLES = 2
 def _macro_f1_from(pred: list[str], truth: list[str]) -> float:
     per = []
     for lb in sorted(set(truth)):
-        tp = sum(1 for p, t in zip(pred, truth) if p == lb and t == lb)
-        fp = sum(1 for p, t in zip(pred, truth) if p == lb and t != lb)
-        fn = sum(1 for p, t in zip(pred, truth) if p != lb and t == lb)
+        tp = sum(1 for p, t in zip(pred, truth, strict=False) if p == lb and t == lb)
+        fp = sum(1 for p, t in zip(pred, truth, strict=False) if p == lb and t != lb)
+        fn = sum(1 for p, t in zip(pred, truth, strict=False) if p != lb and t == lb)
         prec = tp / (tp + fp) if (tp + fp) else 0.0
         rec = tp / (tp + fn) if (tp + fn) else 0.0
         per.append(2 * prec * rec / (prec + rec) if (prec + rec) else 0.0)
@@ -173,7 +174,7 @@ def minted_block(labels: list[str], embs: np.ndarray, *, holdout_k: int) -> dict
     # per non-noise cluster: modal true label + member records for purity
     modal_labels: dict[int, str] = {}
     records: list[tuple[str, str]] = []  # (member_true_label, cluster_modal_label)
-    for c in sorted(set(int(x) for x in pred) - {-1}):
+    for c in sorted({int(x) for x in pred} - {-1}):
         members = [pool_labels[i] for i in range(len(pred)) if pred[i] == c]
         modal = Counter(members).most_common(1)[0][0]
         modal_labels[c] = modal
@@ -344,10 +345,7 @@ def gate(report: dict, baseline: dict) -> tuple[list[str], bool]:
             ok = False
             lines.append(f"  {name:18}{basis:>11}{bl!s:>10}{'None':>10}      —  FAIL")
             continue
-        if spec["direction"] == "ceiling":
-            passed = cur <= bl + tol
-        else:
-            passed = cur >= bl - tol
+        passed = cur <= bl + tol if spec["direction"] == "ceiling" else cur >= bl - tol
         ok = ok and passed
         lines.append(f"  {name:18}{basis:>11}{bl:>10.4f}{cur:>10.4f}{tol:>8.3f}  "
                      f"{'PASS' if passed else 'FAIL'}")

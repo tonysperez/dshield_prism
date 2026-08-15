@@ -26,7 +26,6 @@ except ImportError:
 
 from enrich.clustering import rescue_noise_points
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

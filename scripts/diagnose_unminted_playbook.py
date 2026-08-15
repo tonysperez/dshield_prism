@@ -39,7 +39,7 @@ import argparse
 import json
 import sys
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -48,8 +48,21 @@ from sklearn.cluster import HDBSCAN
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from eval_novel_pool import (
+    NovelPoolInputs,
+    _extract_scalars,
+    _scan,
+    _session,
+    cluster_novel_pool,
+)
+
 from enrich.classification import CLASSIFICATION_KEYWORD, PUBLIC, releasable_filter
-from enrich.clustering import compute_centroids, l2_normalize, rescue_noise_points, svd_reduce
+from enrich.clustering import (
+    compute_centroids,
+    l2_normalize,
+    rescue_noise_points,
+    svd_reduce,
+)
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
 from enrich.sources.cowrie.assign_runner import _load_anchors
@@ -62,14 +75,6 @@ from enrich.sources.cowrie.sessions import (
     _playbook_group_centroid,
     build_session_scalar_block,
     merge_clusters_into_playbooks,
-)
-
-from eval_novel_pool import (  # noqa: E402  (sibling script, path prepended above)
-    NovelPoolInputs,
-    _extract_scalars,
-    _scan,
-    _session,
-    cluster_novel_pool,
 )
 
 _S = "dshield.cowrie.enrichment.session"
@@ -699,10 +704,10 @@ def _parse_ts(timestamp):
     if not timestamp:
         return None
     try:
-        parsed = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(timestamp))
     except ValueError:
         return None
-    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
 
 
 def window_cutoff(window_days: int, run_started):
@@ -716,7 +721,7 @@ def window_cutoff(window_days: int, run_started):
     """
     if window_days <= 0:
         return None
-    anchor = _parse_ts(run_started) or datetime.now(timezone.utc)
+    anchor = _parse_ts(run_started) or datetime.now(UTC)
     day_start = anchor.replace(hour=0, minute=0, second=0, microsecond=0)
     return day_start - timedelta(days=window_days)
 
@@ -764,7 +769,7 @@ def diagnose(es, cfg, *, per_anchor: int = 300) -> dict:
                 f"and `cluster sessions` before diagnosing",
             )
     generated = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "read_only": True,
         "session_classification": "public_only",
         "anchor_provenance": "pinned_mixed_classification_derived_aggregates",
@@ -805,16 +810,16 @@ def diagnose(es, cfg, *, per_anchor: int = 300) -> dict:
                 "survivors_reaching_mint": 0, "verdict": verdict([], 0)}
 
     novel_embeddings = inputs.embeddings[novel_mask]
-    novel_scalars = [s for s, keep in zip(inputs.scalars, novel_mask) if keep]
-    cluster_kwargs = dict(
-        min_cluster_size=int(scfg.cluster_min_cluster_size),
-        min_samples=int(scfg.cluster_min_samples),
-        scalar_weight=float(scfg.cluster_scalar_weight),
-        rescue_threshold=merge_threshold,
-        merge_threshold=merge_threshold,
-        svd_dim=int(scfg.cluster_svd_dim),
-        n_jobs=int(cfg.worker.cluster_n_jobs),
-    )
+    novel_scalars = [s for s, keep in zip(inputs.scalars, novel_mask, strict=False) if keep]
+    cluster_kwargs = {
+        "min_cluster_size": int(scfg.cluster_min_cluster_size),
+        "min_samples": int(scfg.cluster_min_samples),
+        "scalar_weight": float(scfg.cluster_scalar_weight),
+        "rescue_threshold": merge_threshold,
+        "merge_threshold": merge_threshold,
+        "svd_dim": int(scfg.cluster_svd_dim),
+        "n_jobs": int(cfg.worker.cluster_n_jobs),
+    }
     # `cluster_novel_pool` first: it validates every clustering parameter, and
     # `pool_group_labels` (which cannot, being label-producing rather than
     # aggregate) would otherwise run a full HDBSCAN fit on invalid config first.
@@ -884,9 +889,9 @@ def diagnose(es, cfg, *, per_anchor: int = 300) -> dict:
 
 def summarize(report: dict) -> str:
     lines = [
-        f"pool={report.get('pool_size', 0)} of novel={report.get('novel', 0)} "
-        f"(sessions={report.get('n_sessions', 0)}, anchors={report.get('n_anchors', 0)}, "
-        f"tau={report.get('assignment_tau')})",
+        (f"pool={report.get('pool_size', 0)} of novel={report.get('novel', 0)} "
+         f"(sessions={report.get('n_sessions', 0)}, anchors={report.get('n_anchors', 0)}, "
+         f"tau={report.get('assignment_tau')})"),
     ]
     for gate in report.get("gates", []):
         # G6 is a diagnosis of what G5 removed, not the next step in the ladder;

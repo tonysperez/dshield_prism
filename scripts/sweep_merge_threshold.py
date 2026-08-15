@@ -32,7 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -40,15 +40,18 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from eval_production_scale import _load_eval_session_ids_and_labels
+from prod_corpus import (
+    cluster_hdbscan,
+    normalized_embeddings,
+    pull_session_corpus,
+    score_full,
+)
+
 from enrich.clustering import compute_centroids
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
 from enrich.sources.cowrie.sessions import merge_clusters_into_playbooks
-
-from eval_production_scale import _load_eval_session_ids_and_labels
-from prod_corpus import (
-    cluster_hdbscan, normalized_embeddings, pull_session_corpus, score_full,
-)
 
 # Both-ways grid centred on the production default (0.96). "none" = skip the
 # merge entirely (the pre-merge baseline the spike measured).
@@ -81,7 +84,7 @@ def _render(rows: list[dict], n_sessions: int, n_base: int) -> str:
     out: list[str] = []
     out.append("# Fragmentation sweep — merge threshold (production scale)")
     out.append("")
-    out.append(f"_Captured {datetime.now(timezone.utc).isoformat()}_")
+    out.append(f"_Captured {datetime.now(UTC).isoformat()}_")
     out.append("")
     out.append(f"{n_sessions} sessions · base granularity HDBSCAN(mcs=5,ms=2) "
                f"+ rescue(0.96) → {n_base} clusters, held fixed. Only the "
@@ -97,7 +100,7 @@ def _render(rows: list[dict], n_sessions: int, n_base: int) -> str:
     out.append("|" + "|".join(["---:"] * len(headers)) + "|")
     for r in rows:
         m = r["metrics"]
-        def _f(key):
+        def _f(key, m=m):
             v = m.get(key)
             return "—" if v is None else (f"{v:.4f}" if isinstance(v, float) else str(v))
         star = " *" if r["merge_thr"] == "0.96" else ""
@@ -166,12 +169,12 @@ def main() -> int:
 
     md = _render(rows, len(corpus), n_base)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     md_path = args.output_dir / f"merge-threshold-sweep-{ts}.md"
     json_path = args.output_dir / f"merge-threshold-sweep-{ts}.json"
     md_path.write_text(md, encoding="utf-8")
     json_path.write_text(json.dumps({
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "n_sessions": len(corpus), "n_base_clusters": n_base, "rows": rows,
     }, indent=2), encoding="utf-8")
     print("\n" + md)

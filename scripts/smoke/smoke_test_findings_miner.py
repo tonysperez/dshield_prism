@@ -20,8 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from enrich.findings.writer import finding_id, valid_statuses  # noqa: E402
-
+from enrich.findings.writer import finding_id, valid_statuses
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []

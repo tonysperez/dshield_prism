@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Optional
 
 import httpx
 
@@ -50,7 +49,7 @@ class OpenAICompatClient:
         generation_model: str,
         embedding_model: str,
         timeout: int = 120,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/").removesuffix("/v1")
         self.gen_model = generation_model
@@ -78,10 +77,10 @@ class OpenAICompatClient:
         self,
         prompt: str,
         *,
-        options: Optional[dict] = None,
-        schema: Optional[dict] = None,
+        options: dict | None = None,
+        schema: dict | None = None,
         schema_name: str = "structured_output",
-        system: Optional[str] = None,
+        system: str | None = None,
     ) -> str:
         """Send chat completion. If `schema` provided, uses response_format=json_schema
         (LM Studio / OpenAI structured outputs); otherwise falls back to free-text mode
@@ -119,7 +118,7 @@ class OpenAICompatClient:
         try:
             return _strip_think(data["choices"][0]["message"]["content"] or "")
         except (KeyError, IndexError, TypeError) as e:
-            raise LLMError(f"chat: malformed response: {e}; body={str(data)[:300]}")
+            raise LLMError(f"chat: malformed response: {e}; body={str(data)[:300]}") from e
 
     def generate_text(self, prompt: str, *, max_tokens: int = 512) -> str:
         """Plain text completion with no response_format constraint. Used by
@@ -147,7 +146,7 @@ class OpenAICompatClient:
             choice = data["choices"][0]
             raw = choice["message"]["content"] or ""
         except (KeyError, IndexError, TypeError) as e:
-            raise LLMError(f"chat: malformed response: {e}; body={str(data)[:300]}")
+            raise LLMError(f"chat: malformed response: {e}; body={str(data)[:300]}") from e
         stripped = _strip_think(raw)
         if not stripped and "<think>" in raw.lower() and choice.get("finish_reason") == "length":
             raise LLMError(
@@ -164,8 +163,8 @@ class OpenAICompatClient:
         data = r.json()
         try:
             emb = data["data"][0]["embedding"]
-        except (KeyError, IndexError, TypeError):
-            raise LLMError(f"embed: malformed response: {str(data)[:300]}")
+        except (KeyError, IndexError, TypeError) as e:
+            raise LLMError(f"embed: malformed response: {str(data)[:300]}") from e
         if not isinstance(emb, list) or not emb:
             raise LLMError("embed: empty embedding")
         return emb

@@ -69,7 +69,7 @@ check("trivial hash → content-write even if binary name", _hash_drop_boost(TRI
 # -----------------------------------------------------------------------------
 print("\n[4] compute_priority base_boost tiers hashes (drop > write > command)")
 w = IntelPriorityConfig()
-ci = dict(centrality_norm=0.5)
+ci = {"centrality_norm": 0.5}
 p_drop = compute_priority(PriorityInputs(base_boost=_HASH_TIER1_DROP_BOOST, **ci), w)
 p_write = compute_priority(PriorityInputs(base_boost=_HASH_TIER1_WRITE_BOOST, **ci), w)
 p_cmd = compute_priority(PriorityInputs(base_boost=0.0, **ci), w)

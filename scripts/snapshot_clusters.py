@@ -52,7 +52,7 @@ def take_snapshot(cfg, config_path: str) -> dict:
 
     es = make_client(cfg.elasticsearch, load_secrets(config_path))
     c = cfg.elasticsearch.indexes.cowrie
-    snap: dict = {"captured_at": _dt.datetime.now(_dt.timezone.utc).isoformat()}
+    snap: dict = {"captured_at": _dt.datetime.now(_dt.UTC).isoformat()}
 
     # Playbooks — the spb- identity set (write-once anchors) + session counts.
     anchors = es.search(index=c.playbook_anchors, size=1000,

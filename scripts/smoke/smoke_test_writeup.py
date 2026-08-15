@@ -21,12 +21,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "console" / "src"))
 
-from console.writeup import (  # noqa: E402
-    build_extract_prompt, build_narrate_prompt,
-    cite_check_prose, load_extract_template, load_narrate_template,
-    parse_brief_response, verify_brief_against_source,
+from console.writeup import (
+    build_extract_prompt,
+    build_narrate_prompt,
+    cite_check_prose,
+    load_extract_template,
+    load_narrate_template,
+    parse_brief_response,
+    verify_brief_against_source,
 )
-
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []

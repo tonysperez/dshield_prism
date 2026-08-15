@@ -35,7 +35,6 @@ from enrich.command_grounding import (
     reset_loaded_for_tests,
 )
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 
@@ -302,7 +301,9 @@ with tempfile.TemporaryDirectory() as td:
 
     # list_denied_commands exposes the rationale strings.
     from enrich.command_grounding import (
-        add_to_denylist, list_denied_commands, remove_from_denylist,
+        add_to_denylist,
+        list_denied_commands,
+        remove_from_denylist,
     )
     denied = list_denied_commands()
     check("list_denied_commands returns the loaded rationales",

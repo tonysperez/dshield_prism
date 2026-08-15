@@ -25,7 +25,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -34,18 +34,22 @@ from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from cluster_bag_prod import _BAG_SVD_COMPONENTS, build_bag_texts, pull_hash_to_cluster
+from eval_production_scale import (
+    _apply_session_merge,
+    _load_eval_session_ids_and_labels,
+)
+from prod_corpus import cluster_hdbscan, pull_session_corpus
+
 from enrich.clustering import (
-    cluster_bag_labels, compute_centroids, l2_normalize, rescue_noise_points,
+    cluster_bag_labels,
+    compute_centroids,
+    l2_normalize,
+    rescue_noise_points,
 )
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
 from enrich.sources.cowrie.sessions import merge_clusters_into_playbooks
-
-from cluster_bag_prod import _BAG_SVD_COMPONENTS, build_bag_texts, pull_hash_to_cluster
-from eval_production_scale import (
-    _apply_session_merge, _load_eval_session_ids_and_labels,
-)
-from prod_corpus import cluster_hdbscan, pull_session_corpus
 
 
 def _merge_bagspace(labels, norm_block, threshold):
@@ -91,7 +95,7 @@ def _self_consistency(labels, intents, signatures) -> dict:
 
 
 def _v2_rate(labels, session_ids, sid_to_label, pairs) -> str:
-    sid_to_c = {s: int(c) for s, c in zip(session_ids, labels)}
+    sid_to_c = {s: int(c) for s, c in zip(session_ids, labels, strict=False)}
     res = tot = 0
     for members in pairs.values():
         if len(members) != 2 or any(m not in sid_to_c for m in members):
@@ -144,7 +148,7 @@ def main() -> int:
     cross_nmi = round(float(normalized_mutual_info_score(base, arm)), 4)
 
     lines = ["# Corpus-wide arm comparison — baseline vs cluster_bag (label-free)", ""]
-    lines.append(f"_Captured {datetime.now(timezone.utc).isoformat()}_ · {len(corpus)} sessions")
+    lines.append(f"_Captured {datetime.now(UTC).isoformat()}_ · {len(corpus)} sessions")
     lines.append("")
     lines.append("| metric | baseline | cluster_bag | read |")
     lines.append("|---|---:|---:|---|")
@@ -170,7 +174,7 @@ def main() -> int:
     print("\n" + md)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out = args.output_dir / f"G-corpus-arm-comparison-{ts}.md"
     out.write_text(md, encoding="utf-8")
     print(f"\nwrote {out}")

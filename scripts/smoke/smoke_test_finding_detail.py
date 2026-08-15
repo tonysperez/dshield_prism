@@ -29,7 +29,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from console.findings import get_finding_detail
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

@@ -30,7 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -305,7 +305,7 @@ def main() -> int:
     report = score(samples, anchor_ids, anchors, thresholds, prod_tau) if samples else None
 
     meta = {
-        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "captured_at": datetime.now(UTC).isoformat(),
         "classification": classification,
         "sessions_index": idx,
         "anchors_index": anch_idx,
@@ -314,7 +314,7 @@ def main() -> int:
     }
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     stem = out_dir / f"exp-prototype-assignment-{ts}"
     (stem.with_suffix(".json")).write_text(
         json.dumps({"meta": meta, "report": report}, indent=2))

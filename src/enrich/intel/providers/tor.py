@@ -20,7 +20,6 @@ import threading
 import time
 from datetime import timedelta
 from pathlib import Path
-from typing import Optional
 
 import httpx
 
@@ -60,7 +59,7 @@ class TorProvider(Provider):
             or (time.time() - self._loaded_at) >= self.cfg.refresh_minutes * 60
         )
 
-    def _load_from_cache_file(self) -> Optional[set[str]]:
+    def _load_from_cache_file(self) -> set[str] | None:
         p = Path(self.cfg.cache_file)
         if not p.exists():
             return None

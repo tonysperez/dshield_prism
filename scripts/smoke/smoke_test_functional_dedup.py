@@ -29,7 +29,6 @@ from enrich.sources.cowrie.commands import (
     lookup_canonical_for_shape,
 )
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

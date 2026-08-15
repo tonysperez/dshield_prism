@@ -29,7 +29,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from enrich.clustering import _select_keep_run_ids, prune_cluster_runs
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

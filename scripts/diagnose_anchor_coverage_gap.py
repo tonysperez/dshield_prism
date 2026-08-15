@@ -37,7 +37,7 @@ import json
 import sys
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -45,23 +45,15 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from enrich.classification import CLASSIFICATION_KEYWORD, PUBLIC, releasable_filter
-from enrich.clustering import l2_normalize
-from enrich.config import load_config, load_secrets
-from enrich.es_client import make_client
-from enrich.sources.cowrie.assign_runner import _load_anchors
-from enrich.sources.cowrie.assignment import ASSIGNED, NOVEL, compute_assignment_window
-from enrich.sources.cowrie.lexical import build_bag_texts, pull_hash_to_cluster
-
 # Sibling-script imports; path prepended above (precedent: diagnose_unminted_playbook.py
 # importing from eval_novel_pool, and eval_novel_pool importing from eval_assignment_faithful).
-from diagnose_unminted_playbook import pool_group_labels  # noqa: E402
-from eval_band_labelled import (  # noqa: E402
+from diagnose_unminted_playbook import pool_group_labels
+from eval_band_labelled import (
+    _anchor_majority_labels,
     join_labels_to_window,
     load_scorable_labels,
-    _anchor_majority_labels,
 )
-from eval_novel_pool import (  # noqa: E402
+from eval_novel_pool import (
     _CMDSET,
     _EMB,
     _PB,
@@ -72,6 +64,14 @@ from eval_novel_pool import (  # noqa: E402
     cluster_novel_pool,
     effective_novel_pool_min_cluster_size,
 )
+
+from enrich.classification import CLASSIFICATION_KEYWORD, PUBLIC, releasable_filter
+from enrich.clustering import l2_normalize
+from enrich.config import load_config, load_secrets
+from enrich.es_client import make_client
+from enrich.sources.cowrie.assign_runner import _load_anchors
+from enrich.sources.cowrie.assignment import ASSIGNED, NOVEL, compute_assignment_window
+from enrich.sources.cowrie.lexical import build_bag_texts, pull_hash_to_cluster
 
 TARGET_LABELS = (
     "account_backdoor_persistence",
@@ -277,20 +277,20 @@ def analyze(es, cfg, labels_path: Path, *, per_anchor: int = 300) -> dict:
         scfg,
         novel_pool_only=True,
     )
-    cluster_kwargs = dict(
-        min_cluster_size=novel_pool_min_cluster_size,
-        min_samples=int(scfg.cluster_min_samples),
-        scalar_weight=float(scfg.cluster_scalar_weight),
-        rescue_threshold=merge_threshold,
-        merge_threshold=merge_threshold,
-        svd_dim=int(scfg.cluster_svd_dim),
-        n_jobs=int(cfg.worker.cluster_n_jobs),
-    )
+    cluster_kwargs = {
+        "min_cluster_size": novel_pool_min_cluster_size,
+        "min_samples": int(scfg.cluster_min_samples),
+        "scalar_weight": float(scfg.cluster_scalar_weight),
+        "rescue_threshold": merge_threshold,
+        "merge_threshold": merge_threshold,
+        "svd_dim": int(scfg.cluster_svd_dim),
+        "n_jobs": int(cfg.worker.cluster_n_jobs),
+    }
     novel_pool_shape: dict = {"status": "no_novel_pool"}
     outlier_status: dict[int, tuple[bool, int]] = {}
     if novel_idx.size > 0:
         novel_embeddings = inputs.embeddings[novel_mask]
-        novel_scalars = [s for s, keep in zip(inputs.scalars, novel_mask) if keep]
+        novel_scalars = [s for s, keep in zip(inputs.scalars, novel_mask, strict=False) if keep]
         # `cluster_novel_pool` first: it validates every clustering parameter, and
         # `pool_group_labels` (which cannot, being label-producing rather than
         # aggregate) would otherwise run a full HDBSCAN fit on invalid config first.
@@ -319,7 +319,7 @@ def analyze(es, cfg, labels_path: Path, *, per_anchor: int = 300) -> dict:
         )
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "read_only": True,
         "session_classification": "public_only",
         "anchor_provenance": "pinned_mixed_classification_derived_aggregates",
@@ -344,9 +344,9 @@ def analyze(es, cfg, labels_path: Path, *, per_anchor: int = 300) -> dict:
 
 def summarize(report: dict) -> str:
     lines = [
-        f"sessions={report.get('n_sessions', 0)} anchors={report.get('n_anchors', 0)} "
-        f"novel={report.get('novel', 0)} "
-        f"(tau={report.get('assignment_tau')}, tfidf_tau={report.get('assignment_tfidf_tau')})",
+        (f"sessions={report.get('n_sessions', 0)} anchors={report.get('n_anchors', 0)} "
+         f"novel={report.get('novel', 0)} "
+         f"(tau={report.get('assignment_tau')}, tfidf_tau={report.get('assignment_tfidf_tau')})"),
     ]
     for label, detail in report.get("by_label", {}).items():
         lines.append(f"  {label}: n={detail['n_labelled']} status={detail['status_counts']}")

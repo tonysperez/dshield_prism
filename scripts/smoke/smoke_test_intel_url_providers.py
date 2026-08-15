@@ -19,7 +19,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from enrich.intel.providers.threatfox import classify_threatfox
 from enrich.intel.providers.urlhaus import classify_urlhaus, parse_urlhaus_csv
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

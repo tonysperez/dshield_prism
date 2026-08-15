@@ -778,6 +778,14 @@ console/.venv/bin/python scripts/eval_production_scale.py --snapshot eval/produc
 console/.venv/bin/python scripts/eval_command_scale.py --snapshot eval/command-snapshot-v1.jsonl.gz --baseline eval/baseline-command-scale.json --no-json
 ```
 
+**Lint contract.** Both the rule set and the ruff version are pinned: the
+enforced rules live in `[tool.ruff.lint] select` / `ignore` in
+[`pyproject.toml`](../pyproject.toml), and CI installs `ruff==0.16.3`
+([`ci.yml`](../.github/workflows/ci.yml)) to match `console/.venv`. Without the
+`select` pin, "the default rules" means whatever the installed ruff decides, so
+a ruff release changes what CI enforces with no code change. Every entry in
+`ignore` carries the reason it is off; bump the version in both places together.
+
 What each gate measures, the eval-scale-vs-production-scale distinction, and the
 snapshot refresh cadence are in [evaluation.md](evaluation.md).
 `eval_assignment_prod.py` also checks the current snapshot anchor count against

@@ -33,7 +33,7 @@ import gzip
 import json
 import sys
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -151,7 +151,7 @@ def _evaluate(embs, scalars, intents, ccfg) -> dict:
 
     # mean modal-intent share across non-noise clusters
     byc: dict = defaultdict(list)
-    for lbl, it in zip(labels, intents):
+    for lbl, it in zip(labels, intents, strict=False):
         if lbl >= 0:
             byc[int(lbl)].append(it or "")
     purities = []
@@ -163,7 +163,7 @@ def _evaluate(embs, scalars, intents, ccfg) -> dict:
     purity = round(sum(purities) / len(purities), 4) if purities else None
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "config": {
             "min_cluster_size": ccfg.min_cluster_size,
             "min_samples": ccfg.min_samples,
@@ -243,7 +243,7 @@ def main() -> int:
 
     if args.write_baseline is not None:
         doc = {
-            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "captured_at": datetime.now(UTC).isoformat(),
             "captured_from": "scripts/eval_command_scale.py --write-baseline",
             "config_at_capture": report["config"],
             "n_commands_at_capture": report["n_commands"],
@@ -265,7 +265,7 @@ def main() -> int:
 
     if not args.no_json:
         args.output_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         p = args.output_dir / f"command-scale-{ts}.json"
         p.write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(f"\nwrote {p}")

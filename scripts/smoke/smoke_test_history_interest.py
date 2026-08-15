@@ -20,7 +20,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "console" / "src"))
 
-from console.queries import (  # noqa: E402
+from console.queries import (
     _band_episodes,
     _band_recurs,
     _history_rows,

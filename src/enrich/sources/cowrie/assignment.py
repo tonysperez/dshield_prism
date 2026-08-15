@@ -26,8 +26,8 @@ mechanism on the per-session hot path; it catches the conflation slice (e.g. the
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional
 
 from .lexical import prepare_assignment_lexical
 from .predicates import predicate_overlap
@@ -46,10 +46,10 @@ class Assignment:
     True iff this ASSIGNED outcome came from the below-tau structural-predicate rescue
     tier rather than the embedding cascade — always False for BAND/NOVEL and for any
     ordinary (>= tau) ASSIGNED outcome."""
-    playbook_id: Optional[str]
+    playbook_id: str | None
     cosine: float
     status: str
-    tfidf_cosine: Optional[float] = None
+    tfidf_cosine: float | None = None
     confirmed_in_band: bool = False
     cascade_rank: int = 0
     band_checks: int = 0
@@ -66,7 +66,7 @@ def classify_status(cosine: float, *, tau: float, confident_tau: float) -> str:
     return ASSIGNED
 
 
-def resolve(emb_cos: float, tfidf_cos: Optional[float], *,
+def resolve(emb_cos: float, tfidf_cos: float | None, *,
             tau: float, confident_tau: float, tfidf_tau: float,
             defer_band: bool = False) -> str:
     """Final status. In the BAND, the TF-IDF cosine to the SAME nearest anchor decides:
@@ -83,16 +83,16 @@ def resolve(emb_cos: float, tfidf_cos: Optional[float], *,
 
 
 def assign_batch(
-    emb: "object", anchor_emb: "object", anchor_ids: list[str], *,
+    emb: object, anchor_emb: object, anchor_ids: list[str], *,
     tau: float = 0.94, confident_tau: float = 0.98, tfidf_tau: float = 0.80,
-    tfidf_cos: Optional[Callable[[int, int], Optional[float]]] = None,
-    band_bypass_anchor_ids: Optional[set[str]] = None,
+    tfidf_cos: Callable[[int, int], float | None] | None = None,
+    band_bypass_anchor_ids: set[str] | None = None,
     defer_band: bool = False,
-    band_trace: Optional[list[dict]] = None,
-    candidate_trace: Optional[list[list[dict]]] = None,
-    rescue_tau: Optional[float] = None,
-    session_predicates: Optional[list[Optional[dict]]] = None,
-    anchor_predicate_signatures: Optional[list[Optional[dict]]] = None,
+    band_trace: list[dict] | None = None,
+    candidate_trace: list[list[dict]] | None = None,
+    rescue_tau: float | None = None,
+    session_predicates: list[dict | None] | None = None,
+    anchor_predicate_signatures: list[dict | None] | None = None,
 ) -> list[Assignment]:
     """Assign every row of `emb` (n×d, L2-normalised) against `anchor_emb` (A×d,
     L2-normalised). For each session we walk its anchors nearest-first: a confident
@@ -175,7 +175,7 @@ def assign_batch(
     out: list[Assignment] = []
     for i in range(E.shape[0]):
         nearest_cos = float(sims[i, order[i, 0]])
-        decided: Optional[Assignment] = None
+        decided: Assignment | None = None
         band_checks = 0
         band_rejections = 0
         svec = session_predicates[i] if session_predicates is not None else None
@@ -322,16 +322,16 @@ class AssignmentWindowResult:
 
 
 def compute_assignment_window(
-    window_embeddings: "object", anchor_embeddings: "object", anchor_ids: list[str],
+    window_embeddings: object, anchor_embeddings: object, anchor_ids: list[str],
     anchor_bags: list[str], anchor_bag_ids: list[str], window_bags: list[str], *,
     tau: float = 0.94, confident_tau: float = 0.98, tfidf_tau: float = 0.80,
-    band_bypass_anchor_ids: Optional[set[str]] = None,
-    band_trace: Optional[list[dict]] = None,
-    candidate_trace: Optional[list[list[dict]]] = None,
-    background_bags: Optional[list[str]] = None,
-    rescue_tau: Optional[float] = None,
-    window_predicates: Optional[list[Optional[dict]]] = None,
-    anchor_predicate_signatures: Optional[list[Optional[dict]]] = None,
+    band_bypass_anchor_ids: set[str] | None = None,
+    band_trace: list[dict] | None = None,
+    candidate_trace: list[list[dict]] | None = None,
+    background_bags: list[str] | None = None,
+    rescue_tau: float | None = None,
+    window_predicates: list[dict | None] | None = None,
+    anchor_predicate_signatures: list[dict | None] | None = None,
 ) -> AssignmentWindowResult:
     """The shared assignment-window compute seam (Finding 28 / Mechanism 1): fits one
     TF-IDF/SVD lexical space over `anchor_bags` + `window_bags` (`prepare_assignment_lexical`)
@@ -366,7 +366,7 @@ def compute_assignment_window(
         background_bags=() if background_bags is None else background_bags,
     )
 
-    def tfidf_cos(i: int, a: int) -> Optional[float]:
+    def tfidf_cos(i: int, a: int) -> float | None:
         c = lexical.anchor_centroids.get(anchor_ids[a])
         return (
             float(lexical.window_features[i] @ c)

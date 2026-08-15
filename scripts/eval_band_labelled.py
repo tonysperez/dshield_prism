@@ -32,7 +32,7 @@ import math
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -41,24 +41,20 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from enrich.classification import CLASSIFICATION_KEYWORD, PUBLIC, releasable_filter
-from enrich.clustering import l2_normalize
-from enrich.config import load_config, load_secrets
-from enrich.es_client import make_client
-from enrich.sources.cowrie.assignment import (
-    ASSIGNED,
-    NOVEL,
-    assign_batch,
-    compute_assignment_window,
+from eval_assignment_faithful import (
+    BOOTSTRAPS,
+    SEED,
+    _bootstrap_rows,
+    _interval,
+    _macro_f1,
+    _measure,
 )
-from enrich.sources.cowrie.assign_runner import _load_anchors
-from enrich.sources.cowrie.lexical import build_bag_texts, pull_hash_to_cluster
 
 # Sibling-script imports; path prepended above (precedent: eval_novel_pool.py itself
 # importing from eval_assignment_faithful, and diagnose_unminted_playbook.py). Reusing
 # these rather than re-deriving them means this script's window scan, band-diagnosis
 # math, and bootstrap machinery cannot silently drift from the reference scripts'.
-from eval_novel_pool import (  # noqa: E402
+from eval_novel_pool import (
     _CMDSET,
     _EMB,
     _PB,
@@ -67,15 +63,20 @@ from eval_novel_pool import (  # noqa: E402
     _scan,
     _session,
 )
-from eval_assignment_faithful import (  # noqa: E402
-    BOOTSTRAPS,
-    SEED,
-    _bootstrap_rows,
-    _interval,
-    _macro_f1,
-    _measure,
+from validate_eval_labels import KNOWN_PLAYBOOK_LABELS
+
+from enrich.classification import CLASSIFICATION_KEYWORD, PUBLIC, releasable_filter
+from enrich.clustering import l2_normalize
+from enrich.config import load_config, load_secrets
+from enrich.es_client import make_client
+from enrich.sources.cowrie.assign_runner import _load_anchors
+from enrich.sources.cowrie.assignment import (
+    ASSIGNED,
+    NOVEL,
+    assign_batch,
+    compute_assignment_window,
 )
-from validate_eval_labels import KNOWN_PLAYBOOK_LABELS  # noqa: E402
+from enrich.sources.cowrie.lexical import build_bag_texts, pull_hash_to_cluster
 
 VALLEY_TFIDF_TAU = 0.50  # Finding 47's 0.2-0.7 valley
 _SID_FIELD = "cowrie.session_id"
@@ -766,7 +767,7 @@ def analyze(inputs: BandLabelledInputs, cfg, labels: dict[str, str]) -> dict:
     _attach_comparable_novelty(arms, arm_contexts)
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "read_only": True,
         "session_classification": "public_only",
         "command_taxonomy_classification": "public_only",

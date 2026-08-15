@@ -25,7 +25,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -124,7 +124,7 @@ def main() -> int:
     n, n_out = len(embs), int(outl.sum())
 
     byc: dict = defaultdict(list)
-    for i, (c, o) in enumerate(zip(cids, outl)):
+    for i, (c, o) in enumerate(zip(cids, outl, strict=False)):
         if not o and c not in (None, "outlier", ""):
             byc[c].append(i)
     cent_ids = sorted(byc)
@@ -154,7 +154,7 @@ def main() -> int:
     lines = []
     lines.append(f"# F1 outlier diagnostic — {args.layer} layer")
     lines.append("")
-    lines.append(f"_Captured {datetime.now(timezone.utc).isoformat()}_")
+    lines.append(f"_Captured {datetime.now(UTC).isoformat()}_")
     lines.append("")
     lines.append(f"- **Index:** `{index}`")
     lines.append(f"- **Scored docs:** {n}  ·  **non-outlier clusters:** {len(cent_ids)}")
@@ -184,7 +184,7 @@ def main() -> int:
 
     if not args.no_md:
         args.output_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         out = args.output_dir / f"outlier-subcluster-diagnostic-{args.layer}-{ts}.md"
         out.write_text(md, encoding="utf-8")
         print(f"\nwrote {out}")

@@ -22,13 +22,14 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from ..cache import StateDB
 from ..config import AppConfig, Secrets
 from ..es_client import make_client
 from .artifact import Artifact
+from .providers.abuseipdb import AbuseIPDBProvider
 from .providers.base import (
     Provider,
     ProviderError,
@@ -36,7 +37,6 @@ from .providers.base import (
     ProviderResult,
     ProviderUnavailable,
 )
-from .providers.abuseipdb import AbuseIPDBProvider
 from .providers.feodotracker import FeodoTrackerProvider
 from .providers.firehol import FireholProvider
 from .providers.greynoise import GreyNoiseProvider
@@ -67,7 +67,7 @@ _FAILURE_THRESHOLD = 5
 _QUEUE_FETCH_HARD_LIMIT = 1_000_000
 
 
-def _build_providers(cfg: AppConfig, secrets: Optional[Secrets] = None) -> list[Provider]:
+def _build_providers(cfg: AppConfig, secrets: Secrets | None = None) -> list[Provider]:
     """Construct the enabled providers from config.
 
     New providers are added here. Order is the dispatch order per
@@ -124,11 +124,11 @@ def _build_providers(cfg: AppConfig, secrets: Optional[Secrets] = None) -> list[
 
 
 def _utc_today() -> str:
-    return datetime.now(timezone.utc).date().isoformat()
+    return datetime.now(UTC).date().isoformat()
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _fresh_within_ttl(
@@ -146,7 +146,7 @@ def _fresh_within_ttl(
     try:
         if not es.indices.exists(index=idx):
             return set()
-    except Exception:  # noqa: BLE001 — freshness skip is best-effort
+    except Exception:
         return set()
     cutoff = now - timedelta(days=ttl_days)
     fresh: set[str] = set()
@@ -154,7 +154,7 @@ def _fresh_within_ttl(
         chunk = values[i:i + 1000]
         try:
             resp = es.mget(index=idx, ids=chunk, _source=["last_refreshed"])
-        except Exception:  # noqa: BLE001
+        except Exception:
             continue
         for doc in resp.get("docs", []):
             if not doc.get("found"):
@@ -163,11 +163,11 @@ def _fresh_within_ttl(
             if not lr:
                 continue
             try:
-                ts = datetime.fromisoformat(str(lr).replace("Z", "+00:00"))
+                ts = datetime.fromisoformat(str(lr))
             except (ValueError, TypeError):
                 continue
             if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
+                ts = ts.replace(tzinfo=UTC)
             if ts >= cutoff:
                 fresh.add(doc["_id"])
     return fresh
@@ -197,7 +197,7 @@ def run_refresh(
     if not cfg.intel.enabled:
         return {"enabled": False, "skipped": True}
 
-    run_started = datetime.now(timezone.utc)
+    run_started = datetime.now(UTC)
     es = make_client(cfg.elasticsearch, secrets)
     db = StateDB(cfg.worker.state_db)
     providers = _build_providers(cfg, secrets)

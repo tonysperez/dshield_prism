@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Optional
 
 import httpx
 
@@ -35,7 +34,7 @@ class AnthropicClient:
         model: str,
         max_tokens: int = 1024,
         timeout: int = 120,
-        base_url: Optional[str] = None,
+        base_url: str | None = None,
     ) -> None:
         if not api_key:
             raise CloudLLMError("anthropic_api_key not set")
@@ -93,8 +92,8 @@ class AnthropicClient:
         self,
         prompt: str,
         *,
-        system: Optional[str] = None,
-        max_tokens: Optional[int] = None,
+        system: str | None = None,
+        max_tokens: int | None = None,
     ) -> tuple[str, int, int]:
         """Returns (text, input_tokens, output_tokens)."""
         payload: dict = {
@@ -120,17 +119,17 @@ class AnthropicClient:
             in_tok = int(usage.get("input_tokens", 0))
             out_tok = int(usage.get("output_tokens", 0))
         except (KeyError, TypeError) as e:
-            raise CloudLLMError(f"anthropic: malformed response: {e}; body={str(data)[:300]}")
+            raise CloudLLMError(f"anthropic: malformed response: {e}; body={str(data)[:300]}") from e
         return text, in_tok, out_tok
 
     def generate_json(
         self,
         prompt: str,
         *,
-        options: Optional[dict] = None,
-        schema: Optional[dict] = None,
+        options: dict | None = None,
+        schema: dict | None = None,
         schema_name: str = "structured_output",
-        system: Optional[str] = None,
+        system: str | None = None,
     ) -> str:
         """LLMClient-compatible signature. Schema is advisory — Claude follows
         the prompt's JSON instructions reliably without needing tool-use.
@@ -154,8 +153,7 @@ def _strip_code_fences(s: str) -> str:
         nl = s.find("\n")
         if nl != -1:
             s = s[nl + 1 :]
-        if s.endswith("```"):
-            s = s[:-3]
+        s = s.removesuffix("```")
     return s.strip()
 
 
@@ -165,8 +163,9 @@ def cost_usd(input_tokens: int, output_tokens: int, in_per_mtok: float, out_per_
 
 def parse_cloud_json(raw: str):
     """Parse + validate a CloudCommandEnrichment from raw text. Returns model or None."""
-    from .schemas import CloudCommandEnrichment
     from pydantic import ValidationError
+
+    from .schemas import CloudCommandEnrichment
     try:
         return CloudCommandEnrichment(**json.loads(raw))
     except (json.JSONDecodeError, ValidationError) as e:

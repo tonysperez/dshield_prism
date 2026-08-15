@@ -34,14 +34,15 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "scripts"))
 
-from enrich.sources.cowrie.assignment import assign_batch  # noqa: E402
-import eval_operational as eo  # noqa: E402
-from eval_assignment import (  # noqa: E402
+import eval_operational as eo
+from eval_assignment import (
     build_prototypes,
     classification_metrics,
     fold_ci_half_width,
     repeated_stratified_kfold,
 )
+
+from enrich.sources.cowrie.assignment import assign_batch
 
 
 def _unit(v) -> np.ndarray:
@@ -111,7 +112,7 @@ def test_ci_half_width_ge_old_single_split() -> None:
     test_embs, test_truth = embs[test], [labels[i] for i in test]
     test_pred = [r.playbook_id for r in
                  assign_batch(test_embs, proto_mat, proto_ids, tau=0.0, confident_tau=0.0)]
-    paired = list(zip(test_pred, test_truth))
+    paired = list(zip(test_pred, test_truth, strict=False))
     old_hw = eo.bootstrap_half_width(
         paired, lambda s: eo._macro_f1_from([p for p, _ in s], [t for _, t in s]),
         n=1000, seed=0)

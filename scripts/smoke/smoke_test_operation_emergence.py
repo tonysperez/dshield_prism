@@ -22,10 +22,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from enrich.findings.discovery import (  # noqa: E402
-    _OPERATION_GROWTH_RATIO, mine_operation_emergence,
+from enrich.findings.discovery import (
+    _OPERATION_GROWTH_RATIO,
+    mine_operation_emergence,
 )
-
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []

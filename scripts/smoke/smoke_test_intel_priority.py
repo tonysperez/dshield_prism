@@ -22,7 +22,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from enrich.config import IntelPriorityConfig
 from enrich.intel.queue import PriorityInputs, compute_priority
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

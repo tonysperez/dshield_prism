@@ -66,7 +66,7 @@ def main() -> int:
             continue
         try:
             r = subprocess.run(
-                [sys.executable, str(t)], cwd=REPO, env=env,
+                [sys.executable, str(t)], cwd=REPO, env=env, check=False,
                 capture_output=True, text=True, timeout=PER_TEST_TIMEOUT_S,
             )
             ok = r.returncode == 0

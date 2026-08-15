@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from elasticsearch import Elasticsearch
@@ -91,7 +91,7 @@ def compute_grounding_coverage(es: Elasticsearch, cfg: AppConfig) -> dict[str, A
             body["search_after"] = search_after
         try:
             resp = es.search(index=cmds_idx, **body)
-        except Exception as exc:  # noqa: BLE001 — hard failure: propagate so
+        except Exception as exc:
             # the caller (write_grounding_coverage) does NOT overwrite the
             # last-good report doc with a truncated result, and the CLI/ops
             # telemetry reports this run as failed rather than successful.
@@ -179,7 +179,7 @@ def compute_grounding_coverage(es: Elasticsearch, cfg: AppConfig) -> dict[str, A
     denied.sort(key=lambda x: -x["count"])
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "stats": {
             "total_unique_cmds": len(counts),
             "curated": curated_count,
@@ -213,7 +213,7 @@ def write_grounding_coverage(es: Elasticsearch, cfg: AppConfig) -> dict[str, Any
                 "error": "grounding_coverage_index_missing"}
     try:
         doc = compute_grounding_coverage(es, cfg)
-    except Exception as exc:  # noqa: BLE001 — a scan failure is a hard job
+    except Exception as exc:
         # failure: do NOT index anything, so the last-good report doc is
         # left untouched. The caller (CLI `track grounding-coverage`) treats
         # a non-empty `error` as failure and reports a non-zero exit /
@@ -227,7 +227,7 @@ def write_grounding_coverage(es: Elasticsearch, cfg: AppConfig) -> dict[str, Any
                 "error": f"{type(exc).__name__}: {exc}"}
     try:
         es.index(index=idx, id=doc_id, document=doc)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("grounding-coverage: write failed: %s", exc)
         return {"written": False, "index": idx, "doc_id": doc_id,
                 "error": f"{type(exc).__name__}: {exc}"}

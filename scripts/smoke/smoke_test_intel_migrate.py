@@ -32,7 +32,6 @@ from enrich.intel.migrate import (
     reclassify_passthrough,
 )
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

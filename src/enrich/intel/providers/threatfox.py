@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import timedelta
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -41,8 +41,8 @@ from .base import (
     DerivedSignals,
     HealthStatus,
     Provider,
-    ProviderResult,
     ProviderRateLimited,
+    ProviderResult,
     ProviderUnavailable,
     RateLimit,
 )
@@ -52,7 +52,7 @@ log = logging.getLogger(__name__)
 
 def classify_threatfox(
     data: list[dict[str, Any]],
-) -> tuple[Optional[bool], Optional[str], Optional[int], tuple[str, ...], bool, bool]:
+) -> tuple[bool | None, str | None, int | None, tuple[str, ...], bool, bool]:
     """Pure-function: ThreatFox `data` array → DerivedSignals fields.
 
     Returns `(malicious, label, confidence, tags, authoritative_clean,
@@ -85,7 +85,7 @@ def classify_threatfox(
         # low-confidence (<50). Tag and label, but don't vote malicious.
         tags = ("threatfox_low_confidence",)
         if malware:
-            tags = tags + (malware,)
+            tags = (*tags, malware)
         return None, "threatfox_low", None, tags, False, False
 
     # 50–100 → confidence 5–10 (linear)
@@ -115,7 +115,7 @@ class ThreatFoxProvider(Provider):
     # URLhaus internally, so it cannot pair with them for consensus.
     upstream_feeds = frozenset({"abuse.ch"})
 
-    def __init__(self, provider_cfg, auth_key: Optional[str] = None) -> None:
+    def __init__(self, provider_cfg, auth_key: str | None = None) -> None:
         super().__init__(provider_cfg)
         # Nominal stamp for the provider block's ttl_expires_at; actual
         # re-query cadence is governed per-kind by intel.refresh_ttl_days.

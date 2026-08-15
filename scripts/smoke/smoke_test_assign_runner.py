@@ -95,7 +95,7 @@ check("build_actions: resolved name applied to assigned",
       _session(acts[0]).get("playbook_name") == "X-name")
 
 # --- I4b flag default ---
-from enrich.config import SessionConfig  # noqa: E402
+from enrich.config import SessionConfig
 
 check("assignment_authoritative default True (operator request)",
       SessionConfig().assignment_authoritative is True)

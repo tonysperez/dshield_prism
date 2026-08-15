@@ -37,7 +37,6 @@ from enrich.findings.lifecycle import (
     update_source_ip_lifecycle,
 )
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

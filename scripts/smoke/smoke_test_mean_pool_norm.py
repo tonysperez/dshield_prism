@@ -33,7 +33,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from enrich.sources.cowrie.sessions import _mean_pool
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 
@@ -55,7 +54,7 @@ def _cos(a: list[float], b: list[float]) -> float:
     na, nb = _norm(a), _norm(b)
     if na == 0 or nb == 0:
         return 0.0
-    return sum(x * y for x, y in zip(a, b)) / (na * nb)
+    return sum(x * y for x, y in zip(a, b, strict=False)) / (na * nb)
 
 
 # -----------------------------------------------------------------------------
@@ -124,7 +123,7 @@ check(
 expected_out = _mean_pool([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
 check(
     "result equals pool of the non-zero inputs only",
-    all(abs(a - b) < 1e-6 for a, b in zip(out, expected_out)),
+    all(abs(a - b) < 1e-6 for a, b in zip(out, expected_out, strict=False)),
     f"got {out}, expected {expected_out}",
 )
 
@@ -158,7 +157,7 @@ n = _norm(raw_sum)
 expected = [v / n for v in raw_sum]
 check(
     "unit-norm inputs: out matches normalized raw sum",
-    all(abs(a - b) < 1e-6 for a, b in zip(out, expected)),
+    all(abs(a - b) < 1e-6 for a, b in zip(out, expected, strict=False)),
     f"got {out}, expected {expected}",
 )
 check(

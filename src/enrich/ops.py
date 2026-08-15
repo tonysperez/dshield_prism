@@ -17,8 +17,7 @@ import os
 import socket
 import time
 import uuid
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from .__about__ import CLI_NAME, ENV_PREFIX
 from .config import AppConfig, Secrets
@@ -31,10 +30,10 @@ _ADHOC_UNIT_LABEL = "manual / ad-hoc"
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
-def run_start(cfg: AppConfig, secrets: Secrets, verb: str) -> Optional[dict]:
+def run_start(cfg: AppConfig, secrets: Secrets, verb: str) -> dict | None:
     """Write a ``started`` ops doc and return a handle for `run_finish`.
 
     Returns ``None`` (a no-op handle) on any failure or when the index is
@@ -85,7 +84,7 @@ def run_start(cfg: AppConfig, secrets: Secrets, verb: str) -> Optional[dict]:
             doc.pop("unit", None)
             es.index(index=idx, id=run_id, document=doc)
         return {"es": es, "index": idx, "run_id": run_id, "t0": time.monotonic()}
-    except Exception as exc:  # noqa: BLE001 — telemetry must never break the verb
+    except Exception as exc:
         log.debug("ops run_start(%s) failed: %s", verb, exc)
         return None
 
@@ -93,11 +92,11 @@ def run_start(cfg: AppConfig, secrets: Secrets, verb: str) -> Optional[dict]:
 def run_finish(
     cfg: AppConfig,
     secrets: Secrets,
-    handle: Optional[dict],
+    handle: dict | None,
     *,
     status: str,
-    rc: Optional[int] = None,
-    error: Optional[str] = None,
+    rc: int | None = None,
+    error: str | None = None,
 ) -> None:
     """Patch the started doc to ``finished``/``failed`` with timing. No-op on a
     ``None`` handle. Best-effort, never raises."""
@@ -114,5 +113,5 @@ def run_finish(
         if error:
             doc["error"] = error[:2000]
         handle["es"].update(index=handle["index"], id=handle["run_id"], doc=doc)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.debug("ops run_finish failed: %s", exc)

@@ -32,7 +32,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
-from typing import Any, Iterable, Optional
+from collections.abc import Iterable
+from datetime import UTC
+from typing import Any
 
 from elasticsearch import Elasticsearch
 
@@ -42,15 +44,15 @@ log = logging.getLogger(__name__)
 
 
 def _now_iso() -> str:
-    from datetime import datetime, timezone
-    return datetime.now(timezone.utc).isoformat()
+    from datetime import datetime
+    return datetime.now(UTC).isoformat()
 
 
 def _scroll(es, index: str, body: dict, page_size: int = 500):
     body = dict(body)
     body.setdefault("size", page_size)
     body.setdefault("sort", [{"_doc": "asc"}])
-    search_after: Optional[list] = None
+    search_after: list | None = None
     while True:
         if search_after:
             body["search_after"] = search_after
@@ -95,7 +97,7 @@ def _delta_sig(*parts: str) -> str:
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
-def _playbook_classification(class_buckets: list, session_count: int) -> Optional[str]:
+def _playbook_classification(class_buckets: list, session_count: int) -> str | None:
     """Most-restrictive privacy tag over a playbook's member sessions.
 
     `class_buckets` are ES `terms` buckets on `dshield.classification.keyword`
@@ -183,7 +185,7 @@ def _aggregate_playbook_state(
 # and returns Optional[finding]. The orchestrator dedupes suppressions.
 # ---------------------------------------------------------------------------
 
-def _f_command_drift(cfg, run_id, lc, anchor, curr) -> Optional[dict]:
+def _f_command_drift(cfg, run_id, lc, anchor, curr) -> dict | None:
     """Jaccard(command_set_now, command_set_anchor) < threshold → drift.
 
     P1a follow-up: replaces the signature-equality gate now that
@@ -241,7 +243,7 @@ def _f_command_drift(cfg, run_id, lc, anchor, curr) -> Optional[dict]:
     }
 
 
-def _f_sequence_drift(cfg, run_id, lc, anchor, curr, *, command_fired: bool) -> Optional[dict]:
+def _f_sequence_drift(cfg, run_id, lc, anchor, curr, *, command_fired: bool) -> dict | None:
     """bigram Jaccard < threshold AND command_drift did NOT fire."""
     if command_fired:
         return None
@@ -266,7 +268,7 @@ def _f_sequence_drift(cfg, run_id, lc, anchor, curr, *, command_fired: bool) -> 
     }
 
 
-def _f_artifact_drift(cfg, run_id, lc, anchor, curr) -> Optional[dict]:
+def _f_artifact_drift(cfg, run_id, lc, anchor, curr) -> dict | None:
     """artifact_set Jaccard distance >= threshold."""
     a_art = anchor.get("artifact_set") or []
     c_art = curr.get("artifact_set") or []
@@ -289,7 +291,7 @@ def _f_artifact_drift(cfg, run_id, lc, anchor, curr) -> Optional[dict]:
     }
 
 
-def _f_geo_drift(cfg, run_id, lc, anchor, curr) -> Optional[dict]:
+def _f_geo_drift(cfg, run_id, lc, anchor, curr) -> dict | None:
     """Cosine distance on ASN distribution >= threshold."""
     a_asn = anchor.get("asn_distribution") or {}
     c_asn = curr.get("asn_distribution") or {}
@@ -314,7 +316,7 @@ def _f_geo_drift(cfg, run_id, lc, anchor, curr) -> Optional[dict]:
     }
 
 
-def _f_size_drift(cfg, run_id, lc, anchor, curr) -> Optional[dict]:
+def _f_size_drift(cfg, run_id, lc, anchor, curr) -> dict | None:
     """ip_count grew by >= pct_min AND >= min_delta_ips."""
     a_ic = int(anchor.get("ip_count") or 0)
     c_ic = int(curr.get("ip_count") or 0)
@@ -339,7 +341,7 @@ def _f_size_drift(cfg, run_id, lc, anchor, curr) -> Optional[dict]:
     }
 
 
-def _f_resurgence(cfg, run_id, lc, anchor, curr) -> Optional[dict]:
+def _f_resurgence(cfg, run_id, lc, anchor, curr) -> dict | None:
     """Was silent for >= resurgence_silent_runs and reappeared this run.
 
     Trigger condition: lifecycle's silent_runs_current dropped to 0 this
@@ -373,12 +375,12 @@ def _f_resurgence(cfg, run_id, lc, anchor, curr) -> Optional[dict]:
     from datetime import datetime
     def _t(s):
         try:
-            return datetime.fromisoformat(str(s.get("@timestamp")).replace("Z", "+00:00"))
+            return datetime.fromisoformat(str(s.get("@timestamp")))
         except Exception:
             return None
     # Find any consecutive gap >= silent_threshold * ~6h (assume 6h cadence).
     gap_hours_threshold = silent_threshold * 6
-    triggered_gap_hours: Optional[float] = None
+    triggered_gap_hours: float | None = None
     prev_t = None
     for s in snaps:
         t = _t(s)
@@ -458,7 +460,7 @@ def run_drift(es: Elasticsearch, cfg: Any, run_id: str) -> dict[str, list[dict[s
             continue
 
         command_fired = False
-        emitters: list[tuple[str, Optional[dict]]] = []
+        emitters: list[tuple[str, dict | None]] = []
         # command + sequence: command first, sequence skipped if command fired.
         f_cmd = _f_command_drift(cfg, run_id, lc, anchor, curr)
         if f_cmd:

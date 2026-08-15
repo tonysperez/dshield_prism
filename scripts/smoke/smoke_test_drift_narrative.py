@@ -30,7 +30,6 @@ from enrich.findings.narrative import (
     parse_narrative_response,
 )
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

@@ -26,9 +26,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from enrich import grounding_coverage_job as gcj  # noqa: E402
+from enrich import grounding_coverage_job as gcj
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []

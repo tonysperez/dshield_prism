@@ -5,7 +5,7 @@ import functools
 import json
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from elasticsearch import Elasticsearch, helpers
 
@@ -48,7 +48,7 @@ class _ResilientNamespace:
     """Proxy for a namespace client (`es.indices`, `es.cluster`, …). Wraps its
     API methods in `run_resilient`, probing pressure via the root client."""
 
-    __slots__ = ("_ns", "_bp", "_root")
+    __slots__ = ("_bp", "_ns", "_root")
 
     def __init__(self, ns: Any, bp: Any, root: Any) -> None:
         object.__setattr__(self, "_ns", ns)
@@ -71,7 +71,7 @@ class ResilientClient:
     `._raw` exposes the unwrapped client (used to probe breaker stats without
     recursive retry); `._bp` is the backpressure config."""
 
-    __slots__ = ("_raw", "_bp")
+    __slots__ = ("_bp", "_raw")
 
     def __init__(self, raw: Elasticsearch, bp: Any) -> None:
         object.__setattr__(self, "_raw", raw)
@@ -92,7 +92,7 @@ class ResilientClient:
         # `client.options(...).bulk(...)` stay covered end to end.
         if name == "options":
             bp = self._bp
-            def _options(*args: Any, **kwargs: Any) -> "ResilientClient":
+            def _options(*args: Any, **kwargs: Any) -> ResilientClient:
                 return ResilientClient(attr(*args, **kwargs), bp)
             return _options
         if _is_namespace(attr):
@@ -198,7 +198,7 @@ def bulk_write(es: Elasticsearch, index: str, actions: list[dict]) -> tuple[int,
     return success, errors
 
 
-def deep_get(d: Optional[dict], dotted_path: str) -> Any:
+def deep_get(d: dict | None, dotted_path: str) -> Any:
     """Walk a dotted path through nested dicts; None if any hop is missing."""
     cur: Any = d
     for key in dotted_path.split("."):

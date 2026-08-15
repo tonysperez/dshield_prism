@@ -22,7 +22,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "src"))
 
-from eval_jsonl import resolve as resolve_jsonl  # noqa: E402
+from capture_anchor_snapshot import predicate_signature
+from eval_jsonl import resolve as resolve_jsonl
+from eval_predicate_falsification import compute_predicates, load_command_text
 
 from enrich.sources.cowrie.lexical import (
     build_session_predicate_vectors,
@@ -34,8 +36,6 @@ from enrich.sources.cowrie.predicates import (
     fold_session_predicates,
     predicate_overlap,
 )
-from capture_anchor_snapshot import predicate_signature
-from eval_predicate_falsification import compute_predicates, load_command_text
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []

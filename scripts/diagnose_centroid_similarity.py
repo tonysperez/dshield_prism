@@ -26,6 +26,14 @@ from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
 
 
+def _find(parent: list[int], x: int) -> int:
+    """Union-find root with path compression, mutating `parent` in place."""
+    while parent[x] != x:
+        parent[x] = parent[parent[x]]
+        x = parent[x]
+    return x
+
+
 def main() -> int:
     cfg = load_config()
     secrets = load_secrets()
@@ -102,7 +110,7 @@ def main() -> int:
     print("Histogram (count of pairs in each cosine-sim band):")
     bands = [-1.0, 0.0, 0.5, 0.7, 0.8, 0.85, 0.9, 0.92, 0.94, 0.96, 0.98, 0.99, 1.0001]
     hist, _ = np.histogram(upper[~np.isnan(upper)], bins=bands)
-    for lo, hi, c in zip(bands[:-1], bands[1:], hist):
+    for lo, hi, c in zip(bands[:-1], bands[1:], hist, strict=False):
         bar = "#" * min(60, c)
         print(f"  [{lo:>5.2f}, {hi:>5.2f}):  {c:>5d}  {bar}")
 
@@ -141,20 +149,15 @@ def main() -> int:
     print("Merge simulation (union-find at each threshold):")
     for tau in [0.99, 0.98, 0.96, 0.94, 0.92, 0.90, 0.85]:
         parent = list(range(n))
-        def find(x: int) -> int:
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
         for i in range(n):
             for j in range(i + 1, n):
                 if not np.isnan(sim[i, j]) and sim[i, j] >= tau:
-                    ri, rj = find(i), find(j)
+                    ri, rj = _find(parent, i), _find(parent, j)
                     if ri != rj:
                         parent[ri] = rj
         groups: dict[int, list[int]] = {}
         for i in range(n):
-            r = find(i)
+            r = _find(parent, i)
             groups.setdefault(r, []).append(i)
         sizes_per_group = sorted((len(g) for g in groups.values()), reverse=True)
         n_merged = sum(1 for g in groups.values() if len(g) > 1)

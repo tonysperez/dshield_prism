@@ -16,10 +16,6 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "src"))
 
-from enrich.clustering import compute_lexical_features
-from enrich.sources.cowrie.assignment import assign_batch, compute_assignment_window
-from enrich.sources.cowrie.lexical import _MIN_ANCHOR_BAGS, prepare_assignment_lexical
-from enrich.sources.cowrie.predicates import PREDICATE_NAMES
 from eval_assignment import EvalRecord, load_records_detailed
 from eval_assignment_faithful import (
     RESCUE_ARMS,
@@ -28,8 +24,8 @@ from eval_assignment_faithful import (
     _band_report,
     _cascade_slices,
     _identity_differences,
-    _path_of,
     _path_metrics,
+    _path_of,
     _print_real_anchor_rescue_sweep,
     _real_anchor_replay,
     _required_nulls,
@@ -44,6 +40,11 @@ from eval_assignment_faithful import (
     run_real_anchor_rescue_sweep,
     write_baseline,
 )
+
+from enrich.clustering import compute_lexical_features
+from enrich.sources.cowrie.assignment import assign_batch, compute_assignment_window
+from enrich.sources.cowrie.lexical import _MIN_ANCHOR_BAGS, prepare_assignment_lexical
+from enrich.sources.cowrie.predicates import PREDICATE_NAMES
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -553,18 +554,7 @@ check("real anchor replay includes per-session candidate cascade trace",
 # above a rescue_tau of 0.90 so the rescue tier gets a look at it. r5 is identical but has
 # no predicate vector at all.
 _below_tau = np.asarray([0.91, float(np.sqrt(1.0 - 0.91**2))], dtype=np.float32)
-rescue_records = replay_records + [
-    EvalRecord(
-        session_id="r4", analyst_label="A", embedding=_below_tau,
-        production_playbook_id="spb-A", command_cluster_bag=None, rubric_version=None,
-        embed_version=None, embed_config_hash=None, capture_timestamp=None,
-    ),
-    EvalRecord(
-        session_id="r5", analyst_label="A", embedding=_below_tau,
-        production_playbook_id="spb-A", command_cluster_bag=None, rubric_version=None,
-        embed_version=None, embed_config_hash=None, capture_timestamp=None,
-    ),
-]
+rescue_records = [*replay_records, EvalRecord(session_id="r4", analyst_label="A", embedding=_below_tau, production_playbook_id="spb-A", command_cluster_bag=None, rubric_version=None, embed_version=None, embed_config_hash=None, capture_timestamp=None), EvalRecord(session_id="r5", analyst_label="A", embedding=_below_tau, production_playbook_id="spb-A", command_cluster_bag=None, rubric_version=None, embed_version=None, embed_config_hash=None, capture_timestamp=None)]
 # Only r4 carries evidence; spb-A's signature is modal on the same predicate, spb-B's is not.
 rescue_vectors = {"r4": {"host_info_gather": True, "self_spread": False}}
 real_signatures = [{"host_info_gather": 1.0}, {"host_info_gather": 0.0}]
@@ -606,7 +596,7 @@ def _assignment_ids(rescue_tau=None, vectors=None, signatures=None):
         window_predicates=([vectors.get(r.session_id) for r in scored] if vectors else None),
         anchor_predicate_signatures=signatures,
     )
-    return [(r.session_id, a.status, a.playbook_id) for r, a in zip(scored, result.assignments)]
+    return [(r.session_id, a.status, a.playbook_id) for r, a in zip(scored, result.assignments, strict=False)]
 
 
 forced_false = _rescue_replay(rescue_vectors, zero_signatures)
@@ -708,7 +698,7 @@ check("all-False session fold counts as no evidence, not as a present vector",
                         real_signatures)["sessions_with_predicate_evidence"] == 0)
 
 try:
-    _rescue_replay(rescue_vectors, real_signatures + [{"host_info_gather": 1.0}])
+    _rescue_replay(rescue_vectors, [*real_signatures, {"host_info_gather": 1.0}])
     check("misaligned signature list raises EvaluationInvalid", False, "did not raise")
 except EvaluationInvalid:
     check("misaligned signature list raises EvaluationInvalid", True)

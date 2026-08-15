@@ -25,7 +25,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "console" / "src"))
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+
+from console.findings import _DISCOVERY_KINDS, _DRIFT_KINDS, stream_for_kind
 
 from enrich.findings.discovery import (
     DISCOVERY_MINERS,
@@ -37,8 +39,6 @@ from enrich.findings.discovery import (
     mine_new_playbook,
     mine_outlier_burst,
 )
-from console.findings import _DISCOVERY_KINDS, _DRIFT_KINDS, stream_for_kind
-
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -111,11 +111,11 @@ class _Cfg:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _ago(days: int) -> str:
-    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    return (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
 
 # -----------------------------------------------------------------------------
@@ -300,7 +300,7 @@ check("shared artifact carried as artifact.value",
       ["hash:deadbeef", "url:hxxp://drop/"])
 check("evidence carries session+ip counts + sample ips",
       findings[0]["evidence"]["session_count"] in (5, 8)
-      and findings[0]["evidence"]["ip_count"] in (5,)
+      and findings[0]["evidence"]["ip_count"] == 5
       and len(findings[0]["evidence"]["sample_ips"]) <= 5)
 
 # No outliers above min_sessions → no findings
@@ -387,10 +387,14 @@ check("DRIFT_KINDS has 7", len(_DRIFT_KINDS) == 7)
 print("\n[8] ip_shift_js_cutoff lookup paths")
 
 from enrich.findings.discovery import (
-    _ip_shift_js_cutoff, _JS_CUTOFF_CACHE,
-    _JS_CUTOFF_MIN_N, _JS_CUTOFF_MIN_VALUE,
-    _convergence_ratio_cutoff, _CONVERGENCE_CUTOFF_CACHE,
-    _CONVERGENCE_CUTOFF_MIN_N, _CONVERGENCE_CUTOFF_MIN_VALUE,
+    _CONVERGENCE_CUTOFF_CACHE,
+    _CONVERGENCE_CUTOFF_MIN_N,
+    _CONVERGENCE_CUTOFF_MIN_VALUE,
+    _JS_CUTOFF_CACHE,
+    _JS_CUTOFF_MIN_N,
+    _JS_CUTOFF_MIN_VALUE,
+    _convergence_ratio_cutoff,
+    _ip_shift_js_cutoff,
 )
 
 

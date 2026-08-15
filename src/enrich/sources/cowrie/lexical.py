@@ -111,7 +111,7 @@ def pull_hash_to_cluster(
     body = {
         "size": page_size,
         "_source": [f"{base}.id", f"{base}.is_outlier"],
-        "query": {"bool": {"filter": [{"exists": {"field": f"{base}.id"}}] + list(filt or [])}},
+        "query": {"bool": {"filter": [{"exists": {"field": f"{base}.id"}}, *list(filt or [])]}},
         "sort": [{"_doc": "asc"}],
     }
     out: dict[str, str] = {}
@@ -163,7 +163,7 @@ def pull_hash_to_predicates(
         "size": page_size,
         "_source": [base],
         "query": {"bool": {
-            "filter": [{"exists": {"field": f"{base}.{SUBSIGNAL_NAMES[0]}"}}] + list(filt or []),
+            "filter": [{"exists": {"field": f"{base}.{SUBSIGNAL_NAMES[0]}"}}, *list(filt or [])],
         }},
         "sort": [{"_doc": "asc"}],
     }

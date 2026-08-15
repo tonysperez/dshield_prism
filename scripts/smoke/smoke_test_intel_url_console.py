@@ -21,7 +21,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "console" / "src"))
 
 from console.intel import _canonical_url, _extract_host_ip
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

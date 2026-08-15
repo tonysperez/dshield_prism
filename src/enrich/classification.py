@@ -16,7 +16,7 @@ default posture — the boundary checks (``is_releasable``) are the safety net.
 """
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 # ES field (text+keyword multifield in the mappings; exact-match queries use
 # `dshield.classification.keyword`).
@@ -35,7 +35,7 @@ def _unclassified_is_confidential(cfg) -> bool:
     return bool(getattr(cc, "unclassified_is_confidential", True))
 
 
-def is_releasable(classification: Optional[str], cfg) -> bool:
+def is_releasable(classification: str | None, cfg) -> bool:
     """True if data with this classification may leave the box (cloud
     escalation / CTI query). Explicit ``public`` always may; explicit
     ``confidential`` never may; an absent/unknown value follows the posture knob
@@ -47,7 +47,7 @@ def is_releasable(classification: Optional[str], cfg) -> bool:
     return not _unclassified_is_confidential(cfg)
 
 
-def aggregate(classifications: Iterable[Optional[str]]) -> Optional[str]:
+def aggregate(classifications: Iterable[str | None]) -> str | None:
     """Roll source classifications up onto a derived doc, "most restrictive
     wins": ``confidential`` if ANY source is confidential; ``public`` only if
     every source is explicitly public; otherwise ``None`` (some source carried
@@ -82,7 +82,7 @@ def releasable_filter(cfg) -> dict:
     return {"bool": {"must_not": {"term": {CLASSIFICATION_KEYWORD: CONFIDENTIAL}}}}
 
 
-def stickier(existing: Optional[str], incoming: Optional[str]) -> Optional[str]:
+def stickier(existing: str | None, incoming: str | None) -> str | None:
     """Combine an already-stored classification with a new observation, never
     downgrading: once ``confidential`` it stays confidential. Used when a
     content-deduped command doc that already exists is updated with events from

@@ -28,11 +28,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from enrich.sources.cowrie.file_crossref import (  # noqa: E402
-    _crossref_id, _filename_is_specific,
+import functools
+import operator
+
+from enrich.sources.cowrie.file_crossref import (
+    _crossref_id,
+    _filename_is_specific,
     run_mine_file_crossref,
 )
-
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -84,7 +87,7 @@ class _StubES:
         # Dispatch on which logical call this is by inspecting the
         # query body and the requested _source.
         query = kwargs.get("query") or {}
-        if index.endswith(".sessions_rollup") or index.endswith("session"):
+        if index.endswith((".sessions_rollup", "session")):
             # `_iter_session_file_events` uses nested file_events query
             # with sort by event.start asc.
             if "nested" in query:
@@ -304,7 +307,7 @@ es = _StubES(
 )
 _set_stub(es)
 stats = run_mine_file_crossref(_Cfg, secrets=None, dry_run=False)
-written = sum((w[1] for w in es.writes), [])
+written = functools.reduce(operator.iadd, (w[1] for w in es.writes), [])
 ids = {a["_id"] for a in written}
 check("two distinct doc ids", len(ids) == 2, str(ids))
 check("both pair_written counted in stats", stats["pairs_written"] == 2)

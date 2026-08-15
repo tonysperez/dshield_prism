@@ -30,8 +30,8 @@ from pathlib import Path
 # scripts/ on the path so the top-level render/validate modules import.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import render_eval_set as render  # noqa: E402
-import validate_eval_labels as val  # noqa: E402
+import render_eval_set as render
+import validate_eval_labels as val
 
 
 def _errors_for(block: dict) -> list[str]:

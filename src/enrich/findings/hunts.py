@@ -57,11 +57,12 @@ Supported filter kinds:
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -263,7 +264,7 @@ def load_hunts(hunts_dir: str) -> list[dict[str, Any]]:
         try:
             with f.open(encoding="utf-8") as fh:
                 doc = yaml.safe_load(fh)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise ValueError(f"hunts: failed to parse {f}: {exc}") from exc
         hunt_id = validate_hunt_doc(doc, source=str(f))
         # Two files claiming one id would make `by_hunt` keys collide and
@@ -364,10 +365,8 @@ def set_hunt_enabled(hunt: dict[str, Any], enabled: bool) -> None:
         os.replace(tmp, p)
     except BaseException:
         # mkstemp created it; never leave the turd behind on failure.
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
     hunt["enabled"] = bool(enabled)
 
@@ -466,10 +465,8 @@ def write_hunt(
         os.replace(tmp, target)
     except BaseException:
         # mkstemp created it; never leave the turd behind on failure.
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
     return str(target)
 
@@ -533,7 +530,7 @@ def _filter_to_es_clause(f: dict) -> dict:
     if kind == "external_match_cosine_gte":
         return {"range": {_F_EXT_COSINE: {"gte": float(f["threshold"])}}}
     if kind == "window":
-        cutoff = datetime.now(timezone.utc) - timedelta(days=int(f["last_days"]))
+        cutoff = datetime.now(UTC) - timedelta(days=int(f["last_days"]))
         return {"range": {_F_TS: {"gte": cutoff.isoformat()}}}
     # `_validate_filter` already gated this; reaching here is a bug.
     raise ValueError(f"hunts: unsupported filter kind {kind!r}")
@@ -566,7 +563,7 @@ def _run_one_hunt(
     }
     try:
         resp = es.search(index=sessions_idx, **body)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("hunts: %s execution failed: %s", hunt["id"], exc)
         return []
     out: list[dict[str, Any]] = []
@@ -669,7 +666,7 @@ def preview_hunt(
     query = {"bool": {"must": [_filter_to_es_clause(f) for f in hunt["filters"]]}}
     try:
         out["total"] = int(es.count(index=sessions_idx, query=query).get("count", 0))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # Don't fail the preview on a missing count — the page below is
         # still useful. But never silently report 0.
         log.warning("hunts: preview %s count failed: %s", hunt["id"], exc)
@@ -727,7 +724,7 @@ def run_hunts(
     }
     try:
         hunts = load_hunts(hunts_dir)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("hunts: load failed: %s", exc)
         out["errors"].append({"hunt_id": None, "error": str(exc)})
         return out
@@ -760,7 +757,7 @@ def run_hunts(
                 run_id=run_id, max_findings=max_per_hunt,
             )
             out["by_hunt"][hunt["id"]] = findings
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("hunts: %s failed: %s", hunt["id"], exc)
             out["errors"].append({"hunt_id": hunt["id"], "error": str(exc)})
     return out

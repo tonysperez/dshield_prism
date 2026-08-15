@@ -359,8 +359,8 @@ blob_b = rng.normal(0.0, 0.02, size=(40, 8)) + np.array([0.0, 1.0] + [0.0] * 6)
 pool_emb = np.vstack([blob_a, blob_b]).astype(np.float32)
 pool_scalars = [{"command_count": 3, "unique_commands": 2,
                  "login_success_rate": 1.0, "mean_novelty_score": 0.1}] * 80
-kwargs = dict(min_cluster_size=5, min_samples=3, scalar_weight=0.0,
-              rescue_threshold=0.94, merge_threshold=0.94, svd_dim=0, n_jobs=1)
+kwargs = {"min_cluster_size": 5, "min_samples": 3, "scalar_weight": 0.0,
+              "rescue_threshold": 0.94, "merge_threshold": 0.94, "svd_dim": 0, "n_jobs": 1}
 labels = pool_group_labels(pool_emb, pool_scalars, **kwargs)
 shape = cluster_novel_pool(pool_emb, pool_scalars, **kwargs)
 n_groups = len({int(x) for x in labels if int(x) >= 0})
@@ -368,7 +368,7 @@ check("labelled clustering matches cluster_novel_pool's group count",
       n_groups == shape["playbook_groups"], f"{n_groups} vs {shape['playbook_groups']}")
 check("labelled clustering separates the two blobs", n_groups == 2, str(n_groups))
 check("too-few-rows pool degrades to all-outlier",
-      set(int(x) for x in pool_group_labels(pool_emb[:2], pool_scalars[:2], **kwargs)) == {-1})
+      {int(x) for x in pool_group_labels(pool_emb[:2], pool_scalars[:2], **kwargs)} == {-1})
 
 
 # --- ES-facing helpers, with a recording fake -------------------------------------
@@ -470,12 +470,12 @@ IDX = SimpleNamespace(sessions_rollup="rollup", playbook_anchors="anchors",
 
 
 def make_cfg(**session_overrides):
-    session = dict(
-        assignment_tau=0.94, assignment_rescue_tau=0.94, assignment_confident_tau=0.98,
-        assignment_tfidf_tau=0.80, playbook_merge_threshold=0.94,
-        playbook_naming_session_cap=500, cluster_min_cluster_size=3,
-        cluster_min_samples=2, cluster_scalar_weight=0.0, cluster_svd_dim=0,
-    )
+    session = {
+        "assignment_tau": 0.94, "assignment_rescue_tau": 0.94, "assignment_confident_tau": 0.98,
+        "assignment_tfidf_tau": 0.80, "playbook_merge_threshold": 0.94,
+        "playbook_naming_session_cap": 500, "cluster_min_cluster_size": 3,
+        "cluster_min_samples": 2, "cluster_scalar_weight": 0.0, "cluster_svd_dim": 0,
+    }
     session.update(session_overrides)
     return SimpleNamespace(
         session=SimpleNamespace(**session),
@@ -521,8 +521,8 @@ EMPTY = {"hits": {"hits": []}}
 
 
 def scripted_es(**over):
-    base = dict(
-        search_results={
+    base = {
+        "search_results": {
             "anchors": [anchor_hit, anchor_hit],
             "rollup": [{"hits": {"hits": session_docs}}, EMPTY, EMPTY],
             "commands": [taxonomy_hit, EMPTY],
@@ -539,8 +539,8 @@ def scripted_es(**over):
                 ]}},
             ],
         },
-        count_results={"clusters": {"count": 2}, "events": {"count": 9}},
-    )
+        "count_results": {"clusters": {"count": 2}, "events": {"count": 9}},
+    }
     base.update(over)
     return FakeES(**base)
 

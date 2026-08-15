@@ -23,8 +23,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from ..artifact import Artifact
 
@@ -61,15 +61,15 @@ class DerivedSignals:
     """
     # Tri-state malicious flag. None means "provider has no opinion / no
     # data on this artifact." True/False are explicit verdicts.
-    malicious: Optional[bool] = None
+    malicious: bool | None = None
     # Provider's own confidence in its verdict, 0-10. None when not
     # provided. Used for tie-breaking and display weighting only.
-    confidence: Optional[int] = None
+    confidence: int | None = None
     # Short categorical label: "scanner" | "botnet" | "tor_exit" |
     # "blocklisted" | "benign" | "research" | "unknown".
     # Free-form by convention; the consensus rule keys on `malicious`
     # not `label`.
-    label: Optional[str] = None
+    label: str | None = None
     # Optional human-readable tags ("mirai", "ssh-bruteforce", etc.).
     tags: tuple[str, ...] = ()
     # Provider asserts this artifact is benign with high confidence.
@@ -111,10 +111,10 @@ class ProviderResult:
         raw: dict[str, Any],
         derived: DerivedSignals,
         ttl: timedelta,
-        now: Optional[datetime] = None,
-    ) -> "ProviderResult":
+        now: datetime | None = None,
+    ) -> ProviderResult:
         """Convenience builder — fills in `fetched_at` + `ttl_expires_at`."""
-        t = now or datetime.now(timezone.utc)
+        t = now or datetime.now(UTC)
         return cls(
             provider=provider,
             artifact=artifact,
@@ -142,7 +142,7 @@ class RateLimit:
     """
     capacity: int = 10
     refill_per_second: float = 1.0
-    daily_budget: Optional[int] = None
+    daily_budget: int | None = None
 
 
 @dataclass

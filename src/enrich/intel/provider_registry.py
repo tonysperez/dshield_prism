@@ -28,7 +28,6 @@ from __future__ import annotations
 
 from itertools import combinations
 
-
 # Curated registry. The smoke test verifies each provider class's
 # `upstream_feeds` attribute matches the entry here.
 PROVIDER_UPSTREAM_FEEDS: dict[str, frozenset[str]] = {

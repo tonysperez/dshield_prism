@@ -208,7 +208,7 @@ def _best_matching(cost: dict[tuple[str, str], int],
         for j, c in enumerate(cols):
             M[i, j] = cost.get((r, c), 0)
     ri, ci = linear_sum_assignment(-M)
-    return [(rows[i], cols[j]) for i, j in zip(ri, ci) if M[i, j] > 0]
+    return [(rows[i], cols[j]) for i, j in zip(ri, ci, strict=False) if M[i, j] > 0]
 
 
 def vocabulary_alignment(pairs: list[tuple[str, str]]) -> dict:
@@ -306,8 +306,8 @@ def render(report: dict) -> list[str]:
     hw = report.get("ci_half_width") or {}
     m = report["metrics"]
     lines = [
-        f"  overlap: {report['n_overlap']} sessions "
-        f"(annotated only in A: {report['n_only_a']}, only in B: {report['n_only_b']})",
+        (f"  overlap: {report['n_overlap']} sessions "
+         f"(annotated only in A: {report['n_only_a']}, only in B: {report['n_only_b']})"),
         f"  {'metric':20}{'value':>10}{'±ci':>10}",
     ]
     for name in ("percent_agreement", "cohen_kappa", "pabak"):

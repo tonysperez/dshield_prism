@@ -33,7 +33,6 @@ except ImportError:
 
 from enrich.clustering import compute_centroids, novelty_score
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

@@ -23,7 +23,11 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 
-from enrich.cli import _apply_backfill_mode, _backfill_session_plan, _BACKFILL_SKIP_STEPS
+from enrich.cli import (
+    _BACKFILL_SKIP_STEPS,
+    _apply_backfill_mode,
+    _backfill_session_plan,
+)
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -52,9 +56,9 @@ normal = [
     ("mine findings", _mk("find"), True),
 ]
 
-FULL = lambda: "csess_FULL"           # noqa: E731 — sentinel replacement callable
-FULL_RESET = lambda: "reset_FORCED"   # noqa: E731 — sentinel replacement callable
-ENRICH_FULL = lambda: "enrich_FULL"   # noqa: E731 — sentinel replacement callable
+FULL = lambda: "csess_FULL"
+FULL_RESET = lambda: "reset_FORCED"
+ENRICH_FULL = lambda: "enrich_FULL"
 out = _apply_backfill_mode(normal, {
     "cluster sessions": FULL,
     "reset rollup watermarks": FULL_RESET,
@@ -89,7 +93,7 @@ check("enrich fn replaced with the full-rescan variant",
       enrich_fn() == "enrich_FULL", enrich_fn())
 others_intact = all(
     f() == orig_fn()
-    for (n, f, _o), (_on, orig_fn, _oo) in zip(out, [s for s in normal if s[0] not in _BACKFILL_SKIP_STEPS])
+    for (n, f, _o), (_on, orig_fn, _oo) in zip(out, [s for s in normal if s[0] not in _BACKFILL_SKIP_STEPS], strict=False)
     if n not in ("cluster sessions", "reset rollup watermarks", "enrich")
 )
 check("other steps keep their original fn", others_intact)

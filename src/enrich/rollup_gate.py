@@ -21,8 +21,6 @@ operator override is the unconditional `reset` verb / `pipeline --force`.
 """
 from __future__ import annotations
 
-from typing import Optional
-
 # StateDB watermark keys (the watermark table doubles as a tiny KV store).
 ROLLUP_DIRTY_KEY = "rollup_command_dirty"
 ROLLUP_SCHEMA_HASH_KEY = "rollup_schema_hash_applied"
@@ -38,7 +36,7 @@ def mark_rollup_dirty(db) -> None:
 def rollup_repool_decision(
     dirty: bool,
     current_schema_hash: str,
-    stored_schema_hash: Optional[str],
+    stored_schema_hash: str | None,
 ) -> tuple[bool, str]:
     """Whether to force a full re-pool (reset the rollup watermarks), with a
     reason. Pure — unit-tested directly. Fail-safe: only returns ``False`` (skip

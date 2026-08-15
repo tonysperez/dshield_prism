@@ -33,7 +33,6 @@ import numpy as np
 
 from enrich import clustering
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 
@@ -338,7 +337,7 @@ es = _StubES(ref_payload={
     "docs": [
         {
             "centroid": c,
-            "centroid_augmented": c + [0.0],
+            "centroid_augmented": [*c, 0.0],
             "embedding_dims": EMB_DIM,
             "augmented_dims": EMB_DIM + 1,
             "scalar_weight": 0.99,  # WRONG — current run will use 0.05
@@ -560,9 +559,9 @@ def _query_reference_source(q):
         if isinstance(must_not, dict):
             must_not = [must_not]
         for mn in must_not:
-            if isinstance(mn, dict) and "exists" in mn:
-                if mn["exists"].get("field") == "reference_source":
-                    return "__in_corpus__"
+            if (isinstance(mn, dict) and "exists" in mn
+                    and mn["exists"].get("field") == "reference_source"):
+                return "__in_corpus__"
     return None
 
 

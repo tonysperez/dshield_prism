@@ -16,11 +16,12 @@ Runs hourly via systemd; ad-hoc via `dshield_prism mine findings`.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from elasticsearch import Elasticsearch
 
@@ -34,7 +35,7 @@ _FINDINGS_MAPPING = "setup/es-mappings/findings/default.json"
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _tombstone_orphan_findings(
@@ -102,7 +103,7 @@ def _tombstone_orphan_findings(
 # Playbook findings
 # ---------------------------------------------------------------------------
 
-def _latest_run_id(es: Elasticsearch, index: str) -> Optional[str]:
+def _latest_run_id(es: Elasticsearch, index: str) -> str | None:
     """Return the most-recent run_id from the session_clusters index, or
     None if no run summary exists yet.
 
@@ -301,7 +302,7 @@ def _mine_campaigns(
         ],
         "sort": [{"_doc": "asc"}],
     }
-    search_after: Optional[list] = None
+    search_after: list | None = None
     while True:
         if search_after:
             body["search_after"] = search_after
@@ -368,7 +369,7 @@ def _mine_campaigns(
 # inventory doc / journal log are the place to spot a future blowup.
 
 
-def _count_or_zero(es: Elasticsearch, index: str, query: Optional[dict] = None) -> int:
+def _count_or_zero(es: Elasticsearch, index: str, query: dict | None = None) -> int:
     """es.count wrapper that returns 0 on any failure (missing index,
     transient ES error). The gate logs a warning and skips that
     miner's denominator — we never want the gate itself to abort
@@ -378,7 +379,7 @@ def _count_or_zero(es: Elasticsearch, index: str, query: Optional[dict] = None) 
             return 0
         body = {"query": query} if query else {}
         return int(es.count(index=index, **body).get("count") or 0)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("noise gate: count(%s) failed: %s", index, exc)
         return 0
 
@@ -497,7 +498,7 @@ def run_mine(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) -> dict[st
     init_index(es, _FINDINGS_MAPPING, findings_idx)
 
     run_id = str(uuid.uuid4())
-    started_at = datetime.now(timezone.utc)
+    started_at = datetime.now(UTC)
 
     playbooks = _mine_playbooks(es, cfg, run_id)
     campaigns = _mine_campaigns(es, cfg, run_id)
@@ -546,8 +547,8 @@ def run_mine(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) -> dict[st
     }
     if not dry_run and drift_findings:
         try:
-            from .narrative import attach_drift_narratives
             from ..cache import StateDB
+            from .narrative import attach_drift_narratives
             db = StateDB(cfg.worker.state_db)
             try:
                 narrative_stats = attach_drift_narratives(
@@ -567,10 +568,8 @@ def run_mine(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) -> dict[st
         written_cmp = bulk_upsert_findings(es, findings_idx, campaigns)
         written_disc = bulk_upsert_findings(es, findings_idx, discovery_findings)
         written_drift = bulk_upsert_findings(es, findings_idx, drift_findings)
-        try:
+        with contextlib.suppress(Exception):
             es.indices.refresh(index=findings_idx)
-        except Exception:
-            pass
 
     # Garbage-collect orphan findings. Content-addressed playbook_id /
     # campaign_id values shift legitimately when playbook membership
@@ -591,7 +590,7 @@ def run_mine(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) -> dict[st
             artifact_kinds=("playbook", "campaign"),
         )
 
-    elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
+    elapsed = (datetime.now(UTC) - started_at).total_seconds()
     stats = {
         "run_id": run_id,
         "dry_run": dry_run,

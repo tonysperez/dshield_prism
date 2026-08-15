@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 _KNOWN_FRAG_CASES = [
@@ -81,7 +81,7 @@ def main() -> int:
     else:
         verdict = "REVERT (K6.1b)"
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     L = [f"# K scorecard — {args.k3.name} vs {args.k1.name} ({ts})", "",
          f"## VERDICT: {verdict}", "",
          "| metric | result | detail |", "|---|:--:|---|"]
@@ -90,10 +90,10 @@ def main() -> int:
     L += ["", "## K1 ↔ K3 diff", "", "| measure | K1 | K3 |", "|---|---:|---:|",
           f"| clusters | {k1['n_clusters']} | {k3['n_clusters']} |",
           f"| outlier rate | {k1['outlier_rate']:.1%} | {k3['outlier_rate']:.1%} |",
-          f"| largest cluster | {k1['largest_cluster_size']} ({k1['largest_cluster_share']:.1%}) "
-          f"| {k3['largest_cluster_size']} ({k3['largest_cluster_share']:.1%}) |",
-          f"| largest modal intent share | {(k1.get('largest_cluster_profile') or {}).get('modal_intent_share')} "
-          f"| {(k3.get('largest_cluster_profile') or {}).get('modal_intent_share')} |", ""]
+          (f"| largest cluster | {k1['largest_cluster_size']} ({k1['largest_cluster_share']:.1%}) "
+           f"| {k3['largest_cluster_size']} ({k3['largest_cluster_share']:.1%}) |"),
+          (f"| largest modal intent share | {(k1.get('largest_cluster_profile') or {}).get('modal_intent_share')} "
+           f"| {(k3.get('largest_cluster_profile') or {}).get('modal_intent_share')} |"), ""]
     out = args.output_dir / f"K3-scorecard-{ts}.md"
     out.write_text("\n".join(L), encoding="utf-8")
     print("\n".join(L))

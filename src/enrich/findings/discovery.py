@@ -34,8 +34,8 @@ from __future__ import annotations
 import logging
 import math
 import time
-from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from elasticsearch import Elasticsearch
 
@@ -47,7 +47,7 @@ log = logging.getLogger(__name__)
 # pytest-style fast loop that calls `mine_ip_behavior_shift` repeatedly
 # doesn't re-hit ES every time. TTL matches `band_thresholds` for
 # consistency. Key = metrics index name.
-_JS_CUTOFF_CACHE: dict[str, tuple[float, Optional[float]]] = {}
+_JS_CUTOFF_CACHE: dict[str, tuple[float, float | None]] = {}
 _JS_CUTOFF_TTL_SEC = 3600.0
 
 
@@ -74,7 +74,7 @@ _JS_CUTOFF_MIN_VALUE = 0.1
 
 # Per-process cache for the convergence-ratio cutoff (4.4). Same shape
 # and TTL as `_JS_CUTOFF_CACHE`. Key = metrics index name.
-_CONVERGENCE_CUTOFF_CACHE: dict[str, tuple[float, Optional[float]]] = {}
+_CONVERGENCE_CUTOFF_CACHE: dict[str, tuple[float, float | None]] = {}
 _CONVERGENCE_CUTOFF_TTL_SEC = 3600.0
 
 # Minimum sample size + value floor (same lesson as 4.3). A bhv×inf
@@ -86,7 +86,7 @@ _CONVERGENCE_CUTOFF_MIN_N = 10
 _CONVERGENCE_CUTOFF_MIN_VALUE = 0.2
 
 
-def _convergence_ratio_cutoff(es, cfg) -> Optional[float]:
+def _convergence_ratio_cutoff(es, cfg) -> float | None:
     """Return the corpus-p75 of bhv×inf IP-overlap ratios from
     `prism.metrics`, or None when the metrics index / doc / field is
     missing, the sample size is below `_CONVERGENCE_CUTOFF_MIN_N`, or
@@ -111,7 +111,7 @@ def _convergence_ratio_cutoff(es, cfg) -> Optional[float]:
             query={"term": {"kind": "campaign_convergence_ratio"}},
             _source=["p75", "n"],
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning(
             "discovery: convergence-cutoff lookup on %s failed: %s", idx, exc,
         )
@@ -143,7 +143,7 @@ def _convergence_ratio_cutoff(es, cfg) -> Optional[float]:
     return out
 
 
-def _ip_shift_js_cutoff(es, cfg) -> Optional[float]:
+def _ip_shift_js_cutoff(es, cfg) -> float | None:
     """Return the corpus-p90 of per-IP JS distance from `prism.metrics`,
     or None when:
       * the metrics index / doc / field is missing, OR
@@ -171,7 +171,7 @@ def _ip_shift_js_cutoff(es, cfg) -> Optional[float]:
             query={"term": {"kind": "ip_behavior_shift_js"}},
             _source=["p90", "n"],
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("discovery: js-cutoff lookup on %s failed: %s", idx, exc)
         _JS_CUTOFF_CACHE[idx] = (now, None)
         return None
@@ -206,14 +206,14 @@ def _ip_shift_js_cutoff(es, cfg) -> Optional[float]:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
-def _parse_ts(s: Optional[str]) -> Optional[datetime]:
+def _parse_ts(s: str | None) -> datetime | None:
     if not s:
         return None
     try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return datetime.fromisoformat(s)
     except (ValueError, AttributeError):
         return None
 
@@ -223,7 +223,7 @@ def _scroll(es, index: str, body: dict, page_size: int = 500):
     body = dict(body)
     body.setdefault("size", page_size)
     body.setdefault("sort", [{"_doc": "asc"}])
-    search_after: Optional[list] = None
+    search_after: list | None = None
     while True:
         if search_after:
             body["search_after"] = search_after
@@ -299,7 +299,7 @@ def mine_new_playbook(es: Elasticsearch, cfg: Any, run_id: str) -> list[dict[str
 # intel_verdict_flip
 # ---------------------------------------------------------------------------
 
-def _is_meaningful_flip(prev: Optional[str], curr: Optional[str]) -> bool:
+def _is_meaningful_flip(prev: str | None, curr: str | None) -> bool:
     """Verdict transitions that count.
 
     `clean` ↔ `malicious`/`mixed` flip both ways (community catching up,
@@ -406,7 +406,7 @@ def _jensen_shannon(a: dict[str, float], b: dict[str, float]) -> float:
             pk = p[k]
             qk = q[k]
             if pk > 0 and qk > 0:
-                s += pk * math.log(pk / qk, 2)
+                s += pk * math.log2(pk / qk)
         return s
 
     m = {k: (pa[k] + pb[k]) / 2 for k in keys}
@@ -746,7 +746,7 @@ def mine_operation_emergence(es: Elasticsearch, cfg: Any, run_id: str) -> list[d
                 "overlap_ratio", "first_seen", "last_seen",
             ],
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("operation_emergence: ops scan failed: %s", exc)
         return []
     ops = [h["_source"] for h in (resp.get("hits") or {}).get("hits") or []]
@@ -774,7 +774,7 @@ def mine_operation_emergence(es: Elasticsearch, cfg: Any, run_id: str) -> list[d
                 v = ((b.get("max_shared") or {}).get("value"))
                 if v is not None:
                     prior_max[b["key"]] = int(v)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("operation_emergence: prior-max agg failed: %s", exc)
 
     out: list[dict[str, Any]] = []

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import httpx
 
@@ -53,10 +52,10 @@ class OllamaClient:
         self,
         prompt: str,
         *,
-        options: Optional[dict] = None,
-        schema: Optional[dict] = None,
-        schema_name: Optional[str] = None,  # accepted for interface parity; unused
-        system: Optional[str] = None,
+        options: dict | None = None,
+        schema: dict | None = None,
+        schema_name: str | None = None,  # accepted for interface parity; unused
+        system: str | None = None,
     ) -> str:
         """Call /api/generate with format=json (or schema if provided).
 

@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -141,7 +141,7 @@ def main() -> int:
         verdict = "PROCEED to I1.1 — gate cleared by: " + ", ".join(cleared) + "."
 
     out = ["# I1.0 — dropped-Cowrie-field presence probe", ""]
-    out.append(f"_Captured {datetime.now(timezone.utc).isoformat()}_ · index "
+    out.append(f"_Captured {datetime.now(UTC).isoformat()}_ · index "
                f"`{idx}` · window **{window_desc}**")
     out.append("")
     out.append(f"- distinct sessions in window: **{total}** "
@@ -178,7 +178,7 @@ def main() -> int:
     print(md)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     p = args.output_dir / f"I1-field-presence-{ts}.md"
     p.write_text(md, encoding="utf-8")
     print(f"\nwrote {p}")

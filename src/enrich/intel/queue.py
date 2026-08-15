@@ -24,9 +24,9 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Iterable, Iterator, Optional
+from datetime import UTC, datetime
 
 from ..cache import StateDB
 from ..classification import releasable_filter
@@ -44,10 +44,10 @@ log = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class PriorityInputs:
     """All signals the priority formula consumes. None = signal unavailable."""
-    novelty_score: Optional[float] = None       # 0.0–1.0 (or None)
-    confidence: Optional[int] = None            # 1–10 LLM self-rating
-    centrality_norm: Optional[float] = None     # 0.0–1.0, log-normalised occurrence
-    age_hours: Optional[float] = None           # hours since first-observed locally
+    novelty_score: float | None = None       # 0.0–1.0 (or None)
+    confidence: int | None = None            # 1–10 LLM self-rating
+    centrality_norm: float | None = None     # 0.0–1.0, log-normalised occurrence
+    age_hours: float | None = None           # hours since first-observed locally
     # Additive tier offset, added verbatim to the score (#2). Default 0 leaves
     # ip/url ordering untouched; the hash scans use it to layer file-event
     # hashes (tier 1; real drops > content-writes) above regex-from-command
@@ -127,7 +127,7 @@ def _iter_ip_artifacts_from_rollup(es, cfg: AppConfig) -> Iterator[tuple[Artifac
         ]}},
         "sort": [{"_doc": "asc"}],
     }
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     # Corpus-scale denominator for centrality. Bounded so a single
     # very-active IP doesn't pin every other IP at centrality≈0. Same
     # rationale as ROADMAP #14 (fixed-denominator scalar normalisation).
@@ -158,10 +158,10 @@ def _iter_ip_artifacts_from_rollup(es, cfg: AppConfig) -> Iterator[tuple[Artifac
             if total_sessions > 0 else 0.0
         )
         first_seen_str = enrich.get("first_seen")
-        age_hours: Optional[float]
+        age_hours: float | None
         if first_seen_str:
             try:
-                fs = datetime.fromisoformat(first_seen_str.replace("Z", "+00:00"))
+                fs = datetime.fromisoformat(first_seen_str)
                 age_hours = max(0.0, (now - fs).total_seconds() / 3600.0)
             except (ValueError, TypeError):
                 age_hours = None
@@ -353,7 +353,7 @@ _TRIVIAL_HASHES = frozenset({
 })
 
 
-def _hash_drop_boost(sha256: str, filename: Optional[str], has_url: bool) -> float:
+def _hash_drop_boost(sha256: str, filename: str | None, has_url: bool) -> float:
     """Within-tier-1 boost: real drops outrank content-writes. A hash is a drop
     if it was url-fetched OR its filename isn't a shell content-write target and
     it isn't a known-trivial constant. Pure."""
@@ -462,7 +462,7 @@ def discover_and_enqueue(
         (in-command IPs — C2 hosts in wget/curl commands, M4.1)
     """
     weights = cfg.intel.priority
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     counts: dict[str, int] = {}
     for source_iter in (
         _iter_ip_artifacts_from_rollup(es, cfg),

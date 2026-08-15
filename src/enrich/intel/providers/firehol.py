@@ -41,7 +41,6 @@ import threading
 import time
 from datetime import timedelta
 from pathlib import Path
-from typing import Optional
 
 import httpx
 
@@ -90,7 +89,7 @@ def parse_firehol_netset(text: str) -> tuple[set[str], list]:
 
 def match_firehol(
     ip_value: str, exact_ips: set[str], networks: list,
-) -> tuple[bool, Optional[str]]:
+) -> tuple[bool, str | None]:
     """Look up `ip_value`. Returns `(matched, matched_network_or_None)`.
 
     Exact-IP hits return `(True, None)` since the match is the literal
@@ -136,7 +135,7 @@ class FireholProvider(Provider):
             or (time.time() - self._loaded_at) >= self.cfg.refresh_minutes * 60
         )
 
-    def _load_from_cache_file(self) -> Optional[str]:
+    def _load_from_cache_file(self) -> str | None:
         p = Path(self.cfg.cache_file)
         if not p.exists():
             return None

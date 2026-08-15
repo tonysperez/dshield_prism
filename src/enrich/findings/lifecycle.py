@@ -22,11 +22,13 @@ this run.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Iterable, Optional
+from collections.abc import Iterable
+from datetime import UTC, datetime
+from typing import Any
 
 from elasticsearch import Elasticsearch
 
@@ -34,7 +36,7 @@ log = logging.getLogger(__name__)
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _read_doc(es: Elasticsearch, index: str, doc_id: str) -> dict:
@@ -53,7 +55,7 @@ def _apply_snapshot(
     snapshot_cap: int,
     key_field: str,
     key_value: Any,
-    extra_init: Optional[dict] = None,
+    extra_init: dict | None = None,
 ) -> dict:
     """In-place merge of a new snapshot into a lifecycle doc.
 
@@ -94,7 +96,7 @@ def update_playbook_lifecycle(
     index: str,
     *,
     playbook_id: str,
-    playbook_name: Optional[str],
+    playbook_name: str | None,
     run_id: str,
     snapshot: dict,
     snapshot_cap: int = 30,
@@ -124,8 +126,8 @@ def update_campaign_lifecycle(
     index: str,
     *,
     campaign_id: str,
-    campaign_name: Optional[str],
-    campaign_kind: Optional[str],
+    campaign_name: str | None,
+    campaign_kind: str | None,
     run_id: str,
     snapshot: dict,
     snapshot_cap: int = 30,
@@ -285,7 +287,7 @@ def remove_anchors_by_source(
 RUN_ID_UNSET: Any = object()
 
 
-def latest_cluster_run_id(es: Elasticsearch, cfg) -> Optional[str]:
+def latest_cluster_run_id(es: Elasticsearch, cfg) -> str | None:
     """Latest COMPLETED cluster `run_id` from session_clusters. P3.1 —
     resolve via the run_summary sentinel (written LAST, P3.3) so callers key
     to a complete run, not a half-built one.
@@ -318,7 +320,7 @@ def build_anchor_payload(
     artifact_kind: str,
     artifact_id: str,
     source: str,
-    confirming_finding_id: Optional[str] = None,
+    confirming_finding_id: str | None = None,
     confirmed_run_id: Any = RUN_ID_UNSET,
 ) -> dict:
     """Materialise an anchor doc from the current state of `artifact_id`.
@@ -350,7 +352,7 @@ def build_anchor_payload(
         raise ValueError(f"anchor build not supported for artifact_kind={artifact_kind!r}")
 
     snap_asn: dict = {}
-    snap_intent: Optional[str] = None
+    snap_intent: str | None = None
     snap_session_count = 0
     snap_ip_count = 0
     try:
@@ -377,8 +379,8 @@ def build_anchor_payload(
     # anchors with full signatures; campaign anchors get the snapshot-level
     # fields only and the signature lookups are skipped. Step 4 widens
     # campaign anchors once a campaign-session join exists.
-    command_signature_mode: Optional[str] = None
-    bigram_signature_mode: Optional[str] = None
+    command_signature_mode: str | None = None
+    bigram_signature_mode: str | None = None
     command_set: list[str] = []
     artifact_set: list[str] = []
 
@@ -524,7 +526,7 @@ def retire_silent_lifecycles(
 
 def _latest_cluster_run(
     es: Elasticsearch, clusters_idx: str
-) -> tuple[Optional[str], int]:
+) -> tuple[str | None, int]:
     """`(run_id, window_days)` of the most recent COMPLETED cluster run.
 
     Resolves "latest run" via the `run_summary` sentinel, which the clustering
@@ -939,12 +941,8 @@ def run_track_lifecycles(cfg, secrets, *, dry_run: bool = False) -> dict:
         stable_min = int(cfg.findings.lifecycle.provisional_stable_runs)
         # Refresh the lifecycle indexes once so the just-written snapshots are
         # visible to the sweep query below.
-        try:
-            es.indices.refresh(index=",".join([
-                f_idx.playbook_lifecycle, f_idx.campaign_lifecycle,
-            ]))
-        except Exception:
-            pass
+        with contextlib.suppress(Exception):
+            es.indices.refresh(index=f"{f_idx.playbook_lifecycle},{f_idx.campaign_lifecycle}")
         for lc_index, artifact_kind, key_field in (
             (f_idx.playbook_lifecycle, "playbook", "playbook_id"),
             (f_idx.campaign_lifecycle, "campaign", "campaign_id"),
@@ -963,14 +961,8 @@ def run_track_lifecycles(cfg, secrets, *, dry_run: bool = False) -> dict:
     if not dry_run:
         # Refresh the lifecycle indexes once so the just-written docs are
         # visible to the update_by_query below.
-        try:
-            es.indices.refresh(index=",".join([
-                f_idx.playbook_lifecycle,
-                f_idx.campaign_lifecycle,
-                f_idx.source_ip_lifecycle,
-            ]))
-        except Exception:
-            pass
+        with contextlib.suppress(Exception):
+            es.indices.refresh(index=f"{f_idx.playbook_lifecycle},{f_idx.campaign_lifecycle},{f_idx.source_ip_lifecycle}")
         # P1.2 — a playbook absent from a *windowed* session-cluster run only
         # means "no sessions in the last N days", not "gone from the corpus".
         # Bumping silence on windowed runs would push the whole >Nd-dormant

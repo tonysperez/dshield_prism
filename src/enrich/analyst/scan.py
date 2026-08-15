@@ -18,7 +18,6 @@ the freshly computed set is skipped.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from ..es_client import bulk_write, make_client
 from . import artifact_rules as rules_mod
@@ -52,7 +51,7 @@ def run_apply_artifact_rules(
     cfg,
     secrets,
     *,
-    rule_ids: Optional[list[str]] = None,
+    rule_ids: list[str] | None = None,
     dry_run: bool = False,
 ) -> dict:
     """Walk the commands index and stamp `analyst_artifacts`.

@@ -34,7 +34,6 @@ from enrich.sources.cowrie.sessions import (
     _mean_pool,
 )
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 
@@ -56,7 +55,7 @@ def _cos(a: list[float], b: list[float]) -> float:
     na, nb = _norm(a), _norm(b)
     if na == 0 or nb == 0:
         return 0.0
-    return sum(x * y for x, y in zip(a, b)) / (na * nb)
+    return sum(x * y for x, y in zip(a, b, strict=False)) / (na * nb)
 
 
 # -----------------------------------------------------------------------------
@@ -175,7 +174,7 @@ uniform = _mean_pool(emb)
 weighted = _mean_pool(emb, ws)
 check(
     "equal weights → output matches uniform pool",
-    all(abs(a - b) < 1e-9 for a, b in zip(uniform, weighted)),
+    all(abs(a - b) < 1e-9 for a, b in zip(uniform, weighted, strict=False)),
     f"uniform={uniform} weighted={weighted}",
 )
 

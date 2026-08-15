@@ -34,7 +34,7 @@ import logging
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -50,6 +50,11 @@ from sklearn.metrics import (
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from eval_clustering import (  # type: ignore
+    _load_labels,
+    _per_label_breakdown,
+)
+
 from enrich.clustering import l2_normalize, rescue_noise_points
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
@@ -57,12 +62,9 @@ from enrich.llm import make_llm_client
 from enrich.llm.schemas import CommandEnrichment
 from enrich.sources.cowrie.commands import _build_embed_text
 from enrich.sources.cowrie.sessions import (
-    _idf_pool_weight, _mean_pool, build_session_scalar_block,
-)
-
-from eval_clustering import (  # type: ignore
-    _load_labels,
-    _per_label_breakdown,
+    _idf_pool_weight,
+    _mean_pool,
+    build_session_scalar_block,
 )
 
 log = logging.getLogger(__name__)
@@ -324,7 +326,7 @@ def _score_against_labels(
     (``pair_to_sessions`` accepted for back-compat but no longer scored —
     divergent-pair metric retired; see eval/archive/semantic-clustering-claim/.)"""
     del pair_to_sessions
-    sid_to_cluster = {s.session_id: int(c) for s, c in zip(kept_sessions, cluster_labels)}
+    sid_to_cluster = {s.session_id: int(c) for s, c in zip(kept_sessions, cluster_labels, strict=False)}
     eval_sids: list[str] = []
     eval_labels: list[str] = []
     eval_clusters: list[int] = []
@@ -374,7 +376,7 @@ def _render_markdown(rows: list[dict], baseline: dict, started_at: str) -> str:
                f"the full production corpus (~{baseline['rollups_pulled']} "
                "rollups), scored on the labeled eval subset.")
     out.append("")
-    headers = ["layout"] + list(_METRIC_ORDER) + ["n_clusters_total", "n_outliers_total"]
+    headers = ["layout", *list(_METRIC_ORDER), "n_clusters_total", "n_outliers_total"]
     out.append("| " + " | ".join(headers) + " |")
     out.append("|" + "|".join(["---"] * len(headers)) + "|")
     for r in rows:
@@ -428,7 +430,7 @@ def main() -> int:
     if not sid_to_label:
         raise SystemExit(f"No labels found in {args.labels}")
 
-    started_at = datetime.now(timezone.utc).isoformat()
+    started_at = datetime.now(UTC).isoformat()
     log.info("pulling rollups from %s", sessions_idx)
     sessions = _pull_sessions(es, sessions_idx, scfg.page_size, sid_to_label, args.limit_rollups)
     log.info("pulled %d rollups", len(sessions))
@@ -495,7 +497,7 @@ def main() -> int:
         persisted, scalars_list_for_baseline, scfg, rescue=not args.no_rescue,
     )
     sid_to_baseline_cluster = {
-        sid: int(c) for sid, c in zip(baseline_session_ids, baseline_labels)
+        sid: int(c) for sid, c in zip(baseline_session_ids, baseline_labels, strict=False)
     }
     baseline_eval_sids: list[str] = []
     baseline_eval_labels: list[str] = []
@@ -544,7 +546,7 @@ def main() -> int:
     }
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     md_path = args.output_dir / f"embed-input-order-sweep-{ts}.md"
     json_path = args.output_dir / f"embed-input-order-sweep-{ts}.json"
     md_path.write_text(_render_markdown(results, baseline, started_at), encoding="utf-8")

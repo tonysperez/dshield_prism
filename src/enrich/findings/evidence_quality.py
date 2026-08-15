@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ def band_thresholds(es, cfg) -> tuple[int, int]:
         ips_p75 = _latest_percentile(
             es, idx, "playbook_ip_count_per_run", "p75",
         )
-    except Exception as exc:  # noqa: BLE001 — best-effort observability
+    except Exception as exc:
         log.warning("band_thresholds: lookup on %s failed: %s", idx, exc)
         _BAND_THRESHOLD_CACHE[idx] = (now, _BAND_THRESHOLD_DEFAULT)
         return _BAND_THRESHOLD_DEFAULT
@@ -111,7 +111,7 @@ def band_thresholds(es, cfg) -> tuple[int, int]:
 
 def _latest_percentile(
     es, idx: str, kind: str, field: str,
-) -> Optional[float]:
+) -> float | None:
     """Pull a single percentile value from the most recent metrics doc
     for ``kind``. Returns None when the index / doc / field is missing.
     """
@@ -135,9 +135,9 @@ def _latest_percentile(
 
 def format_evidence_quality(
     finding: dict[str, Any],
-    lifecycle: Optional[dict[str, Any]] = None,
+    lifecycle: dict[str, Any] | None = None,
     *,
-    thresholds: Optional[tuple[int, int]] = None,
+    thresholds: tuple[int, int] | None = None,
 ) -> str:
     """Return a short verdict string for the finding.
 
@@ -203,8 +203,8 @@ def format_evidence_quality(
 def _membership_verdict(
     finding: dict[str, Any],
     ev: dict[str, Any],
-    lifecycle: Optional[dict[str, Any]],
-    thresholds: Optional[tuple[int, int]] = None,
+    lifecycle: dict[str, Any] | None,
+    thresholds: tuple[int, int] | None = None,
 ) -> str:
     # Coverage findings use member_sessions/member_ips; new_playbook uses
     # session_count/ip_count. Accept either.
@@ -222,7 +222,7 @@ def _membership_banded_verdict(
     sess: int, ips: int,
     first_seen: Any, last_seen: Any,
     runs: int,
-    thresholds: Optional[tuple[int, int]] = None,
+    thresholds: tuple[int, int] | None = None,
 ) -> str:
     """Primitive shared by finding-shaped and anchor-shaped callers.
 
@@ -408,11 +408,11 @@ def _as_float(v: Any) -> float:
         return 0.0
 
 
-def _parse_iso(ts: Any) -> Optional[datetime]:
+def _parse_iso(ts: Any) -> datetime | None:
     if not ts:
         return None
     try:
-        return datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        return datetime.fromisoformat(str(ts))
     except (TypeError, ValueError):
         return None
 
@@ -458,9 +458,9 @@ def _window_phrase(first_seen: Any, last_seen: Any) -> str:
 def format_anchor_evidence_quality(
     anchor_type: str,
     summary: dict[str, Any],
-    lifecycle: Optional[dict[str, Any]] = None,
+    lifecycle: dict[str, Any] | None = None,
     *,
-    thresholds: Optional[tuple[int, int]] = None,
+    thresholds: tuple[int, int] | None = None,
 ) -> str:
     """Anchor-shaped verdict — same vocabulary as findings, different input.
 
@@ -507,7 +507,7 @@ def format_anchor_evidence_quality(
 
 
 def _ip_anchor_verdict(
-    summary: dict[str, Any], lifecycle: Optional[dict[str, Any]],
+    summary: dict[str, Any], lifecycle: dict[str, Any] | None,
 ) -> str:
     """IPs are single-IP by nature — Strong/Moderate/Single-point doesn't
     apply the same way. Report activity volume + time window honestly.

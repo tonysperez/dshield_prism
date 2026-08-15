@@ -31,7 +31,6 @@ from console.findings import (
     list_findings,
 )
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

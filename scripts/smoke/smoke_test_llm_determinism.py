@@ -20,7 +20,6 @@ from enrich.llm.anthropic import AnthropicClient
 from enrich.llm.ollama import OllamaClient
 from enrich.llm.openai_compat import OpenAICompatClient
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 
@@ -51,7 +50,7 @@ class FakeHTTP:
         self.body = body
         self.last_payload: dict | None = None
 
-    def post(self, url, json=None):  # noqa: A002 — mirror httpx signature
+    def post(self, url, json=None):
         self.last_payload = json
         return FakeResp(self.body)
 

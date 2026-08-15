@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # scripts/
 
 from assign_shadow_write import shadow_action
+
 from enrich.sources.cowrie.assignment import Assignment
 
 PASSED: list[str] = []
@@ -52,7 +53,7 @@ check("novel: assigned_playbook_id is None + status novel",
       str(ncluster))
 
 # --- I3a config knobs exist with the validated defaults ---
-from enrich.config import SessionConfig  # noqa: E402
+from enrich.config import SessionConfig
 
 sc = SessionConfig()
 check("assignment_tau default 0.94", sc.assignment_tau == 0.94, str(sc.assignment_tau))

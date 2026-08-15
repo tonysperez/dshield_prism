@@ -28,7 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -36,15 +36,15 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # scripts/
 
+from cluster_bag_prod import _BAG_SVD_COMPONENTS, build_bag_texts, pull_hash_to_cluster
+from exp_prototype_assignment import _l2, load_anchors
+from exp_tfidf_separation import group_centroids, sample_playbook
+
 from enrich.classification import releasable_filter
 from enrich.clustering import compute_lexical_features
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
 from enrich.sources.cowrie.assignment import ASSIGNED, NOVEL, assign_batch
-
-from cluster_bag_prod import _BAG_SVD_COMPONENTS, build_bag_texts, pull_hash_to_cluster
-from exp_prototype_assignment import _l2, load_anchors
-from exp_tfidf_separation import group_centroids, sample_playbook
 
 _S = "dshield.cowrie.enrichment.session"
 _PB_FIELD = f"{_S}.playbook_id"
@@ -64,9 +64,9 @@ def run(es, idx, cmd_idx, anch_idx, filt, *, per_anchor, test_frac, tau,
         if len(embs) < 4:
             continue
         cut = max(1, int(len(embs) * (1.0 - test_frac)))
-        for e, s in zip(embs[:cut], sets[:cut]):
+        for e, s in zip(embs[:cut], sets[:cut], strict=False):
             train_emb.append(e); train_sets.append(s); train_pb.append(pb)
-        for e, s in zip(embs[cut:], sets[cut:]):
+        for e, s in zip(embs[cut:], sets[cut:], strict=False):
             test_emb.append(e); test_sets.append(s); test_pb.append(pb)
     if not test_emb:
         return {"error": "no test sessions sampled"}
@@ -98,7 +98,7 @@ def run(es, idx, cmd_idx, anch_idx, filt, *, per_anchor, test_frac, tau,
     band_confirmed = [r for r in in_band if r.status == ASSIGNED]
     band_rejected = [r for r in in_band if r.status == NOVEL]
     confident = [r for r in res if r.cosine >= confident_tau]
-    agree = sum(1 for r, tp in zip(res, test_pb)
+    agree = sum(1 for r, tp in zip(res, test_pb, strict=False)
                 if r.status == ASSIGNED and r.playbook_id == tp)
 
     def rate(x, d):
@@ -180,11 +180,11 @@ def main() -> int:
                  test_frac=args.test_frac, tau=args.tau, confident_tau=args.confident_tau,
                  tfidf_tau=args.tfidf_tau, seed=args.seed)
 
-    meta = {"captured_at": datetime.now(timezone.utc).isoformat(),
+    meta = {"captured_at": datetime.now(UTC).isoformat(),
             "classification": classification, "sessions_index": idx}
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     stem = out_dir / f"shadow-assignment-{ts}"
     stem.with_suffix(".json").write_text(json.dumps({"meta": meta, "report": report}, indent=2))
     stem.with_suffix(".md").write_text(render_md(report, meta))

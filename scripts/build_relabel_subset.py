@@ -41,7 +41,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from render_eval_set import _EMPTY_LABEL_BLOCK, _write_labels_yaml  # noqa: E402
+from render_eval_set import _EMPTY_LABEL_BLOCK, _write_labels_yaml
 
 REJECT = "__reject__"
 
@@ -99,7 +99,7 @@ def _staleness_note(labels: dict) -> str | None:
                 continue
     if not dates:
         return None
-    age = (datetime.date.today() - max(dates)).days
+    age = (datetime.datetime.now(datetime.UTC).date() - max(dates)).days
     if age >= 14:
         return None
     return (f"most recent first-pass label is {age} day(s) old — a blind "

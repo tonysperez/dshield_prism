@@ -53,7 +53,6 @@ from enrich.cli import _LAYER_MAPPINGS, _resolve_index_for_layer
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
 
-
 # Settings the user is likely to want surfaced.
 _DEFAULT_SOURCE = "intel"
 _DEFAULT_LAYER = "ip"

@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "src"))
 
-import diagnose_rare_label_embedding_coherence as target  # noqa: E402
+import diagnose_rare_label_embedding_coherence as target
 
 
 def check(name: str, condition: bool) -> None:
@@ -58,21 +58,21 @@ class FakeES:
         self.search_calls: list[dict] = []
         self.write_calls: list[str] = []
 
-    def search(self, index, **body):  # noqa: A002 - mirrors ES client
+    def search(self, index, **body):
         self.search_calls.append({"index": index, "body": body})
         if "search_after" in body:
             return {"hits": {"hits": []}}
         return {"hits": {"hits": self.hits}}
 
-    def index(self, *args, **kwargs):  # noqa: A003, ARG002
+    def index(self, *args, **kwargs):
         self.write_calls.append("index")
         raise AssertionError("diagnostic must be read-only")
 
-    def update(self, *args, **kwargs):  # noqa: ARG002
+    def update(self, *args, **kwargs):
         self.write_calls.append("update")
         raise AssertionError("diagnostic must be read-only")
 
-    def bulk(self, *args, **kwargs):  # noqa: ARG002
+    def bulk(self, *args, **kwargs):
         self.write_calls.append("bulk")
         raise AssertionError("diagnostic must be read-only")
 

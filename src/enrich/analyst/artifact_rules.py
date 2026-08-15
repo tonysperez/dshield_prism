@@ -32,8 +32,7 @@ import logging
 import re
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +51,7 @@ class CompiledRule:
     match_type: str
     pattern: str
     case_sensitive: bool
-    _re: Optional[re.Pattern]  # compiled matcher; None for substring/literal-fallback
+    _re: re.Pattern | None  # compiled matcher; None for substring/literal-fallback
 
     def find(self, text: str) -> list[str]:
         """Return distinct matched spans from `text`.
@@ -64,7 +63,7 @@ class CompiledRule:
         if not text:
             return []
         if self.match_type == "regex":
-            assert self._re is not None
+            assert self._re is not None  # noqa: S101 — invariant set in __post_init__
             out: list[str] = []
             seen: set[str] = set()
             for m in self._re.finditer(text):
@@ -75,7 +74,7 @@ class CompiledRule:
             return out
         if self.match_type == "literal":
             # Word-boundary match of an exact string.
-            assert self._re is not None
+            assert self._re is not None  # noqa: S101 — invariant set in __post_init__
             return [self.pattern] if self._re.search(text) else []
         if self.match_type == "substring":
             hay = text if self.case_sensitive else text.lower()
@@ -97,7 +96,7 @@ def compile_rule(rule: dict) -> CompiledRule:
     case_sensitive = bool(rule.get("case_sensitive", False))
     flags = 0 if case_sensitive else re.IGNORECASE
 
-    compiled: Optional[re.Pattern] = None
+    compiled: re.Pattern | None = None
     if match_type == "regex":
         compiled = re.compile(pattern, flags)
     elif match_type == "literal":
@@ -166,7 +165,7 @@ def _index(cfg) -> str:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _mint_rule_id() -> str:
@@ -221,7 +220,7 @@ def create_rule(
     return doc
 
 
-def get_rule(es, cfg, rule_id: str) -> Optional[dict]:
+def get_rule(es, cfg, rule_id: str) -> dict | None:
     try:
         r = es.get(index=_index(cfg), id=rule_id)
     except Exception:
@@ -233,9 +232,9 @@ def get_rule(es, cfg, rule_id: str) -> Optional[dict]:
 
 def list_rules(
     es, cfg, *,
-    active: Optional[bool] = None,
-    kind: Optional[str] = None,
-    created_by: Optional[str] = None,
+    active: bool | None = None,
+    kind: str | None = None,
+    created_by: str | None = None,
     size: int = 100,
     frm: int = 0,
 ) -> dict:
@@ -272,7 +271,7 @@ def set_active(es, cfg, rule_id: str, active: bool) -> dict:
 
 
 def stamp_scan_result(
-    es, cfg, rule_id: str, *, match_count: int, scanned_at: Optional[str] = None,
+    es, cfg, rule_id: str, *, match_count: int, scanned_at: str | None = None,
 ) -> None:
     """Update a rule's `match_count_estimate` and `last_scanned_at` after a
     retroactive scan completes. Best-effort; failure is logged."""

@@ -146,7 +146,7 @@ def _sample_sessions(es, idx, filt, pb, n):
     """(embeddings, command_sets) for up to `n` public sessions of one playbook,
     index-aligned so the command-cluster bags line up with the embedding centroid sample."""
     r = es.search(index=idx, size=min(n, 10000), _source=[_EMB, _CMDSET],
-                  query={"bool": {"filter": filt + [{"term": {_PB: pb}}]}})
+                  query={"bool": {"filter": [*filt, {"term": {_PB: pb}}]}})
     embs, command_sets = [], []
     for h in r["hits"]["hits"]:
         s = (((h["_source"].get("dshield") or {}).get("cowrie") or {})
@@ -295,7 +295,7 @@ def main() -> int:
         return 1
     bg_rows = [
         json.dumps({"session_id": session_id, "command_cluster_bag": bag})
-        for session_id, bag in zip(bg_ids, bg_bags)
+        for session_id, bag in zip(bg_ids, bg_bags, strict=False)
     ]
     bg_out = Path(args.background_out)
     bg_out.parent.mkdir(parents=True, exist_ok=True)

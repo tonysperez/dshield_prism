@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
 
 _DATA_PATH = Path(__file__).resolve().parent / "hassh_known.json"
 
@@ -28,7 +27,7 @@ except (OSError, ValueError):
     VERSION = ""
 
 
-def lookup(hassh: Optional[str]) -> Optional[dict]:
+def lookup(hassh: str | None) -> dict | None:
     """Return the curated entry for `hassh` (or None if unknown / not supplied).
 
     Entry shape: `{family, tool, confidence, source, notes}`. Callers should

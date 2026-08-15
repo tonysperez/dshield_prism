@@ -60,11 +60,11 @@ def _install_clock() -> _FakeClock:
 
 
 def _bp(**over) -> ESBackpressureConfig:
-    base = dict(
-        enabled=True, heap_high_watermark=0.85, heap_resume_watermark=0.70,
-        poll_interval_s=1.0, max_wait_s=10.0,
-        retry_max_attempts=200, retry_base_delay_s=1.0, retry_max_delay_s=4.0,
-    )
+    base = {
+        "enabled": True, "heap_high_watermark": 0.85, "heap_resume_watermark": 0.70,
+        "poll_interval_s": 1.0, "max_wait_s": 10.0,
+        "retry_max_attempts": 200, "retry_base_delay_s": 1.0, "retry_max_delay_s": 4.0,
+    }
     base.update(over)
     return ESBackpressureConfig(**base)
 

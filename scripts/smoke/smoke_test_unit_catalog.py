@@ -33,7 +33,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "console" / "src"))
 
-from console.queries import _UNIT_CATALOG  # noqa: E402
+from console.queries import _UNIT_CATALOG
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []

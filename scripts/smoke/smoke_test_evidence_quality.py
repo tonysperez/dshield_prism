@@ -15,14 +15,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from enrich.findings.evidence_quality import (  # noqa: E402
+from enrich.findings.evidence_quality import (
     _BAND_THRESHOLD_CACHE,
     _BAND_THRESHOLD_DEFAULT,
     band_thresholds,
     format_anchor_evidence_quality,
     format_evidence_quality,
 )
-
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -338,7 +337,7 @@ print("[11] band_thresholds — fallback + clamp + cache")
 class _FakeIndices:
     def __init__(self, present: bool) -> None:
         self.present = present
-    def exists(self, *, index: str) -> bool:  # noqa: ARG002
+    def exists(self, *, index: str) -> bool:
         return self.present
 
 
@@ -348,7 +347,7 @@ class _FakeES:
     def __init__(self, present: bool, snapshots: dict[str, dict[str, float]]) -> None:
         self.indices = _FakeIndices(present)
         self.snapshots = snapshots
-    def search(self, *, index, size, sort, query, _source):  # noqa: ARG002
+    def search(self, *, index, size, sort, query, _source):
         kind = query["term"]["kind"]
         snap = self.snapshots.get(kind)
         if snap is None:

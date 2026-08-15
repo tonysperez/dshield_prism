@@ -18,8 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from enrich.config import CloudConfig, CloudTriageConfig
 from enrich.intel.lookup import IntelSummary
-from enrich.triage import intel_skip_reason, _reasons_are_gateable
-
+from enrich.triage import _reasons_are_gateable, intel_skip_reason
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -36,16 +35,16 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 def _summary(**kw) -> IntelSummary:
     """Build an IntelSummary with sensible defaults — override individual fields."""
-    defaults = dict(
-        consensus_malicious=False,
-        consensus_label="unknown",
-        override_applied="",
-        external_rarity_score=0.0,
-        malicious_provider_count=0,
-        clean_provider_count=0,
-        confidence_max=None,
-        tags=(),
-    )
+    defaults = {
+        "consensus_malicious": False,
+        "consensus_label": "unknown",
+        "override_applied": "",
+        "external_rarity_score": 0.0,
+        "malicious_provider_count": 0,
+        "clean_provider_count": 0,
+        "confidence_max": None,
+        "tags": (),
+    }
     defaults.update(kw)
     return IntelSummary(**defaults)
 

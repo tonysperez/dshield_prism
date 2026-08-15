@@ -15,8 +15,8 @@ import logging
 import math
 import time
 import uuid
-from datetime import datetime, timezone
-from typing import Callable, Iterator, Optional
+from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 
 from elasticsearch import Elasticsearch
 
@@ -60,15 +60,15 @@ def require_cluster_deps() -> None:
         )
 
 
-def l2_normalize(matrix: "np.ndarray") -> "np.ndarray":
+def l2_normalize(matrix: np.ndarray) -> np.ndarray:
     norms = np.linalg.norm(matrix, axis=1, keepdims=True)
     norms = np.where(norms == 0.0, 1.0, norms)
     return matrix / norms
 
 
 def svd_reduce(
-    normalized: "np.ndarray", n_dim: int,
-) -> tuple["np.ndarray", float]:
+    normalized: np.ndarray, n_dim: int,
+) -> tuple[np.ndarray, float]:
     """Reduce L2-normalized embeddings to `n_dim` via TruncatedSVD, then
     re-L2-normalize so the cosine-as-euclidean geometry HDBSCAN expects holds.
 
@@ -184,9 +184,9 @@ def _progress_heartbeat(layer_label: str, what: str, interval_s: float = 30.0):
 
 
 def compute_centroids(
-    matrix: "np.ndarray", labels: "np.ndarray"
-) -> dict[int, "np.ndarray"]:
-    centroids: dict[int, "np.ndarray"] = {}
+    matrix: np.ndarray, labels: np.ndarray
+) -> dict[int, np.ndarray]:
+    centroids: dict[int, np.ndarray] = {}
     for lbl in np.unique(labels):
         if lbl < 0:
             continue
@@ -196,10 +196,10 @@ def compute_centroids(
 
 
 def rescue_noise_points(
-    normalized: "np.ndarray",
-    labels: "np.ndarray",
+    normalized: np.ndarray,
+    labels: np.ndarray,
     threshold: float,
-) -> tuple["np.ndarray", int]:
+) -> tuple[np.ndarray, int]:
     """Reassign HDBSCAN noise points (-1) to their nearest cluster centroid when
     pure-embedding cosine similarity >= `threshold`. Returns (new_labels,
     n_rescued). Pure — no I/O.
@@ -236,10 +236,10 @@ def rescue_noise_points(
 
 
 def rescue_noise_points_augmented(
-    cluster_matrix: "np.ndarray",
-    labels: "np.ndarray",
+    cluster_matrix: np.ndarray,
+    labels: np.ndarray,
     spread_percentile: float,
-) -> tuple["np.ndarray", int, float]:
+) -> tuple[np.ndarray, int, float]:
     """Reassign HDBSCAN noise points to their nearest cluster centroid in the
     **augmented** clustering space (euclidean), when within a data-driven radius.
     Returns (new_labels, n_rescued, radius). Pure — no I/O.
@@ -308,7 +308,7 @@ def rescue_noise_points_augmented(
     return new_labels, rescued, radius
 
 
-def novelty_score(vec: "np.ndarray", centroids: dict[int, "np.ndarray"]) -> float:
+def novelty_score(vec: np.ndarray, centroids: dict[int, np.ndarray]) -> float:
     """1 - max cosine_sim to any centroid. Vec need not be unit-norm.
 
     Proper cosine sim — divides by `|vec| * |c|`. Backward compatible for the
@@ -333,8 +333,8 @@ def novelty_score(vec: "np.ndarray", centroids: dict[int, "np.ndarray"]) -> floa
 
 
 def batch_novelty(
-    vectors: "np.ndarray", centroids: dict[int, "np.ndarray"],
-) -> tuple["np.ndarray", list, "np.ndarray"]:
+    vectors: np.ndarray, centroids: dict[int, np.ndarray],
+) -> tuple[np.ndarray, list, np.ndarray]:
     """Vectorised `novelty_score` for every row of `vectors` at once.
 
     Returns `(novelty[n], match_key[n], match_cosine[n])` where `novelty[i]`
@@ -382,7 +382,7 @@ def novelty_score_from_lists(
         return 1.0
     best = -1.0
     for c in centroids:
-        dot = sum(a * b for a, b in zip(embedding, c))
+        dot = sum(a * b for a, b in zip(embedding, c, strict=False))
         norm_c = math.sqrt(sum(b * b for b in c))
         if norm_c == 0.0:
             continue
@@ -419,7 +419,7 @@ def novelty_score_from_lists(
 
 def compute_lexical_features(
     texts: list[str], n_components: int = 100,
-) -> "np.ndarray":
+) -> np.ndarray:
     """Fit TF-IDF + truncated SVD on the corpus and return per-row
     L2-normalized features (n_texts × n_components).
 
@@ -435,8 +435,8 @@ def compute_lexical_features(
     case shape.
     """
     require_cluster_deps()
-    from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.decomposition import TruncatedSVD
+    from sklearn.feature_extraction.text import TfidfVectorizer
 
     if not texts:
         return np.zeros((0, 1), dtype=np.float32)
@@ -467,7 +467,7 @@ def cluster_bag_labels(
     bag_texts: list[str], *,
     min_cluster_size: int, min_samples: int, n_components: int = 64,
     n_jobs: int = -1,
-) -> tuple["np.ndarray", "np.ndarray"]:
+) -> tuple[np.ndarray, np.ndarray]:
     """G1 Arm B — cluster sessions on a TF-IDF bag of *command-cluster ids*.
 
     ``bag_texts`` is per-session space-joined command-cluster-id tokens with
@@ -491,8 +491,8 @@ def cluster_bag_labels(
 
 
 def _disagreement_distance(
-    labels_a: "np.ndarray", labels_b: "np.ndarray",
-) -> "np.ndarray":
+    labels_a: np.ndarray, labels_b: np.ndarray,
+) -> np.ndarray:
     """Build the n × n pair-disagreement distance matrix used as the
     fusion clusterer's input.
 
@@ -524,14 +524,14 @@ def _disagreement_distance(
 
 
 def fusion_cluster_labels(
-    embedding_cluster_matrix: "np.ndarray",
-    lexical_block: "np.ndarray",
+    embedding_cluster_matrix: np.ndarray,
+    lexical_block: np.ndarray,
     *,
     min_cluster_size: int,
     min_samples: int,
     n_clusters: int | None = None,
     n_jobs: int = -1,
-) -> tuple["np.ndarray", "np.ndarray", int, int]:
+) -> tuple[np.ndarray, np.ndarray, int, int]:
     """Run the late-fusion clustering math on prepared inputs.
 
     Args:
@@ -583,7 +583,7 @@ def fusion_cluster_labels(
         n_jobs=n_jobs,
     )
     labels_emb = emb_clusterer.fit_predict(embedding_cluster_matrix)
-    n_emb = int(len({int(l) for l in labels_emb if l >= 0}))
+    n_emb = len({int(l) for l in labels_emb if l >= 0})
 
     lex_clusterer = _HDBSCAN(
         min_cluster_size=min_cluster_size,
@@ -592,7 +592,7 @@ def fusion_cluster_labels(
         n_jobs=n_jobs,
     )
     labels_lex = lex_clusterer.fit_predict(lexical_block)
-    n_lex = int(len({int(l) for l in labels_lex if l >= 0}))
+    n_lex = len({int(l) for l in labels_lex if l >= 0})
 
     if n_clusters is None:
         # E4.4 self-tuning rule. Bound below at 2 so Agglomerative has
@@ -614,7 +614,7 @@ def fusion_cluster_labels(
 
 def _fusion_over_ceiling(
     n_docs: int,
-    fusion_max_docs: Optional[int],
+    fusion_max_docs: int | None,
     *,
     accept_fallback: bool,
     layer_label: str,
@@ -648,7 +648,7 @@ def _fusion_over_ceiling(
 
 def load_centroids(
     es: Elasticsearch, clusters_index: str,
-    *, reference_source: Optional[str] = None,
+    *, reference_source: str | None = None,
 ) -> list[list[float]]:
     """Load pure-embedding centroid vectors. Used by triage's novel_embedding rule.
 
@@ -683,12 +683,7 @@ def load_centroids(
         # before run_summary) is never read; fall back to the last complete run.
         resp = es.search(
             index=clusters_index,
-            **{
-                "size": 1,
-                "query": {"term": {"doc_type": "run_summary"}},
-                "sort": [{"@timestamp": "desc"}],
-                "_source": ["run_id"],
-            },
+            size=1, query={"term": {"doc_type": "run_summary"}}, sort=[{"@timestamp": "desc"}], _source=["run_id"],
         )
         hits = resp["hits"]["hits"]
         if not hits:
@@ -699,18 +694,14 @@ def load_centroids(
 
         resp2 = es.search(
             index=clusters_index,
-            **{
-                "size": 1000,
-                "query": {
+            size=1000, query={
                     "bool": {
                         "must": [
                             {"term": {"doc_type": "cluster"}},
                             {"term": {"run_id": run_id}},
                         ]
                     }
-                },
-                "_source": ["centroid"],
-            },
+                }, _source=["centroid"],
         )
         return [
             h["_source"]["centroid"]
@@ -742,12 +733,7 @@ def load_run_centroids(
             return {}
         resp = es.search(
             index=clusters_index,
-            **{
-                "size": 1,
-                "query": {"term": {"doc_type": "run_summary"}},
-                "sort": [{"@timestamp": "desc"}],
-                "_source": ["run_id"],
-            },
+            size=1, query={"term": {"doc_type": "run_summary"}}, sort=[{"@timestamp": "desc"}], _source=["run_id"],
         )
         hits = resp["hits"]["hits"]
         if not hits:
@@ -757,18 +743,14 @@ def load_run_centroids(
             return {}
         resp2 = es.search(
             index=clusters_index,
-            **{
-                "size": 1000,
-                "query": {
+            size=1000, query={
                     "bool": {
                         "must": [
                             {"term": {"doc_type": "cluster"}},
                             {"term": {"run_id": run_id}},
                         ]
                     }
-                },
-                "_source": ["cluster_id", "centroid"],
-            },
+                }, _source=["cluster_id", "centroid"],
         )
         out: dict = {}
         for h in resp2["hits"]["hits"]:
@@ -777,15 +759,15 @@ def load_run_centroids(
             centroid = src.get("centroid")
             if cid and centroid:
                 out[cid] = centroid
-        return out
     except Exception as exc:
         log.warning("Could not load run centroids from %s: %s", clusters_index, exc)
         return {}
+    return out
 
 
 def load_reference_centroids(
     es: Elasticsearch, clusters_index: str,
-    *, reference_source: Optional[str] = None,
+    *, reference_source: str | None = None,
 ) -> dict:
     """Load the active `reference_centroid` set (max `reference_generation`).
 
@@ -843,19 +825,14 @@ def load_reference_centroids(
         # vice versa).
         resp = es.search(
             index=clusters_index,
-            **{
-                "size": 1,
-                "query": {
+            size=1, query={
                     "bool": {
                         "must": [
                             {"term": {"doc_type": "reference_centroid"}},
                             source_filter,
                         ]
                     }
-                },
-                "sort": [{"reference_generation": "desc"}, {"@timestamp": "desc"}],
-                "_source": ["reference_generation"],
-            },
+                }, sort=[{"reference_generation": "desc"}, {"@timestamp": "desc"}], _source=["reference_generation"],
         )
         hits = resp["hits"]["hits"]
         if not hits:
@@ -866,9 +843,7 @@ def load_reference_centroids(
 
         resp2 = es.search(
             index=clusters_index,
-            **{
-                "size": 1000,
-                "query": {
+            size=1000, query={
                     "bool": {
                         "must": [
                             {"term": {"doc_type": "reference_centroid"}},
@@ -876,13 +851,11 @@ def load_reference_centroids(
                             source_filter,
                         ]
                     }
-                },
-                "_source": [
+                }, _source=[
                     "centroid", "centroid_augmented",
                     "source_run_id", "embedding_dims", "augmented_dims",
                     "scalar_weight", "reference_minted_at",
                 ],
-            },
         )
         ref_hits = resp2["hits"]["hits"]
         if not ref_hits:
@@ -905,8 +878,8 @@ def load_reference_centroids(
         age_days = None
         if minted_at:
             try:
-                mt = datetime.fromisoformat(minted_at.replace("Z", "+00:00"))
-                age_days = (datetime.now(timezone.utc) - mt).total_seconds() / 86400.0
+                mt = datetime.fromisoformat(minted_at)
+                age_days = (datetime.now(UTC) - mt).total_seconds() / 86400.0
             except (ValueError, AttributeError):
                 pass
 
@@ -1085,7 +1058,7 @@ def run_layer_clustering(
     clusters_index: str,
     mapping_path: str,
     update_script: str,
-    scalar_block_builder: Callable[[list[dict], float], "np.ndarray"],
+    scalar_block_builder: Callable[[list[dict], float], np.ndarray],
     min_cluster_size: int,
     min_samples: int,
     scalar_weight: float,
@@ -1099,12 +1072,12 @@ def run_layer_clustering(
     reference_max_age_days: int = 45,
     rescue_threshold: float | None = None,
     rescue_spread_percentile: int | None = None,
-    reference_source: Optional[str] = None,
+    reference_source: str | None = None,
     bootstrap_reference_now: bool = False,
-    cluster_fn: Optional[Callable[..., tuple["np.ndarray", Optional["np.ndarray"]]]] = None,
-    fusion_max_docs: Optional[int] = None,
+    cluster_fn: Callable[..., tuple[np.ndarray, np.ndarray | None]] | None = None,
+    fusion_max_docs: int | None = None,
     accept_fallback: bool = False,
-    window_days: Optional[int] = None,
+    window_days: int | None = None,
     n_jobs: int = -1,
     svd_dim: int = 0,
 ) -> dict:
@@ -1258,7 +1231,7 @@ def run_layer_clustering(
     #     concept for downstream (novelty / rescue / outlier_burst)
     #     without changing the production cluster.id semantics that
     #     non-noise sessions enjoy.
-    outlier_flags_override: Optional["np.ndarray"] = None
+    outlier_flags_override: np.ndarray | None = None
     # P1.3 — refuse (or fall back) before the O(N^2) late-fusion path runs at a
     # size that would hang. No-op for HDBSCAN (cluster_fn is None) or no ceiling.
     if cluster_fn is not None and _fusion_over_ceiling(
@@ -1517,12 +1490,12 @@ def run_layer_clustering(
                 )
 
     sample_map: dict[int, list[str]] = {lbl: [] for lbl in valid_cluster_ids}
-    for lbl, label_text in zip(cluster_labels_arr, labels_list):
+    for lbl, label_text in zip(cluster_labels_arr, labels_list, strict=False):
         lbl = int(lbl)
         if lbl >= 0 and len(sample_map[lbl]) < sample_size:
             sample_map[lbl].append(label_text)
 
-    now_str = datetime.now(timezone.utc).isoformat()
+    now_str = datetime.now(UTC).isoformat()
     run_id = str(uuid.uuid4())
 
     # Vectorise novelty for every doc at once (was a per-doc Python loop over
@@ -1541,7 +1514,7 @@ def run_layer_clustering(
              layer_label, n_docs)
 
     update_actions: list[dict] = []
-    for i, (doc_id, lbl) in enumerate(zip(doc_ids, cluster_labels_arr)):
+    for i, (doc_id, lbl) in enumerate(zip(doc_ids, cluster_labels_arr, strict=False)):
         lbl = int(lbl)
         if outlier_flags_override is not None:
             # Fusion / cluster_fn mode: outliers are decided by the
@@ -1654,19 +1627,14 @@ def run_layer_clustering(
         try:
             prev_resp = es.search(
                 index=clusters_index,
-                **{
-                    "size": 1,
-                    "query": {
+                size=1, query={
                         "bool": {
                             "must": [
                                 {"term": {"doc_type": "reference_centroid"}},
                                 prev_source_filter,
                             ]
                         }
-                    },
-                    "sort": [{"reference_generation": "desc"}],
-                    "_source": ["reference_generation"],
-                },
+                    }, sort=[{"reference_generation": "desc"}], _source=["reference_generation"],
             )
             prev_hits = prev_resp["hits"]["hits"]
             prev_gen = int(prev_hits[0]["_source"].get("reference_generation", 0)) if prev_hits else 0

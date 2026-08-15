@@ -31,7 +31,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import enrich.sources.cowrie.campaigns as camp
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 
@@ -99,7 +98,7 @@ check("upsert happens BEFORE delete (no empty window)",
 check("upsert refreshed so current docs are visible",
       BULK_CALLS[0]["refresh"] is True)
 q = es.deletes[0]["body"]["query"]["bool"]
-musts = {tuple(t["term"].items())[0] for t in q["must"]}
+musts = {next(iter(t["term"].items())) for t in q["must"]}
 check("delete is scoped to doc_type=campaign + kind=behaviour",
       ("doc_type", "campaign") in musts and ("kind", "behaviour") in musts, f"got {musts}")
 kept = set(q["must_not"][0]["terms"]["campaign_id"])

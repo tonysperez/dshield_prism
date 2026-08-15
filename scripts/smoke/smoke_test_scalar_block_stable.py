@@ -24,10 +24,9 @@ except ImportError:
     print("numpy not available — skipping (cluster deps not installed in this venv)")
     sys.exit(0)
 
-from enrich.sources.cowrie.sessions import build_session_scalar_block
-from enrich.sources.cowrie.ips import _build_behavior_block, build_ip_scalar_block
 from enrich.sources.cowrie.commands import build_command_scalar_block
-
+from enrich.sources.cowrie.ips import _build_behavior_block, build_ip_scalar_block
+from enrich.sources.cowrie.sessions import build_session_scalar_block
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []

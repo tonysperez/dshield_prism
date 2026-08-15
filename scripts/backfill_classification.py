@@ -123,7 +123,7 @@ def main() -> int:
         q = build_backfill_query(args.classification, sensor=args.sensor, has_observer=has_obs)
         try:
             n = es.count(index=idx, query=q)["count"]
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"  {idx}: count failed: {e}")
             continue
         plan.append((idx, has_obs, q, n))
@@ -157,7 +157,7 @@ def main() -> int:
                 slices=slices, requests_per_second=rps,
                 wait_for_completion=False, refresh=False,
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"  {idx}: submit failed: {e}")
             errors += 1
             continue

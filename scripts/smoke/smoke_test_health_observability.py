@@ -20,21 +20,22 @@ Run from the repo root via the console venv:
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / "console" / "src"))  # noqa: E402
-sys.path.insert(0, str(REPO / "src"))  # noqa: E402
+sys.path.insert(0, str(REPO / "console" / "src"))
+sys.path.insert(0, str(REPO / "src"))
 
-from console import queries  # noqa: E402
-from console._config import load_config  # noqa: E402
-from console.queries import (  # noqa: E402
+from console._config import load_config
+from console.queries import (
     _derive_pressure_state,
     _sensor_freshness_rows,
     es_pressure,
     sensor_freshness,
 )
+
+from console import queries
 
 CFG = load_config(str(REPO / "config" / "default.yaml"))
 
@@ -128,7 +129,7 @@ finally:
 # -----------------------------------------------------------------------------
 print("\n[3] _sensor_freshness_rows: one / multi / quiet / no-data")
 
-NOW = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 7, 1, 12, 0, 0, tzinfo=UTC)
 STALE_MIN = 120
 
 
@@ -176,7 +177,7 @@ check("unparseable ts → stale, no raise", bad[1]["state"] == "stale", str(bad)
 # -----------------------------------------------------------------------------
 print("\n[4] sensor_freshness: stubbed agg → rows; ES error → empty")
 
-_real_now = datetime.now(timezone.utc)
+_real_now = datetime.now(UTC)
 
 
 class _StubES:

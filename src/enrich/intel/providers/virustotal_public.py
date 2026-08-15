@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import timedelta
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -47,7 +47,7 @@ _MIN_MALICIOUS_ENGINES = 3
 
 def classify_virustotal(
     attributes: dict[str, Any],
-) -> tuple[Optional[bool], Optional[str], Optional[int], tuple[str, ...], bool, bool]:
+) -> tuple[bool | None, str | None, int | None, tuple[str, ...], bool, bool]:
     """Pure-function: VT v3 file `attributes` → DerivedSignals fields.
 
     `(malicious, label, confidence, tags, authoritative_clean, evidence_direct)`.
@@ -68,7 +68,7 @@ def classify_virustotal(
     confidence = max(5, min(10, 5 + n_mal // 3))
     tags = ("virustotal_detected",)
     if suggested:
-        tags = tags + (suggested,)
+        tags = (*tags, suggested)
     label = f"virustotal_{suggested}" if suggested else "virustotal_detected"
     return True, label, confidence, tags, False, False
 

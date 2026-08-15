@@ -30,7 +30,6 @@ from enrich.rollup_gate import (
     rollup_repool_decision,
 )
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

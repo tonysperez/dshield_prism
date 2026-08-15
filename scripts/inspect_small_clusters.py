@@ -32,16 +32,13 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from enrich.config import load_config, load_secrets
-from enrich.es_client import make_client
 
 from compare_clusterings import disagreement_sessions
 from eval_clustering import SMALL_BAND, small_cluster_metrics
@@ -51,6 +48,9 @@ from prod_corpus import (
     normalized_embeddings,
     pull_session_corpus,
 )
+
+from enrich.config import load_config, load_secrets
+from enrich.es_client import make_client
 
 
 def _truncate(text: str, n: int) -> str:
@@ -97,7 +97,7 @@ def _render(
     out: list[str] = []
     out.append(f"# Small-cluster inspection — {layer} layer")
     out.append("")
-    out.append(f"_Captured {datetime.now(timezone.utc).isoformat()}_")
+    out.append(f"_Captured {datetime.now(UTC).isoformat()}_")
     out.append("")
     out.append(f"- **Clustering:** {mode_desc}")
     out.append(f"- **Corpus:** {len(corpus)} sessions · "
@@ -227,7 +227,7 @@ def _render_disagreements(corpus, labels, arm, base, mode_desc, args) -> str:
     out: list[str] = []
     out.append("# Cross-arm disagreement render — sessions layer")
     out.append("")
-    out.append(f"_Captured {datetime.now(timezone.utc).isoformat()}_")
+    out.append(f"_Captured {datetime.now(UTC).isoformat()}_")
     out.append("")
     out.append(f"- **Arm:** {mode_desc}")
     out.append(f"- **Baseline:** `{args.compare}`")
@@ -459,7 +459,7 @@ def main() -> int:
 
     if not args.no_md:
         args.output_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         out = args.output_dir / f"small-cluster-inspect-{args.layer}-{ts}.md"
         out.write_text(md, encoding="utf-8")
         print(f"\nwrote {out}")

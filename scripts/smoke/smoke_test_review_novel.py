@@ -23,7 +23,7 @@ def check(name: str, cond: bool, detail: str = "") -> None:
         print(f"  FAIL  {name}  ({detail})")
 
 
-C = dict(tau=0.94, confident_tau=0.98)
+C = {"tau": 0.94, "confident_tau": 0.98}
 check("cos 0.90 → below_tau", categorize(0.90, **C) == "below_tau")
 check("cos 0.96 → band_conflation", categorize(0.96, **C) == "band_conflation")
 check("cos exactly tau 0.94 → band_conflation", categorize(0.94, **C) == "band_conflation")

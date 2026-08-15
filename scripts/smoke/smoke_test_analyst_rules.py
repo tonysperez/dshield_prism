@@ -29,7 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from enrich.analyst import artifact_rules as ar  # noqa: E402
+from enrich.analyst import artifact_rules as ar
 
 
 def _rule(rid, kind, mt, pat, cs=False):

@@ -24,11 +24,12 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+import itertools
 
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
@@ -42,7 +43,7 @@ def _unit(vec: np.ndarray) -> np.ndarray:
 @dataclass
 class Doc:
     run_id: str
-    ts: Optional[str]
+    ts: str | None
     playbook_id: str
     unit: np.ndarray
 
@@ -108,7 +109,7 @@ def consecutive_flip_rate(
         by_run[d.run_id].append(i)
     run_order = sorted(by_run, key=lambda r: min(docs[i].ts or "" for i in by_run[r]))
     flips = matched = 0
-    for a, b in zip(run_order, run_order[1:]):
+    for a, b in itertools.pairwise(run_order):
         prev, cur = by_run[a], by_run[b]
         if not prev or not cur:
             continue

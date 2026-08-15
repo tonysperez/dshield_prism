@@ -35,7 +35,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -43,13 +43,12 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from enrich.config import load_config, load_secrets
-from enrich.es_client import make_client
-from enrich.sources.cowrie.sessions import build_session_scalar_block
-
 from eval_production_scale import _load_eval_session_ids_and_labels
 from prod_corpus import normalized_embeddings, pull_session_corpus, score_full
 
+from enrich.config import load_config, load_secrets
+from enrich.es_client import make_client
+from enrich.sources.cowrie.sessions import build_session_scalar_block
 
 # Plan F3.1 grid. lex_mcs is the lexical HDBSCAN min_cluster_size. The
 # distance matrix is built once per lex_mcs; AgglomerativeClustering then
@@ -158,12 +157,12 @@ def main() -> int:
 
     md = _render(rows, len(corpus), n_emb, args.linkage)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     md_path = args.output_dir / f"late-fusion-prod-sweep-{ts}.md"
     json_path = args.output_dir / f"late-fusion-prod-sweep-{ts}.json"
     md_path.write_text(md, encoding="utf-8")
     json_path.write_text(json.dumps({
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "n_sessions": len(corpus), "linkage": args.linkage,
         "svd_dim": args.svd_dim, "emb_base_clusters": n_emb, "rows": rows,
     }, indent=2), encoding="utf-8")
@@ -176,7 +175,7 @@ def _render(rows: list[dict], n_sessions: int, n_emb: int, linkage: str) -> str:
     out: list[str] = []
     out.append("# F3.1 — late-fusion sweep (production scale)")
     out.append("")
-    out.append(f"_Captured {datetime.now(timezone.utc).isoformat()}_")
+    out.append(f"_Captured {datetime.now(UTC).isoformat()}_")
     out.append("")
     out.append(f"{n_sessions} sessions · embedding base {n_emb} clusters · "
                f"linkage={linkage}. ARI / completeness / homogeneity / dpr "
@@ -194,7 +193,7 @@ def _render(rows: list[dict], n_sessions: int, n_emb: int, linkage: str) -> str:
     out.append("|" + "|".join(["---:"] * len(headers)) + "|")
     for r in rows:
         m = r["metrics"]
-        def _f(key):
+        def _f(key, m=m):
             v = m.get(key)
             return "—" if v is None else (f"{v:.4f}" if isinstance(v, float) else str(v))
         cells = [

@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -98,7 +98,7 @@ def main() -> int:
     es = make_client(cfg.elasticsearch, load_secrets(args.config))
     idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
     anch_idx = cfg.elasticsearch.indexes.cowrie.playbook_anchors
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
     if args.unretire:
         n = es.count(index=anch_idx, query={"term": {"retired_reason": _REASON}})["count"]
@@ -121,7 +121,7 @@ def main() -> int:
     else:
         filt = [releasable_filter(cfg)]
     if args.window_days > 0:
-        filt = filt + [{"range": {"@timestamp": {"gte": f"now-{args.window_days}d"}}}]
+        filt = [*filt, {"range": {"@timestamp": {"gte": f"now-{args.window_days}d"}}}]
 
     anchor_ids = _active_anchor_ids(es, anch_idx)
     counts = _session_counts(es, idx, filt)
@@ -150,7 +150,7 @@ def main() -> int:
         try:
             es.update(index=anch_idx, id=a,
                       script={"source": _RETIRE_SRC, "params": {"now": now, "reason": _REASON}})
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"  {a}: retire failed: {e}")
             errors += 1
     print(f"\nretired {len(inactive) - errors} anchors" + (f", {errors} errors" if errors else ""))

@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from .config import AppConfig, Secrets
 from .es_client import make_client
@@ -87,7 +87,7 @@ def _apply_priority(api_path: str) -> int:
     data-stream creation so an immediate write is normalised correctly.
     """
     p = api_path.lstrip("/")
-    if p.startswith("_component_template/") or p.startswith("_index_template/"):
+    if p.startswith(("_component_template/", "_index_template/")):
         return 1
     if p.startswith("_ilm/policy/"):
         return 2
@@ -169,7 +169,7 @@ def run_bootstrap(
             # empty `{}` body (ES treats `{}` as a malformed payload for
             # endpoints that expect none). Send None in that case so the
             # transport omits the body entirely.
-            request_body = body if body else None
+            request_body = body or None
             # elastic_transport doesn't auto-set Content-Type when calling
             # perform_request at this low level — the higher-level helpers
             # (es.indices.*, es.ingest.*) do, but here we're generic.

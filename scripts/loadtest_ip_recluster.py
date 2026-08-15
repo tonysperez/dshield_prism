@@ -32,7 +32,6 @@ from __future__ import annotations
 import argparse
 import multiprocessing as mp
 import time
-from typing import Optional
 
 
 def _peak_rss_mb() -> float:
@@ -88,7 +87,7 @@ def _hdbscan_trial(
         min_cluster_size=mcs, min_samples=ms, metric="euclidean",
     ).fit_predict(x)
     elapsed = time.perf_counter() - t0
-    n_clusters = int(len({int(c) for c in labels} - {-1}))
+    n_clusters = len({int(c) for c in labels} - {-1})
     n_outliers = int((labels == -1).sum())
     q.put({
         "elapsed_s": elapsed,
@@ -113,7 +112,7 @@ def _svd_trial(n: int, n_clusters: int, dim: int, seed: int, q) -> None:
         cids = rng.integers(0, n_clusters, size=k)
         cnts = rng.integers(1, 10, size=k)
         docs.append(
-            " ".join((str(c) + " ") * int(ct) for c, ct in zip(cids, cnts)).strip()
+            " ".join((str(c) + " ") * int(ct) for c, ct in zip(cids, cnts, strict=False)).strip()
         )
     t0 = time.perf_counter()
     tfidf = TfidfVectorizer(token_pattern=r"[^ ]+").fit_transform(docs)
@@ -132,7 +131,7 @@ def _svd_trial(n: int, n_clusters: int, dim: int, seed: int, q) -> None:
     })
 
 
-def _run_isolated(target, args, timeout: float) -> Optional[dict]:
+def _run_isolated(target, args, timeout: float) -> dict | None:
     """Run ``target`` in a child process; return its result dict or None on
     timeout / crash."""
     ctx = mp.get_context("spawn")
@@ -196,10 +195,10 @@ def main() -> None:
                 print(f"{n:>10}  {'TIMEOUT/OOM':>10}  (stopping SVD ramp)")
                 break
             if res.get("crashed") or res.get("skipped"):
-                print(f"{n:>10}  {str(res):>10}")
+                print(f"{n:>10}  {res!s:>10}")
                 continue
             print(f"{n:>10}  {res['elapsed_s']:>10.2f}  {res['peak_rss_mb']:>12.0f}  "
-                  f"{str(res['tfidf_shape']):>16}  {res['svd_dim']:>8}")
+                  f"{res['tfidf_shape']!s:>16}  {res['svd_dim']:>8}")
         print()
 
     if not args.skip_hdbscan:

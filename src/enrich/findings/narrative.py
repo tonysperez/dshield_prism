@@ -21,9 +21,10 @@ starving escalation entirely.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from ..classification import is_releasable
 
@@ -70,7 +71,7 @@ def _build_prompt(finding: dict) -> str:
     )
 
 
-def parse_narrative_response(text: str) -> Optional[dict]:
+def parse_narrative_response(text: str) -> dict | None:
     """Parse strict JSON `{summary, confidence}` from raw LLM text.
 
     Returns None on any parse failure or missing/invalid fields. Tolerates
@@ -83,8 +84,7 @@ def parse_narrative_response(text: str) -> Optional[dict]:
         nl = s.find("\n")
         if nl != -1:
             s = s[nl + 1 :]
-        if s.endswith("```"):
-            s = s[:-3]
+        s = s.removesuffix("```")
         s = s.strip()
     try:
         data = json.loads(s)
@@ -130,7 +130,7 @@ def _make_client(cfg: Any, secrets: Any):
     )
 
 
-def generate_delta_narrative(cfg: Any, secrets: Any, finding: dict) -> Optional[dict]:
+def generate_delta_narrative(cfg: Any, secrets: Any, finding: dict) -> dict | None:
     """Produce `{summary, confidence, input_tokens, output_tokens}` for a
     single drift finding. Returns None when:
       - cloud disabled, or
@@ -159,16 +159,12 @@ def generate_delta_narrative(cfg: Any, secrets: Any, finding: dict) -> Optional[
         )
     except Exception as exc:
         log.warning("narrative LLM call failed: %s", exc)
-        try:
+        with contextlib.suppress(Exception):
             client.close()
-        except Exception:
-            pass
         return None
     finally:
-        try:
+        with contextlib.suppress(Exception):
             client.close()
-        except Exception:
-            pass
     parsed = parse_narrative_response(text)
     if parsed is None:
         return None
@@ -200,8 +196,8 @@ def attach_drift_narratives(
     if not (cfg.cloud.enabled and cfg.findings.narrative.enabled):
         return stats
 
-    from .writer import finding_id
     from ..triage import budget_remaining_usd
+    from .writer import finding_id
 
     ids = [
         finding_id(
@@ -220,7 +216,7 @@ def attach_drift_narratives(
         log.warning("narrative: mget for existing findings failed: %s", exc)
 
     floor = float(cfg.findings.narrative.budget_floor_usd)
-    for fid, finding in zip(ids, drift_findings):
+    for fid, finding in zip(ids, drift_findings, strict=False):
         if finding.get("kind") in _KINDS_SKIPPED:
             stats["skipped_kind"] += 1
             continue

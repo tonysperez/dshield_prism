@@ -37,7 +37,7 @@ import argparse
 import json
 import sys
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -45,14 +45,14 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # scripts/
 
+from cluster_bag_prod import _BAG_SVD_COMPONENTS, build_bag_texts, pull_hash_to_cluster
+from exp_prototype_assignment import _l2, load_anchors
+from exp_tfidf_separation import group_centroids, sample_playbook
+
 from enrich.classification import releasable_filter
 from enrich.clustering import compute_lexical_features
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
-from exp_prototype_assignment import _l2, load_anchors
-from exp_tfidf_separation import group_centroids, sample_playbook
-
-from cluster_bag_prod import _BAG_SVD_COMPONENTS, build_bag_texts, pull_hash_to_cluster
 
 _S = "dshield.cowrie.enrichment.session"
 _PB_FIELD = f"{_S}.playbook_id"
@@ -81,7 +81,7 @@ def compute_absorption(source_ids: list[str], target_ids: list[str],
     with rate ≥ `min_edge` (not just the dominant one — so secondary conflations
     and diffuse redundancy surface)."""
     by_src: dict[str, list[tuple[str, float]]] = defaultdict(list)
-    for sid, tid, c in zip(source_ids, target_ids, target_cos):
+    for sid, tid, c in zip(source_ids, target_ids, target_cos, strict=False):
         by_src[sid].append((tid, float(c)))
     out: dict[str, dict] = {}
     for X, rows in by_src.items():
@@ -346,11 +346,11 @@ def main() -> int:
                  tau=tau, merge_min=args.merge_min, tfidf_threshold=args.tfidf_threshold,
                  min_sessions=args.min_sessions, min_edge=args.min_edge, seed=args.seed)
 
-    meta = {"captured_at": datetime.now(timezone.utc).isoformat(),
+    meta = {"captured_at": datetime.now(UTC).isoformat(),
             "classification": classification, "sessions_index": idx}
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     stem = out_dir / f"consolidation-plan-{ts}"
     stem.with_suffix(".json").write_text(json.dumps({"meta": meta, "report": report}, indent=2))
     stem.with_suffix(".md").write_text(render_md(report, meta))

@@ -28,7 +28,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 
-from enrich.config import load_config, load_secrets  # noqa: E402
+from enrich.config import load_config, load_secrets
 
 SETUP = REPO / "setup" / "setup.sh"
 BASE_CONFIG = REPO / "config" / "default.yaml"
@@ -54,6 +54,7 @@ def run_wizard(tmp: Path, answers: list[str]) -> tuple[Path, Path, subprocess.Co
         text=True,
         capture_output=True,
         cwd=str(REPO),
+        check=False,
         env={**os.environ, "ENV_FILE": str(env_file), "LOCAL_CONFIG": str(local_cfg)},
     )
     return env_file, local_cfg, proc

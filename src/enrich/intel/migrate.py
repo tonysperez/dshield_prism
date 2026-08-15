@@ -19,7 +19,8 @@ them at `scripts/smoke_test_intel_migrate.py`.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from ..cache import StateDB
 from ..config import AppConfig, Secrets
@@ -291,7 +292,7 @@ def _flush_bulk(es, idx: str, actions: list[dict[str, Any]], stats: dict[str, An
     if not actions:
         return
     try:
-        success, errors = helpers.bulk(
+        _success, errors = helpers.bulk(
             es, actions, index=idx,
             raise_on_error=False, raise_on_exception=False,
             stats_only=False,

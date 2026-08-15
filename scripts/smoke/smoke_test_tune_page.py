@@ -27,10 +27,10 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / "console" / "src"))  # noqa: E402
-sys.path.insert(0, str(REPO / "src"))  # noqa: E402
+sys.path.insert(0, str(REPO / "console" / "src"))
+sys.path.insert(0, str(REPO / "src"))
 
-from console import server  # noqa: E402
+from console import server
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -100,9 +100,11 @@ check("console.health module deleted",
 # defaulted to the cwd-relative `config/default.yaml`. `_get_pipeline_cfg` now
 # falls back to the console's `_default_config_path()`, which also probes
 # `../config/default.yaml`. Offline: reads YAML only, no ES.
-import os  # noqa: E402
-from console._config import _default_config_path  # noqa: E402
-from enrich.config import load_config as _pipeline_load_config  # noqa: E402
+import os
+
+from console._config import _default_config_path
+
+from enrich.config import load_config as _pipeline_load_config
 
 _prev_cwd = os.getcwd()
 try:

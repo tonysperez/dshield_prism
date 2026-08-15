@@ -13,12 +13,16 @@ import random
 import re
 import threading
 from collections import Counter, defaultdict
+from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Iterator, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import numpy as np
+
+import contextlib
+from datetime import UTC
 
 from elasticsearch import Elasticsearch
 
@@ -53,7 +57,7 @@ _SESSION_WATERMARK_KEY = "session_last_processed_at"
 _DEFAULT_SENSOR = "default"
 
 
-def _session_uid(sensor: Optional[str], session_id: str) -> str:
+def _session_uid(sensor: str | None, session_id: str) -> str:
     """Namespaced session-rollup `_id`: `<sensor>:<session_id>`."""
     return f"{sensor or _DEFAULT_SENSOR}:{session_id}"
 
@@ -150,7 +154,7 @@ _SESSION_PRESERVE_FIELDS = (
 )
 
 
-def _preserve_session_attribution(doc: dict, old_source: Optional[dict]) -> bool:
+def _preserve_session_attribution(doc: dict, old_source: dict | None) -> bool:
     """Graft the cross-writer cluster / playbook fields from a prior session
     rollup doc (`old_source`, as returned by `fetch_source_subset`) onto a
     freshly built `doc`, in place. These are written by the backward
@@ -189,7 +193,7 @@ def _compute_seed_id(member_session_ids: Iterable[str]) -> str:
 
     Empty membership raises — outlier clusters are filtered upstream.
     """
-    sids = sorted(set(s for s in member_session_ids if s))
+    sids = sorted({s for s in member_session_ids if s})
     if not sids:
         raise ValueError("_compute_seed_id requires at least one session id")
     digest = hashlib.sha256("\n".join(sids).encode("utf-8")).hexdigest()
@@ -224,14 +228,14 @@ def _mint_playbook_id(seed_id: str) -> str:
     return f"{_PLAYBOOK_ID_PREFIX}{digest[:_PLAYBOOK_ID_HASH_LEN]}"
 
 
-def _unit_vector(vec) -> "np.ndarray":
+def _unit_vector(vec) -> np.ndarray:
     import numpy as np
     arr = np.asarray(vec, dtype=np.float32)
     norm = float(np.linalg.norm(arr))
     return arr if norm == 0.0 else arr / norm
 
 
-def _playbook_group_centroid(member_docs: list[dict]) -> Optional["np.ndarray"]:
+def _playbook_group_centroid(member_docs: list[dict]) -> np.ndarray | None:
     """Size-weighted mean of the member clusters' centroids, L2-normalised.
     Returns None when no member carries a usable centroid."""
     import numpy as np
@@ -311,7 +315,7 @@ def specificity_scores(
     Pure/offline (reused by ROADMAP #5)."""
     import math
     if total_clusters <= 1 or not df_by_key:
-        return {k: 0.0 for k in df_by_key}
+        return dict.fromkeys(df_by_key, 0.0)
     denom = math.log(total_clusters)
     out: dict[str, float] = {}
     for k, df in df_by_key.items():
@@ -369,7 +373,7 @@ def _persist_cluster_specificity(
                 },
             },
         )
-    except Exception as exc:  # noqa: BLE001 — specificity is best-effort
+    except Exception as exc:
         log.warning("specificity: aggregation failed (continuing): %s", exc)
         return stats
 
@@ -405,7 +409,7 @@ def _persist_cluster_specificity(
                 {"term": {"run_id": run_id}},
             ]}},
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("specificity: centroid scan failed (continuing): %s", exc)
         return stats
     for h in cresp["hits"]["hits"]:
@@ -428,7 +432,7 @@ def _persist_cluster_specificity(
 
 def _load_playbook_anchors(
     es: Elasticsearch, anchor_idx: str,
-) -> list[tuple["np.ndarray", str]]:
+) -> list[tuple[np.ndarray, str]]:
     """Load every pinned anchor from the write-once `playbook_anchors`
     index — one `(centroid, playbook_id)` pair per known id. The naming
     pass needs the full set in memory to match each playbook's centroid
@@ -440,7 +444,7 @@ def _load_playbook_anchors(
         query={"exists": {"field": "anchor_centroid"}},
         _source=["playbook_id", "anchor_centroid"],
     )
-    anchors: list[tuple["np.ndarray", str]] = []
+    anchors: list[tuple[np.ndarray, str]] = []
     for h in resp.get("hits", {}).get("hits", []):
         s = h["_source"]
         cen = s.get("anchor_centroid")
@@ -451,7 +455,7 @@ def _load_playbook_anchors(
 
 
 def _playbook_anchor_doc(
-    playbook_id: str, unit: "np.ndarray", seed_id: str, run_id: str,
+    playbook_id: str, unit: np.ndarray, seed_id: str, run_id: str,
     predicate_signature: dict[str, float] | None = None,
     is_satellite: bool = False,
 ) -> dict:
@@ -468,13 +472,13 @@ def _playbook_anchor_doc(
     whose original anchor has drifted — see `_mint_satellite_anchor_id`. Always
     present (not omitted when False) so a reader never has to special-case a
     missing field vs. an honest primary anchor."""
-    from datetime import datetime, timezone
+    from datetime import datetime
     return {
         "playbook_id": playbook_id,
         "anchor_centroid": [float(x) for x in unit],
         "seed_playbook_id": seed_id,
         "first_run_id": run_id,
-        "first_seen": datetime.now(timezone.utc).isoformat(),
+        "first_seen": datetime.now(UTC).isoformat(),
         "predicate_signature": (
             predicate_signature if predicate_signature is not None
             else _compute_predicate_signature([])
@@ -497,7 +501,7 @@ def _mint_satellite_anchor_id(playbook_id: str, seed_id: str) -> str:
 
 def _persist_playbook_anchor(
     es: Elasticsearch, anchor_idx: str, playbook_id: str,
-    unit: "np.ndarray", seed_id: str, run_id: str,
+    unit: np.ndarray, seed_id: str, run_id: str,
     predicate_signature: dict[str, float] | None = None,
     anchor_id: str | None = None,
     is_satellite: bool = False,
@@ -716,7 +720,7 @@ def run_backfill_anchor_signatures(
             continue
         try:
             sig = _sample_predicate_vectors(es, sessions_idx, commands_idx, pid, per_anchor)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("backfill-anchor-signatures: failed for %s: %s", pid, exc)
             stats["errors"] += 1
             continue
@@ -725,7 +729,7 @@ def run_backfill_anchor_signatures(
             continue
         try:
             es.update(index=anchor_idx, id=h["_id"], doc={"predicate_signature": sig})
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("backfill-anchor-signatures: write failed for %s: %s", pid, exc)
             stats["errors"] += 1
             stats["anchors_stamped"] -= 1
@@ -734,8 +738,8 @@ def run_backfill_anchor_signatures(
 
 
 def _assign_playbook_id(
-    group_unit: "np.ndarray",
-    anchors: list[tuple["np.ndarray", str]],
+    group_unit: np.ndarray,
+    anchors: list[tuple[np.ndarray, str]],
     threshold: float,
     seed_id: str,
 ) -> str:
@@ -850,7 +854,7 @@ def merge_clusters_into_playbooks(
     labels = fcluster(Z, t=cutoff, criterion="distance")
 
     by_label: dict[int, list[str]] = {}
-    for cid, lbl in zip(cluster_ids, labels):
+    for cid, lbl in zip(cluster_ids, labels, strict=False):
         by_label.setdefault(int(lbl), []).append(cid)
 
     # Members are already lex-sorted (input was sorted). Number groups by
@@ -875,7 +879,7 @@ _SESSION_CLUSTER_SAMPLE_SIZE = 5
 def _iter_closed_sessions(
     es: Elasticsearch,
     index: str,
-    since: Optional[str],
+    since: str | None,
     page_size: int = 1000,
 ) -> Iterator[tuple[str, str]]:
     """Yield (session_id, closed_at) for cowrie.session.closed events after `since`."""
@@ -910,7 +914,7 @@ def _iter_closed_sessions(
 def _scan_closed_slice(
     es: Elasticsearch,
     pit_id: str,
-    since: Optional[str],
+    since: str | None,
     page_size: int,
     slice_id: int,
     slice_max: int,
@@ -951,7 +955,7 @@ def _scan_closed_slice(
 def _collect_closed_sessions(
     es: Elasticsearch,
     index: str,
-    since: Optional[str],
+    since: str | None,
     page_size: int,
     workers: int,
 ) -> list[tuple[str, str]]:
@@ -984,10 +988,8 @@ def _collect_closed_sessions(
                 results.extend(fut.result())
         return results
     finally:
-        try:
+        with contextlib.suppress(Exception):
             es.close_point_in_time(id=pit_id)
-        except Exception:
-            pass
 
 
 def _fetch_session_events(
@@ -1054,7 +1056,7 @@ def _mget_enrichment(
 
 def _summarize_intents(
     intents: list[str], top_n: int = 3
-) -> tuple[Optional[str], list[dict]]:
+) -> tuple[str | None, list[dict]]:
     """Return `(dominant_intent, intent_distribution)` from a list of intent
     labels. The distribution is the top-N `(intent, count)` pairs sorted by
     `(-count, intent)` so ties resolve lexically — deterministic across runs.
@@ -1281,7 +1283,7 @@ def _compute_hassh(algorithms: str) -> str:
     cowrie's `hassh_algorithms` is already that semicolon-joined string, so this
     reproduces cowrie's own `hassh` md5 for events that lack the precomputed
     value (older cowrie builds / custom forks). ROADMAP attribution scaffolding."""
-    return hashlib.md5(algorithms.encode("utf-8")).hexdigest()
+    return hashlib.md5(algorithms.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 def _filename_is_specific(basename: str) -> bool:
@@ -1300,7 +1302,7 @@ def _filename_is_specific(basename: str) -> bool:
 def _filename_match_command(
     filename: str,
     session_commands: list[tuple[str, str]],
-) -> Optional[str]:
+) -> str | None:
     """Best-effort file→command link by filename (ROADMAP #3): the hash of the
     first session command that references the (specific-enough) basename as a
     **whole token** — bounded by non-filename chars so a substring can't
@@ -1322,7 +1324,7 @@ def _record_file_event(
     file_events: list[dict],
     ev: dict,
     action: str,
-    last_command: Optional[tuple[str, str]] = None,
+    last_command: tuple[str, str] | None = None,
 ) -> None:
     """Append a cowrie file-event record (ROADMAP #3) when it carries a hash.
 
@@ -1413,8 +1415,8 @@ def _build_session_doc(
     cfg: AppConfig,
 ) -> dict:
     """Build a session rollup doc from raw events + pre-fetched enrichment data."""
-    connect_event: Optional[dict] = None
-    closed_event: Optional[dict] = None
+    connect_event: dict | None = None
+    closed_event: dict | None = None
     login_success_count = 0
     login_fail_count = 0
     file_download_count = 0
@@ -1439,7 +1441,7 @@ def _build_session_doc(
     # Nearest-preceding command for file→command attribution (ROADMAP #3). Events
     # arrive @timestamp-ordered, so when a file event fires this holds the
     # command that triggered the drop. `(hash, command_line)` or None.
-    last_command: Optional[tuple[str, str]] = None
+    last_command: tuple[str, str] | None = None
     # All `(command_hash, command_line)` this session, for the post-loop
     # filename-match fallback (an SFTP upload is run by a *later* command).
     session_commands: list[tuple[str, str]] = []
@@ -1940,10 +1942,8 @@ def run_rollup(
         )
         with ThreadPoolExecutor(max_workers=workers) as ex:
             futures = [ex.submit(_process_batch, b) for b in batches]
-            done = 0
-            for fut in as_completed(futures):
+            for done, fut in enumerate(as_completed(futures), 1):
                 _merge(fut.result())
-                done += 1
                 if done % workers == 0 or done == n_batches:
                     log.info("Processed %d/%d batches", done, n_batches)
 
@@ -1973,7 +1973,7 @@ def run_rollup(
 # Cluster sessions
 # ---------------------------------------------------------------------------
 
-def _session_cluster_query(window_days: Optional[int],
+def _session_cluster_query(window_days: int | None,
                            novel_pool_only: bool = False) -> dict:
     """ES query for the session-cluster iterators.
 
@@ -2004,7 +2004,7 @@ def iter_session_docs_with_text(
     es: Elasticsearch,
     index: str,
     page_size: int = 1000,
-    window_days: Optional[int] = None,
+    window_days: int | None = None,
     novel_pool_only: bool = False,
 ) -> Iterator[tuple[str, list[float], str, dict, str]]:
     """Yield (doc_id, embedding, session_id, scalars, command_stream_text).
@@ -2078,7 +2078,7 @@ def iter_session_docs(
     es: Elasticsearch,
     index: str,
     page_size: int = 1000,
-    window_days: Optional[int] = None,
+    window_days: int | None = None,
     novel_pool_only: bool = False,
 ) -> Iterator[tuple[str, list[float], str, dict]]:
     """Yield (doc_id, embedding, session_id, scalars).
@@ -2133,7 +2133,7 @@ def iter_session_docs(
         search_after = hits[-1]["sort"]
 
 
-def build_session_scalar_block(scalars_list: list[dict], weight: float) -> "np.ndarray":
+def build_session_scalar_block(scalars_list: list[dict], weight: float) -> np.ndarray:
     """(n, 4) weighted scalar matrix for session-level HDBSCAN.
 
     log1p-normalized fields use fixed corpus-scale denominators (ROADMAP #14)
@@ -2159,7 +2159,7 @@ def build_session_scalar_block(scalars_list: list[dict], weight: float) -> "np.n
 
 def resolve_external_match_techniques(
     cfg: AppConfig, secrets: Secrets, *,
-    reference_generation: Optional[int] = None,
+    reference_generation: int | None = None,
     dry_run: bool = False,
 ) -> dict:
     """For each external session-centroid (latest generation), compute
@@ -2175,8 +2175,9 @@ def resolve_external_match_techniques(
     to render the technique label inline next to a session's
     ``cluster.external_match_id``.
     """
-    from elasticsearch.helpers import bulk
     from collections import Counter
+
+    from elasticsearch.helpers import bulk
 
     es = make_client(cfg.elasticsearch, secrets)
     clusters_idx = cfg.elasticsearch.indexes.cowrie.session_clusters
@@ -2199,7 +2200,7 @@ def resolve_external_match_techniques(
                 return {"resolved": 0, "skipped": 0,
                         "reason": "no external reference centroids"}
             reference_generation = int(hits[0]["_source"]["reference_generation"])
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("[external-match-tech] gen lookup failed: %s", exc)
             return {"resolved": 0, "errors": [str(exc)]}
 
@@ -2400,9 +2401,9 @@ def run_cluster(
     dry_run: bool = False,
     refresh_reference: bool = False,
     use_reference: bool = True,
-    bootstrap_from: Optional[str] = None,
+    bootstrap_from: str | None = None,
     accept_fallback: bool = False,
-    window_days: Optional[int] = None,
+    window_days: int | None = None,
     novel_pool_only: bool = False,
 ) -> dict:
     """HDBSCAN over session embeddings. Delegates to clustering core.
@@ -2823,8 +2824,8 @@ def _format_renamable_block(
     distinctive_feats: list[tuple[str, float]],
     floor: float,
     *,
-    max_item_chars: Optional[int] = None,
-    max_chars: Optional[int] = None,
+    max_item_chars: int | None = None,
+    max_chars: int | None = None,
 ) -> str:
     """Rich pass-2 context for one renamable cluster (ROADMAP #11): commands
     and IOCs ranked by session coverage, IOCs prevalence-gated at `floor` so a
@@ -2864,7 +2865,7 @@ def _format_renamable_block(
     return "\n".join(lines)
 
 
-def _should_reuse_playbook_name(prior_name: Optional[str], *, force: bool) -> bool:
+def _should_reuse_playbook_name(prior_name: str | None, *, force: bool) -> bool:
     """Whether to reuse a playbook's prior-run name (skip the LLM) — P5.1.
 
     Reuse a non-empty prior name unless `force` is set (operator explicitly
@@ -2911,8 +2912,8 @@ def _apply_playbook_name(
     except Exception as exc:
         log.warning("Failed to update centroids for %s %s: %s", log_prefix, playbook_id, exc)
         stats["centroid_update_errors"] += 1
-    from datetime import datetime, timezone
-    now_iso = datetime.now(timezone.utc).isoformat()
+    from datetime import datetime
+    now_iso = datetime.now(UTC).isoformat()
     try:
         es.update_by_query(
             index=sessions_idx,
@@ -3317,8 +3318,8 @@ def _format_coverage_lines(
     *,
     strip_cmd_prefix: bool = False,
     indent: str = "  ",
-    max_item_chars: Optional[int] = None,
-    max_chars: Optional[int] = None,
+    max_item_chars: int | None = None,
+    max_chars: int | None = None,
 ) -> str:
     """Render coverage-ranked features as prompt lines with explicit session
     coverage, so the LLM can tell a defining behaviour (high coverage) from a
@@ -3611,7 +3612,7 @@ def run_name_playbooks(
                     continue
                 try:
                     drifted, total = _measure_anchor_drift(es, sessions_idx, incumbent_id)
-                except Exception as exc:  # noqa: BLE001 — one group's ES hiccup
+                except Exception as exc:
                     # must not abort naming for every other group in this run.
                     log.warning(
                         "satellite drift measurement failed for %s: %s", incumbent_id, exc,
@@ -3655,7 +3656,7 @@ def run_name_playbooks(
                     )
                     anchors.append((group_unit, incumbent_id))
                     stats["satellite_minted"] += 1
-                except Exception as exc:  # noqa: BLE001 — same isolation as the
+                except Exception as exc:
                     # drift-measurement try above: this group's failure must not
                     # abort naming for every other group in this run.
                     log.warning("satellite mint failed for %s: %s", incumbent_id, exc)

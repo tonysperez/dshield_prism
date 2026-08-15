@@ -17,7 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -27,16 +27,20 @@ from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from compare_arms_corpus import _merge_bagspace, _self_consistency, _v2_rate
+from eval_production_scale import (
+    _apply_session_merge,
+    _load_eval_session_ids_and_labels,
+)
+from prod_corpus import cluster_hdbscan, pull_session_corpus
+
 from enrich.clustering import rescue_noise_points
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
 from enrich.sources.cowrie.session_fingerprint import (
-    FINGERPRINT_DIM, build_fingerprint,
+    FINGERPRINT_DIM,
+    build_fingerprint,
 )
-
-from compare_arms_corpus import _merge_bagspace, _self_consistency, _v2_rate
-from eval_production_scale import _apply_session_merge, _load_eval_session_ids_and_labels
-from prod_corpus import cluster_hdbscan, pull_session_corpus
 
 _FP_FIELDS = [
     "dshield.cowrie.enrichment.session.file_events",
@@ -152,7 +156,7 @@ def main() -> int:
     v2_arm = _v2_rate(arm, corpus.session_ids, sid_to_label, pairs)
 
     lines = ["# G2 — Arm C (deterministic_fingerprint) vs baseline (corpus-wide, label-free)", ""]
-    lines.append(f"_Captured {datetime.now(timezone.utc).isoformat()}_ · {len(corpus)} sessions · "
+    lines.append(f"_Captured {datetime.now(UTC).isoformat()}_ · {len(corpus)} sessions · "
                  f"fingerprint {FINGERPRINT_DIM}-dim")
     lines.append("")
     lines.append("| metric | baseline | fingerprint | read |")
@@ -178,17 +182,17 @@ def main() -> int:
     print("\n" + md)
 
     report = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "arm": "deterministic_fingerprint", "scale": "production",
         "fingerprint_dim": FINGERPRINT_DIM,
         "baseline_self_consistency": sc_base, "arm_self_consistency": sc_arm,
         "cross_arm_ari": cross_ari, "cross_arm_nmi": cross_nmi,
         "v2_baseline": v2_base, "v2_fingerprint": v2_arm,
         "n_rescued": int(n_rescued),
-        "assignments": {sid: int(c) for sid, c in zip(corpus.session_ids, arm)},
+        "assignments": {sid: int(c) for sid, c in zip(corpus.session_ids, arm, strict=False)},
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     stem = args.output_dir / f"deterministic-fingerprint-prod-{ts}"
     Path(f"{stem}.md").write_text(md, encoding="utf-8")
     Path(f"{stem}.json").write_text(json.dumps(report, indent=2), encoding="utf-8")

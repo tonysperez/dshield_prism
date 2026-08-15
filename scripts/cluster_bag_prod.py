@@ -27,13 +27,16 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from eval_production_scale import _load_eval_session_ids_and_labels
+from prod_corpus import pull_session_corpus, score_full
 
 from enrich.clustering import (
     cluster_bag_labels,
@@ -44,9 +47,6 @@ from enrich.clustering import (
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
 from enrich.sources.cowrie.sessions import merge_clusters_into_playbooks
-
-from eval_production_scale import _load_eval_session_ids_and_labels
-from prod_corpus import pull_session_corpus, score_full
 
 # Bounded SVD width — clamped down to vocab/n-1 by compute_lexical_features.
 _BAG_SVD_COMPONENTS = 48
@@ -115,7 +115,7 @@ def _self_test() -> int:
     """G1.1 verify: 10 sessions share bag {c1,c2}, 10 share {c3,c4}. The
     partition must follow bag similarity (two groups), regardless of text."""
     bag_texts = ["c1 c2 c1"] * 10 + ["c3 c4 c4"] * 10
-    labels, block = cluster_bag_labels(
+    labels, _block = cluster_bag_labels(
         bag_texts, min_cluster_size=5, min_samples=2, n_components=4,
     )
     groups = {}
@@ -173,7 +173,7 @@ def main() -> int:
     m = scored["metrics"]
 
     report = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "scale": "production", "arm": "cluster_bag",
         "config": {
             "min_cluster_size": scfg.cluster_min_cluster_size,
@@ -193,7 +193,7 @@ def main() -> int:
             "n_rescued": int(n_rescued),
         },
         "metrics": m,
-        "assignments": {sid: int(c) for sid, c in zip(corpus.session_ids, labels)},
+        "assignments": {sid: int(c) for sid, c in zip(corpus.session_ids, labels, strict=False)},
     }
 
     out: list[str] = []
@@ -215,7 +215,7 @@ def main() -> int:
     md = "\n".join(out)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     stem = args.output_dir / f"cluster-bag-prod-{ts}"
     Path(f"{stem}.md").write_text(md, encoding="utf-8")
     Path(f"{stem}.json").write_text(json.dumps(report, indent=2), encoding="utf-8")

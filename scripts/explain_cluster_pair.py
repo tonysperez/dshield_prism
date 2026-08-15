@@ -17,9 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
 from enrich.sources.cowrie.explain import (
-    analyze_cluster_pair, explain_cluster_pair_with_llm,
+    analyze_cluster_pair,
+    explain_cluster_pair_with_llm,
 )
-
 
 LINE_WIDTH = 72
 

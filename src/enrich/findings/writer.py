@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import datetime, timezone
-from typing import Any, Iterable, Optional
+from collections.abc import Iterable
+from datetime import UTC, datetime
+from typing import Any
 
 from elasticsearch import Elasticsearch
 from elasticsearch.helpers import bulk
@@ -32,14 +33,14 @@ _BULK_STATUS_CHUNK = 500
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def finding_id(
     kind: str,
     artifact_kind: str,
     artifact_value: str,
-    delta_signature: Optional[str] = None,
+    delta_signature: str | None = None,
 ) -> str:
     """Deterministic id: `find-<kind3>-<sha16(akind:avalue[:delta])>`.
 

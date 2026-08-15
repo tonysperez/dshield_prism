@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -91,7 +91,7 @@ def main() -> int:
                    "long-tail dominates, canonicalisation buys little. Escalate.")
 
     out = ["# H0 — canonicalisation viability probe", ""]
-    out.append(f"_Captured {datetime.now(timezone.utc).isoformat()}_ · index `{idx}`")
+    out.append(f"_Captured {datetime.now(UTC).isoformat()}_ · index `{idx}`")
     out.append("")
     out.append(f"- total sessions: **{total}**")
     out.append(f"- command-bearing (command_count > 0): **{cmd_bearing}** "
@@ -119,7 +119,7 @@ def main() -> int:
     print(md)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     p = args.output_dir / f"H0-canonical-probe-{ts}.md"
     p.write_text(md, encoding="utf-8")
     print(f"\nwrote {p}")

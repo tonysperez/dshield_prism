@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+
 from pydantic import BaseModel, Field, field_validator
 
 # Honeypot-native, single-label, per-command-decidable action taxonomy.

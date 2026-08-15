@@ -21,13 +21,13 @@ import argparse
 import json
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import yaml
 from eval_jsonl import open_jsonl
-
 
 # ---------------------------------------------------------------------------
 # Field accessors
@@ -51,7 +51,7 @@ def _parse_ts(ts: str | None) -> datetime | None:
         return None
     s = ts.rstrip("Z")
     try:
-        return datetime.fromisoformat(s).replace(tzinfo=timezone.utc) \
+        return datetime.fromisoformat(s).replace(tzinfo=UTC) \
             if "+" not in s else datetime.fromisoformat(s)
     except ValueError:
         return None

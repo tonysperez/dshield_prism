@@ -43,17 +43,17 @@ import json
 import re
 import sys
 from collections import defaultdict
+from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import Iterable, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from eval_jsonl import open_jsonl
+
 from enrich.classification import is_releasable
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
-from eval_jsonl import open_jsonl
-
 
 _WS_RE = re.compile(r"\s+")
 
@@ -262,8 +262,7 @@ def _defang_text(s: str) -> str:
     never adds/removes whitespace, so token count is unchanged."""
     s = _URL_SCHEME_RE.sub(lambda m: m.group(0).replace("http", "hxxp"), s)
     s = _IPV4_RE.sub(lambda m: _defang_ip(m.group(0)), s)
-    s = _HASH_RE.sub(lambda m: _defang_hash(m.group(0)), s)
-    return s
+    return _HASH_RE.sub(lambda m: _defang_hash(m.group(0)), s)
 
 
 def _defang_walk(obj):
@@ -541,7 +540,7 @@ def _sample_stratified(
     # the cap allows.
     strata = sorted(by_stratum.items(), key=lambda kv: len(kv[1]))
     out: list[dict] = []
-    for key, pool in strata:
+    for _key, pool in strata:
         if len(out) >= target_n:
             break
         take = min(len(pool), per_playbook_cap, target_n - len(out))
@@ -652,10 +651,8 @@ def main() -> int:
     print(f"playbooks seen    : {len(playbook_sizes)}", file=sys.stderr)
 
     def _stream() -> Iterator[dict]:
-        seen = 0
-        for rollup in _iter_random_rollups(es, rollup_index, args.seed):
+        for seen, rollup in enumerate(_iter_random_rollups(es, rollup_index, args.seed), 1):
             yield rollup
-            seen += 1
             if seen >= args.scan_cap:
                 return
 

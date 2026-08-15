@@ -22,9 +22,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from enrich.data import hassh_known as hk  # noqa: E402
-from enrich.sources.cowrie.ips import _build_ip_doc  # noqa: E402
-
+from enrich.data import hassh_known as hk
+from enrich.sources.cowrie.ips import _build_ip_doc
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []

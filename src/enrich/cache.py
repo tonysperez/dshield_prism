@@ -22,10 +22,9 @@ new write and ignored by the lookup logic.
 """
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from pathlib import Path
-from typing import Optional
-
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS enrichment_cache (
@@ -120,10 +119,9 @@ class StateDB:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
         for _name, ddl in _MIGRATIONS:
-            try:
+            # Column already exists — migrations are idempotent by design.
+            with contextlib.suppress(sqlite3.OperationalError):
                 self.conn.execute(ddl)
-            except sqlite3.OperationalError:
-                pass  # column already exists
 
     def close(self) -> None:
         self.conn.close()
@@ -241,7 +239,7 @@ class StateDB:
 
     # --- watermark ----------------------------------------------------------
 
-    def get_watermark(self, key: str = "last_processed_at") -> Optional[str]:
+    def get_watermark(self, key: str = "last_processed_at") -> str | None:
         cur = self.conn.execute("SELECT value FROM watermark WHERE key=?", (key,))
         row = cur.fetchone()
         return row[0] if row else None
@@ -306,7 +304,7 @@ class StateDB:
         cur = self.conn.execute("DELETE FROM enrichment_cache")
         return cur.rowcount or 0
 
-    def clear_watermark(self, key: Optional[str] = None) -> int:
+    def clear_watermark(self, key: str | None = None) -> int:
         """Delete one watermark row by key, or all rows when key is None."""
         if key is None:
             cur = self.conn.execute("DELETE FROM watermark")

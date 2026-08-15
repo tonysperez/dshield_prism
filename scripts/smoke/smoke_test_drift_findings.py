@@ -23,12 +23,13 @@ Run from the repo root via the console venv:
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from enrich.findings.drift import (
+    _cosine_dict,
     _delta_sig,
     _f_artifact_drift,
     _f_command_drift,
@@ -37,11 +38,9 @@ from enrich.findings.drift import (
     _f_sequence_drift,
     _f_size_drift,
     _jaccard,
-    _cosine_dict,
     run_drift,
 )
 from enrich.findings.writer import finding_id
-
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -243,7 +242,7 @@ print("\n[7] playbook_resurgence")
 def _snap(ts: datetime, run_id: str = "rX"):
     return {"@timestamp": ts.isoformat(), "run_id": run_id, "session_count": 3}
 
-now = datetime.now(timezone.utc)
+now = datetime.now(UTC)
 # Gap of 60 hours between first 2 snaps → 60h >= 8 * 6 = 48h threshold → fires
 big_gap = {
     "silent_runs_current": 0,

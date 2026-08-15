@@ -25,7 +25,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import numpy as np
 
-from enrich.clustering import compute_centroids, l2_normalize, rescue_noise_points_augmented
+from enrich.clustering import (
+    compute_centroids,
+    l2_normalize,
+    rescue_noise_points_augmented,
+)
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
 from enrich.sources.cowrie.ips import (
@@ -119,7 +123,7 @@ def main():
     # Cluster modal dominant_playbook / dominant_intent from clustered members.
     modal_pb, modal_intent = {}, {}
     mem = defaultdict(list)
-    for m, lb in zip(corpus, labels):
+    for m, lb in zip(corpus, labels, strict=False):
         if lb != -1:
             mem[lb].append(m)
     for lb, ms in mem.items():

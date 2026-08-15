@@ -11,8 +11,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "src"))
 
-import eval_novel_pool as target  # noqa: E402
-from enrich.classification import releasable_filter  # noqa: E402
+import eval_novel_pool as target
+
+from enrich.classification import releasable_filter
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []

@@ -65,8 +65,16 @@ def _check_class_registry_parity() -> None:
     # Import every provider module by name. Each is supposed to declare a
     # class-level `upstream_feeds` that matches PROVIDER_UPSTREAM_FEEDS.
     from enrich.intel.providers import (
-        abuseipdb, feodotracker, firehol, greynoise, isc,
-        malwarebazaar, threatfox, tor, urlhaus, virustotal_public,
+        abuseipdb,
+        feodotracker,
+        firehol,
+        greynoise,
+        isc,
+        malwarebazaar,
+        threatfox,
+        tor,
+        urlhaus,
+        virustotal_public,
     )
     from enrich.intel.providers.base import Provider
 

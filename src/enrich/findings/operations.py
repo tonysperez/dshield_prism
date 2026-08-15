@@ -27,8 +27,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from elasticsearch import Elasticsearch
 from elasticsearch.helpers import bulk
@@ -66,7 +66,7 @@ def _scroll_campaigns(es: Elasticsearch, idx: str):
             body["search_after"] = search_after
         try:
             resp = es.search(index=idx, **body)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("operations: campaign scroll failed: %s", exc)
             return
         hits = (resp.get("hits") or {}).get("hits") or []
@@ -79,21 +79,21 @@ def _scroll_campaigns(es: Elasticsearch, idx: str):
             return
 
 
-def _earliest(a: Optional[str], b: Optional[str]) -> Optional[str]:
+def _earliest(a: str | None, b: str | None) -> str | None:
     """Lexicographic min of ISO timestamps; None-safe."""
     if not a:
         return b
     if not b:
         return a
-    return a if a < b else b
+    return min(b, a)
 
 
-def _latest(a: Optional[str], b: Optional[str]) -> Optional[str]:
+def _latest(a: str | None, b: str | None) -> str | None:
     if not a:
         return b
     if not b:
         return a
-    return a if a > b else b
+    return max(b, a)
 
 
 def run_mine_operations(cfg: Any, secrets: Any, dry_run: bool = False) -> dict[str, Any]:
@@ -151,7 +151,7 @@ def run_mine_operations(cfg: Any, secrets: Any, dry_run: bool = False) -> dict[s
         elif kind in ("infrastructure", "infra"):
             inf.append(entry)
 
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     actions: list[dict] = []
     for b in bhv:
         for i in inf:
@@ -199,7 +199,7 @@ def run_mine_operations(cfg: Any, secrets: Any, dry_run: bool = False) -> dict[s
             stats["bulk_ok"] = n_ok
             stats["bulk_errors"] = len(errs) if isinstance(errs, list) else 0
             es.indices.refresh(index=ops_idx)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("operations: bulk write failed: %s", exc)
             stats["bulk_errors"] = len(actions)
     log.info("operations mined: %s", stats)

@@ -42,7 +42,7 @@ def _diagnose_llm_failure(base_url: str, exc: Exception) -> list[str]:
     try:
         with socket.create_connection((host, port), timeout=5) as sock:
             out.append(f"        tcp:           connect {host}:{port} OK (local={sock.getsockname()})")
-    except socket.timeout:
+    except TimeoutError:
         out.append(f"        tcp:           [FAIL] connect {host}:{port} timed out")
         out.append("        hint:          firewall on the GPU box, server not bound on 0.0.0.0, or wrong port")
         return out
@@ -54,10 +54,10 @@ def _diagnose_llm_failure(base_url: str, exc: Exception) -> list[str]:
     if parsed.scheme == "https":
         try:
             ctx = ssl.create_default_context()
-            with socket.create_connection((host, port), timeout=5) as sock:
-                with ctx.wrap_socket(sock, server_hostname=host) as ssock:
-                    cert = ssock.getpeercert() or {}
-                    out.append(f"        tls:           handshake OK (peer={cert.get('subject', '?')})")
+            with socket.create_connection((host, port), timeout=5) as sock, \
+                    ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                cert = ssock.getpeercert() or {}
+                out.append(f"        tls:           handshake OK (peer={cert.get('subject', '?')})")
         except ssl.SSLError as e:
             out.append(f"        tls:           [FAIL] {e}")
             out.append("        hint:          self-signed cert? Either install the CA or switch to http:// if local")

@@ -30,7 +30,6 @@ from enrich.intel.providers.feodotracker import parse_feodo_response
 from enrich.intel.providers.firehol import match_firehol, parse_firehol_netset
 from enrich.intel.providers.isc import confidence_from_reports, parse_isc_response
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

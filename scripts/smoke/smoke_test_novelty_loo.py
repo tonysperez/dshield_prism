@@ -31,8 +31,9 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "scripts"))
 
-from enrich.sources.cowrie.assignment import NOVEL, assign_batch  # noqa: E402
-import eval_operational as eo  # noqa: E402
+import eval_operational as eo
+
+from enrich.sources.cowrie.assignment import NOVEL, assign_batch
 
 TAU, CONFIDENT_TAU = 0.94, 0.98
 
@@ -91,7 +92,7 @@ def test_loo_novel_precision_le_naive() -> None:
 
 def test_size1_label_excluded_from_negative_base() -> None:
     labels, embs = _synthetic_set()
-    labels = labels + ["solo"]
+    labels = [*labels, "solo"]
     embs = np.vstack([embs, _unit(200)])
     records = eo.novelty_records(labels, embs, tau=TAU, confident_tau=CONFIDENT_TAU)
     negatives = [r for r in records if r[0] is False]

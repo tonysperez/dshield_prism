@@ -39,7 +39,7 @@ def check(name: str, cond: bool, detail: str = "") -> None:
         print(f"  FAIL  {name}  ({detail})")
 
 
-T = dict(tau=0.94, confident_tau=0.98)
+T = {"tau": 0.94, "confident_tau": 0.98}
 
 # --- classify_status (pre-secondary) ---
 check("0.99 → ASSIGNED (confident)", classify_status(0.99, **T) == ASSIGNED)
@@ -49,7 +49,7 @@ check("exactly tau (0.94) → BAND", classify_status(0.94, **T) == BAND)
 check("exactly confident_tau (0.98) → ASSIGNED", classify_status(0.98, **T) == ASSIGNED)
 
 # --- resolve (the band TF-IDF decision) ---
-R = dict(tau=0.94, confident_tau=0.98, tfidf_tau=0.80)
+R = {"tau": 0.94, "confident_tau": 0.98, "tfidf_tau": 0.80}
 check("confident 0.99 ignores tfidf → ASSIGNED", resolve(0.99, 0.1, **R) == ASSIGNED)
 check("below tau 0.90 → NOVEL", resolve(0.90, 0.99, **R) == NOVEL)
 check("band 0.96 + tfidf 0.85 → ASSIGNED (confirmed)", resolve(0.96, 0.85, **R) == ASSIGNED)

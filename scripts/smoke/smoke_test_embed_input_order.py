@@ -23,7 +23,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from enrich.config import load_config, compute_embed_config_hash
+from enrich.config import compute_embed_config_hash, load_config
 from enrich.sources.cowrie.commands import _build_embed_text
 
 

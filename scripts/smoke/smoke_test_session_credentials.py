@@ -38,7 +38,6 @@ from enrich.sources.cowrie.sessions import (
     _record_credential,
 )
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 
@@ -215,7 +214,9 @@ check(
 # -----------------------------------------------------------------------------
 print("\n[7] IP rollup iterator requests the new credentials field")
 import inspect
+
 from enrich.sources.cowrie import ips as ips_mod
+
 src = inspect.getsource(ips_mod)
 check(
     "ips.py _source projection includes session.credentials",

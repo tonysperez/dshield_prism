@@ -28,7 +28,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -90,7 +90,7 @@ def group_novel(rows: list[dict], *, tau: float, confident_tau: float) -> list[d
 
 def fetch_novel(es, idx, filt, limit):
     body = {"size": min(limit, 10000), "_source": _SOURCE,
-            "query": {"bool": {"filter": filt + [{"term": {_STATUS_FIELD: "novel"}}]}},
+            "query": {"bool": {"filter": [*filt, {"term": {_STATUS_FIELD: "novel"}}]}},
             "sort": [{"_doc": "asc"}]}
     rows, sa = [], None
     while len(rows) < limit:
@@ -120,8 +120,8 @@ def fetch_novel(es, idx, filt, limit):
 def render_file(groups, meta) -> str:
     L = [f"# Novel-pool review — {meta['n_novel']} sessions, {len(groups)} distinct signatures\n",
          f"_Captured {meta['captured_at']}. tau={meta['tau']}, confident={meta['confident_tau']}._\n",
-         "_Each group is one command-signature behaviour. Decide: genuinely new/marginal, "
-         "or ordinary traffic Option-A is too strict on?_\n"]
+         ("_Each group is one command-signature behaviour. Decide: genuinely new/marginal, "
+          "or ordinary traffic Option-A is too strict on?_\n")]
     for g in groups:
         L.append(f"## [{g['category']}] signature `{g['signature']}` ×{g['count']} "
                  f"(cos {g['cosine_min']}–{g['cosine_max']})")
@@ -177,8 +177,8 @@ def main() -> int:
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    meta = {"captured_at": datetime.now(timezone.utc).isoformat(), "n_novel": len(rows),
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    meta = {"captured_at": datetime.now(UTC).isoformat(), "n_novel": len(rows),
             "tau": tau, "confident_tau": confident_tau}
     review_path = out_dir / f"novel-review-{ts}.md"
     review_path.write_text(render_file(groups, meta))

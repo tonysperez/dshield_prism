@@ -30,7 +30,6 @@ from enrich.sources.cowrie.ips import (
     make_full_scalar_builder,
 )
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

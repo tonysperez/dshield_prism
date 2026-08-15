@@ -20,7 +20,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from enrich.intel.lookup import IntelSummary
 from enrich.sources.cowrie.sessions import _attach_source_ip_intel
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 
@@ -35,16 +34,16 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 
 def _summary(**kw) -> IntelSummary:
-    defaults = dict(
-        consensus_malicious=False,
-        consensus_label="unknown",
-        override_applied="",
-        external_rarity_score=0.0,
-        malicious_provider_count=0,
-        clean_provider_count=0,
-        confidence_max=None,
-        tags=(),
-    )
+    defaults = {
+        "consensus_malicious": False,
+        "consensus_label": "unknown",
+        "override_applied": "",
+        "external_rarity_score": 0.0,
+        "malicious_provider_count": 0,
+        "clean_provider_count": 0,
+        "confidence_max": None,
+        "tags": (),
+    }
     defaults.update(kw)
     return IntelSummary(**defaults)
 

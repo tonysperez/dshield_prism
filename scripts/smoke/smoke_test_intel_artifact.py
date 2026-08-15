@@ -17,8 +17,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from enrich.intel.artifact import (
-    Artifact,
     ARTIFACT_KINDS,
+    Artifact,
     canonical_domain,
     canonical_hash,
     canonical_ip,
@@ -27,7 +27,6 @@ from enrich.intel.artifact import (
     is_in_cidrs,
     make_artifact,
 )
-
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []

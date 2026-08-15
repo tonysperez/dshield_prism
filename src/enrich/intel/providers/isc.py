@@ -33,7 +33,7 @@ import threading
 import time
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -115,7 +115,7 @@ class ISCProvider(Provider):
             or (time.time() - self._loaded_at) >= self.cfg.refresh_minutes * 60
         )
 
-    def _load_from_cache_file(self) -> Optional[dict[str, dict[str, Any]]]:
+    def _load_from_cache_file(self) -> dict[str, dict[str, Any]] | None:
         p = Path(self.cfg.cache_file)
         if not p.exists():
             return None

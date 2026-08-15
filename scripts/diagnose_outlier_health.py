@@ -22,10 +22,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import numpy as np  # noqa: E402
+import itertools
 
-from enrich.config import load_config, load_secrets  # noqa: E402
-from enrich.es_client import make_client  # noqa: E402
+import numpy as np
+
+from enrich.config import load_config, load_secrets
+from enrich.es_client import make_client
 
 
 def _latest_run_id(es, idx: str) -> str:
@@ -169,7 +171,7 @@ def _audit_outliers(es, label: str, docs_idx: str, cluster_idx: str,
     print()
     print("  histogram of max-cosine-to-nearest-centroid:")
     bands = [0.0, 0.5, 0.7, 0.8, 0.85, 0.90, 0.92, 0.94, 0.96, 0.98, 1.0001]
-    for lo, hi in zip(bands[:-1], bands[1:]):
+    for lo, hi in itertools.pairwise(bands):
         c = int(((arr >= lo) & (arr < hi)).sum())
         bar = "#" * min(60, c)
         print(f"    [{lo:.2f}, {hi:.2f}):  {c:5d}  {bar}")

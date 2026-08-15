@@ -9,8 +9,7 @@ from __future__ import annotations
 import logging
 import random
 import re
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from .cache import StateDB
 from .config import CloudConfig
@@ -74,13 +73,13 @@ _TLD_RE = re.compile(
 def reasons_to_escalate(
     *,
     command: str,
-    parsed: Optional[CommandEnrichment],
+    parsed: CommandEnrichment | None,
     local_failed: bool,
     cfg: CloudConfig,
-    embedding: Optional[list[float]] = None,
-    centroids: Optional[list[list[float]]] = None,
-    centroids_external: Optional[list[list[float]]] = None,
-    rng: Optional[random.Random] = None,
+    embedding: list[float] | None = None,
+    centroids: list[list[float]] | None = None,
+    centroids_external: list[list[float]] | None = None,
+    rng: random.Random | None = None,
 ) -> list[str]:
     """Return list of reason codes that fire for this command. Empty = stay local.
 
@@ -153,7 +152,7 @@ def reasons_to_escalate(
         # sensor's own history". The threshold stays the same so
         # operator-level tuning carries over.
         scoring_centroids = (
-            centroids_external if centroids_external else centroids
+            centroids_external or centroids
         )
         score = novelty_score_from_lists(embedding, scoring_centroids)
         if score >= cfg.triage.novel_embedding_threshold:
@@ -215,7 +214,7 @@ def intel_skip_reason(
     triage_reasons: list[str],
     ip_summaries: list[IntelSummary],
     cfg: CloudConfig,
-) -> Optional[str]:
+) -> str | None:
     """Decide whether external intel grounds suppression of cloud escalation.
 
     Returns a reason code (string) when escalation should be skipped —
@@ -265,7 +264,7 @@ def intel_skip_reason(
 
 
 def utc_today() -> str:
-    return datetime.now(timezone.utc).date().isoformat()
+    return datetime.now(UTC).date().isoformat()
 
 
 def budget_remaining_usd(db: StateDB, cfg: CloudConfig) -> float:

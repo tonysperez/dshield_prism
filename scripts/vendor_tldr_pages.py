@@ -123,7 +123,7 @@ def main() -> int:
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     # Per-OS coverage stats for the operator.
-    per_os = {os_name: 0 for os_name in ACCEPT_DIRS}
+    per_os = dict.fromkeys(ACCEPT_DIRS, 0)
     for variants in out.values():
         for os_name in variants:
             per_os[os_name] = per_os.get(os_name, 0) + 1

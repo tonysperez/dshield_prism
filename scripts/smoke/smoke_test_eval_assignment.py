@@ -75,7 +75,7 @@ check("macro_f1 == 1.0", cls["macro_f1"] == 1.0, str(cls["macro_f1"]))
 _c = np.zeros((1, embs.shape[1]), dtype=np.float32)
 _c[0, -1] = 1.0
 emb3 = np.vstack([embs, _c])
-lab3 = labels + ["C"]
+lab3 = [*labels, "C"]
 cls_all = classification_metrics(emb3, lab3, pids, pmat)
 cls_sub = classification_metrics(emb3, lab3, pids, pmat, scoreable={"A", "B"})
 check("unlearnable label scores f1 0.0", cls_all["per_label"]["C"]["f1"] == 0.0,

@@ -159,7 +159,7 @@ check("run_finish swallows an update() error", True)
 #     `prism.ops` is `dynamic: strict` and a null groups on nothing.
 # -----------------------------------------------------------------------------
 print("\n[7] unit stamp from PRISM_SYSTEMD_UNIT; omitted for manual runs")
-import os  # noqa: E402
+import os
 
 _prev = os.environ.pop("PRISM_SYSTEMD_UNIT", None)
 try:

@@ -57,7 +57,7 @@ def main() -> int:
     print()
     print("[2] identical bags → identical vectors (deterministic)")
     bags2 = dict(bags); bags2["g"] = dict(bags["a"])
-    s2 = scalars + [{"source_ip": "g"}]
+    s2 = [*scalars, {"source_ip": "g"}]
     m2 = _build_tier2_block(s2, 0.10, bags=bags2, dim=24)
     results.append(check("IP a and its clone g match",
                          bool(np.allclose(m2[0], m2[-1])),

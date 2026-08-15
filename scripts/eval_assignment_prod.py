@@ -39,9 +39,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # scripts/
 
-from enrich.sources.cowrie.assignment import ASSIGNED, assign_batch
-
 from eval_assignment import _l2, load_labeled
+
+from enrich.sources.cowrie.assignment import ASSIGNED, assign_batch
 
 
 def load_anchor_snapshot(path: Path) -> tuple[list[str], np.ndarray]:
@@ -74,10 +74,10 @@ def score_against_anchors(embs, labels, anchor_ids, anchor_mat, *,
     a_anchor = [r.playbook_id for _i, r in a]
     a_label = [labels[i] for i, _r in a]
     by_anchor: dict[str, list[str]] = defaultdict(list)
-    for anc, lb in zip(a_anchor, a_label):
+    for anc, lb in zip(a_anchor, a_label, strict=False):
         by_anchor[anc].append(lb)
     modal = {anc: Counter(lbs).most_common(1)[0][0] for anc, lbs in by_anchor.items()}
-    purity = sum(1 for anc, lb in zip(a_anchor, a_label) if modal[anc] == lb) / len(a)
+    purity = sum(1 for anc, lb in zip(a_anchor, a_label, strict=False) if modal[anc] == lb) / len(a)
     return {
         "n": n, "n_assigned": len(a),
         "assigned_rate": round(len(a) / n, 4),

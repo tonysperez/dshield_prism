@@ -397,6 +397,23 @@ run.)
   the hard evidence gate (an all-false session vector, or a missing/all-zero anchor
   signature, never rescues regardless of threshold).
 
+**The lint rule set is pinned, and so is the linter.** CI installed floating
+`ruff` while `console/.venv` held an older pin, and `pyproject.toml` declared no
+`select` — so "the default rules" resolved differently in each place. Ruff 0.16
+widened its default from E/F to a ~470-rule curated set and CI went red on
+unchanged code that had passed lint locally every time. Both halves are now
+explicit: `[tool.ruff.lint] select`/`ignore` in `pyproject.toml`, `ruff==0.16.3`
+in `ci.yml`. The rule set was then adopted broadly rather than frozen at E/F —
+imports, pyupgrade, bugbear, simplify, perf, and bandit are on. Rules that are
+off are off **per rule with a written reason**, never by leaving a category
+unselected: the recurring reasons are that the pipeline degrades on failure by
+design (`S110`/`S112`/`TRY400`/`TRY301`), that `int(round(x))` on a numpy scalar
+is load-bearing for ES field types (`RUF046`), and that malformed-document
+`ValueError`s are the caller-visible contract (`TRY004`). Categories left
+unselected entirely — `T20`, `ARG`, `N`, `PLR`, `PTH`, `PYI` — are recorded here
+as declined, not forgotten: prints are the CLI's output, unused args are
+interface conformance, and pathlib rewrites are churn in working I/O code.
+
 ## Dead-ends — measured and rejected
 
 Don't re-attempt these without new evidence; each was tried against the live

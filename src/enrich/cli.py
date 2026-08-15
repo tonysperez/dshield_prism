@@ -9,13 +9,14 @@ with the same ``run_*`` callables; this dispatcher routes by name.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import sys
 
+from . import healthcheck as hc_mod
 from .__about__ import CLI_NAME
 from .config import load_config, load_secrets
-from . import healthcheck as hc_mod
 
 # Module-level logger. The root config in `_setup_log` attaches a stderr
 # StreamHandler (always) + the cli.log RotatingFileHandler, so `log.*` reaches
@@ -73,7 +74,7 @@ def _setup_log(level: str, log_dir: str | None = None) -> None:
 def _load_source_layer(source: str, layer: str):
     """Return the module that owns this (source, layer) pair."""
     if source == "cowrie":
-        from .sources.cowrie import commands, sessions, ips, campaigns
+        from .sources.cowrie import campaigns, commands, ips, sessions
         return {
             "commands":  commands,
             "sessions":  sessions,
@@ -317,6 +318,7 @@ def _run_reference_heal(cfg, secrets) -> dict:
     verb still returns. No corpus at all → no-op with a hint (needs the import).
     """
     import logging
+
     from .es_client import make_client
     log = logging.getLogger(__name__)
     es = make_client(cfg.elasticsearch, secrets)
@@ -336,7 +338,7 @@ def _run_reference_heal(cfg, secrets) -> dict:
             return {"status": "no_corpus", "actions": []}
         n_ref = int(es.count(index=ref_idx)["count"])
         n_emb = int(es.count(index=ref_idx, query={"exists": {"field": emb_field}})["count"])
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("[reference-heal] state check failed (%s); skipping", exc)
         return {"status": "error", "error": str(exc), "actions": []}
 
@@ -351,13 +353,13 @@ def _run_reference_heal(cfg, secrets) -> dict:
                 out["actions"].append("enriched_reference")
                 es.indices.refresh(index=ref_idx)
                 n_emb = int(es.count(index=ref_idx, query={"exists": {"field": emb_field}})["count"])
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("[reference-heal] enrich --reference failed (%s)", exc)
 
     # 2. Mint external centroids when the corpus is embedded but they're absent.
     try:
         n_ext = int(es.count(index=scl_idx, query=ext_q)["count"]) if es.indices.exists(index=scl_idx) else 0
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("[reference-heal] centroid check failed (%s); skipping bootstrap", exc)
         n_ext = 1  # transient error — don't risk a spurious re-bootstrap
     if n_ext == 0 and n_emb > 0:
@@ -368,7 +370,7 @@ def _run_reference_heal(cfg, secrets) -> dict:
                 smod.run_cluster(cfg, secrets, dry_run=False, refresh_reference=False,
                                  use_reference=True, bootstrap_from="external")
                 out["actions"].append("bootstrapped_external_centroids")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("[reference-heal] external bootstrap failed (%s)", exc)
 
     out["status"] = "healed" if out["actions"] else "healthy"
@@ -384,8 +386,8 @@ def _wipe_processed(cfg, secrets, source: str) -> dict:
 
     Returns a dict of per-index actions and per-state-table row counts.
     """
-    from .es_client import init_index, make_client
     from .cache import StateDB
+    from .es_client import init_index, make_client
 
     es = make_client(cfg.elasticsearch, secrets)
     mappings = _LAYER_MAPPINGS.get(source) or {}
@@ -398,7 +400,7 @@ def _wipe_processed(cfg, secrets, source: str) -> dict:
     # produced by Filebeat/Elastic agent) — so iterating mappings.keys() is
     # already the right set.
     out: dict = {"deleted": [], "created": [], "errors": []}
-    for layer in mappings.keys():
+    for layer in mappings:
         idx = _resolve_index_for_layer(cfg, source, layer)
         # Delete (idempotent).
         try:
@@ -445,13 +447,11 @@ def _acquire_pipeline_lock(cfg, *, no_lock: bool, print_args):
     import fcntl
     from pathlib import Path
     lock_path = Path(cfg.worker.state_db).parent / ".lock"
-    try:
+    with contextlib.suppress(Exception):
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
     # Open for append (creates if missing). The file's content is
     # irrelevant — the OS-level advisory lock is what serialises us.
-    lock_fd = open(lock_path, "a")
+    lock_fd = open(lock_path, "a")  # noqa: SIM115 — fd is the lock; it must outlive this scope
     try:
         fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         print_args(f"[pipeline] acquired lock {lock_path}")
@@ -472,7 +472,9 @@ def _maybe_reset_rollup_watermarks(cfg, secrets, *, force: bool = False) -> dict
     run). Mirrors `reset --session-watermark --ip-watermark`, conditionally."""
     from .cache import StateDB
     from .rollup_gate import (
-        ROLLUP_DIRTY_KEY, ROLLUP_SCHEMA_HASH_KEY, rollup_repool_decision,
+        ROLLUP_DIRTY_KEY,
+        ROLLUP_SCHEMA_HASH_KEY,
+        rollup_repool_decision,
     )
     from .sources.cowrie.sessions import rollup_schema_hash
     db = StateDB(cfg.worker.state_db)
@@ -603,8 +605,8 @@ def _run_pipeline(cfg, secrets, args) -> int:
         """Cap each cluster index to the newest _DEFAULT_CLUSTER_KEEP_RUNS runs
         (scale-hardening P2.1). reference_centroid generations are preserved.
         Runs after clustering so the newest run is always in the keep set."""
-        from .es_client import make_client
         from .clustering import prune_cluster_runs
+        from .es_client import make_client
         es = make_client(cfg.elasticsearch, secrets)
         targets = _cluster_indices_for_source(cfg, args.source) or []
         results = [
@@ -767,7 +769,7 @@ def _run_pipeline(cfg, secrets, args) -> int:
     _bp = getattr(cfg.elasticsearch, "backpressure", None)
     try:
         _gate_es = make_client(cfg.elasticsearch, secrets) if (_bp and not dry) else None
-    except Exception:  # noqa: BLE001 — the gate is a nicety, never fatal
+    except Exception:
         _gate_es = None
 
     summary: dict = {"force_wipe": bool(args.force), "dry_run": dry, "steps": []}
@@ -777,7 +779,7 @@ def _run_pipeline(cfg, secrets, args) -> int:
         if _gate_es is not None:
             try:
                 wait_for_capacity(_gate_es, _bp, label=f"pipeline step '{name}'")
-            except Exception as exc:  # noqa: BLE001 — never let the gate fail a run
+            except Exception as exc:
                 log.debug("[pipeline] capacity gate skipped for %s: %s", name, exc)
         try:
             stats = fn()
@@ -1583,8 +1585,8 @@ def _dispatch_verb(args, cfg, secrets) -> int:
         return hc_mod.check(cfg, secrets, scopes=scopes)
 
     if args.verb == "budget":
-        from .cache import StateDB
         from . import triage as triage_mod
+        from .cache import StateDB
         db = StateDB(cfg.worker.state_db)
         today = triage_mod.utc_today()
         spent = db.get_spend(today)
@@ -1814,8 +1816,8 @@ def _dispatch_verb(args, cfg, secrets) -> int:
         return 0
 
     if args.verb == "prune-clusters":
-        from .es_client import make_client
         from .clustering import prune_cluster_runs
+        from .es_client import make_client
         targets = _cluster_indices_for_source(cfg, args.source)
         if targets is None:
             log.error("Source %r has no cluster indices", args.source)
@@ -1928,11 +1930,11 @@ def _dispatch_verb(args, cfg, secrets) -> int:
                 all_stats[layer] = mod.run_assign(cfg, secrets, dry_run=args.dry_run)
                 continue
             try:
-                kwargs = dict(
-                    dry_run=args.dry_run,
-                    refresh_reference=args.refresh_reference,
-                    use_reference=not args.no_reference,
-                )
+                kwargs = {
+                    "dry_run": args.dry_run,
+                    "refresh_reference": args.refresh_reference,
+                    "use_reference": not args.no_reference,
+                }
                 if bootstrap_from and layer == "sessions":
                     kwargs["bootstrap_from"] = bootstrap_from
                 if layer == "sessions":
@@ -2022,10 +2024,11 @@ def _dispatch_verb(args, cfg, secrets) -> int:
             # cfg.findings.hunts.config_dir, executes each *enabled*
             # hunt against the session rollup, writes one
             # `kind=analyst_hunt` finding per matching session.
+            import uuid as _uuid
+
+            from .es_client import init_index, make_client
             from .findings.hunts import run_hunts
             from .findings.writer import bulk_upsert_findings
-            from .es_client import init_index, make_client
-            import uuid as _uuid
             if args.include_disabled and not args.dry_run:
                 # Stay on the JSON contract even when refusing — callers
                 # parse this stdout and a bare exit 2 gives them a decode
@@ -2044,7 +2047,7 @@ def _dispatch_verb(args, cfg, secrets) -> int:
                                include_disabled=args.include_disabled)
             written = 0
             if not args.dry_run:
-                for hunt_id, findings in (result.get("by_hunt") or {}).items():
+                for findings in (result.get("by_hunt") or {}).values():
                     if findings:
                         written += bulk_upsert_findings(es, findings_idx, findings)
             # Build a per-hunt summary for the console.

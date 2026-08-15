@@ -11,22 +11,22 @@ Run: ./console/.venv/bin/python scripts/smoke_test_intel_cache_ttl.py
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from types import SimpleNamespace  # noqa: E402
+from types import SimpleNamespace
 
-from enrich.config import IntelConfig, IntelRefreshTTLConfig  # noqa: E402
-from enrich.intel.refresh import _fresh_within_ttl  # noqa: E402
+from enrich.config import IntelConfig, IntelRefreshTTLConfig
+from enrich.intel.refresh import _fresh_within_ttl
 
 
 class _StubIndices:
     def __init__(self, exists: bool) -> None:
         self._exists = exists
 
-    def exists(self, index: str) -> bool:  # noqa: ARG002
+    def exists(self, index: str) -> bool:
         return self._exists
 
 
@@ -37,7 +37,7 @@ class _StubES:
         self._lr = last_refreshed
         self.indices = _StubIndices(index_exists)
 
-    def mget(self, *, index: str, ids: list[str], _source=None):  # noqa: ARG002
+    def mget(self, *, index: str, ids: list[str], _source=None):
         docs = []
         for i in ids:
             if i in self._lr:
@@ -56,7 +56,7 @@ def main() -> int:
     # `_fresh_within_ttl` only reads `cfg.intel.indexes` (via index_for_kind);
     # a full AppConfig isn't needed, so shim just the intel sub-config.
     cfg = SimpleNamespace(intel=IntelConfig())  # defaults: hash ttl=30d, ip=7d
-    now = datetime(2026, 5, 29, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 5, 29, 12, 0, 0, tzinfo=UTC)
     fresh_ts = _iso(now - timedelta(days=2))     # within 30d and 7d
     stale_ts = _iso(now - timedelta(days=40))    # beyond every default TTL
     naive_ts = (now - timedelta(days=2)).replace(tzinfo=None).isoformat()  # no tz

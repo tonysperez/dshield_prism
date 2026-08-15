@@ -29,7 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
@@ -104,7 +104,7 @@ def compare(base: dict[str, int], arm: dict[str, int], top_k: int) -> dict:
 
 def _render(res: dict, base_label: str, arm_label: str) -> str:
     out = [f"# Cross-arm clustering comparison — {base_label} vs {arm_label}", ""]
-    out.append(f"_Captured {datetime.now(timezone.utc).isoformat()}_")
+    out.append(f"_Captured {datetime.now(UTC).isoformat()}_")
     out.append("")
     out.append(f"- **Common sessions:** {res['n_common_sessions']}")
     out.append(f"- **Clusters:** base {res['n_clusters_base']} · arm {res['n_clusters_arm']}")
@@ -146,14 +146,14 @@ def main() -> int:
     res.update({
         "base_json": str(args.base_json), "arm_json": str(args.arm_json),
         "base_label": args.base_label, "arm_label": args.arm_label,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
     })
     md = _render(res, args.base_label, args.arm_label)
     print(md)
 
     if not args.no_md:
         args.output_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         stem = f"clustering-compare-{args.base_label}-vs-{args.arm_label}-{ts}"
         (args.output_dir / f"{stem}.md").write_text(md, encoding="utf-8")
         (args.output_dir / f"{stem}.json").write_text(

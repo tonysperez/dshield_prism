@@ -35,11 +35,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from enrich.config import load_config, load_secrets
-from enrich.es_client import make_client
-
 from eval_jsonl import open_jsonl
 from eval_jsonl import resolve as resolve_jsonl
+
+from enrich.config import load_config, load_secrets
+from enrich.es_client import make_client
 
 log = logging.getLogger(__name__)
 

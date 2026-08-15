@@ -14,7 +14,7 @@ Run from the repo root via the console venv:
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -22,7 +22,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from enrich.intel.artifact import Artifact
 from enrich.intel.providers.base import DerivedSignals, ProviderResult
 from enrich.intel.writer import build_intel_doc, compute_derived
-
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -273,7 +272,7 @@ check("no malicious: confidence_max None",
 
 print("\n[6] build_intel_doc — merges prior providers with new results")
 artifact = Artifact("ip", "203.0.113.5")
-now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=timezone.utc)
+now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
 prior = {
     "artifact": {"kind": "ip", "value": "203.0.113.5",
                  "first_observed_locally": "2026-04-01T00:00:00+00:00"},

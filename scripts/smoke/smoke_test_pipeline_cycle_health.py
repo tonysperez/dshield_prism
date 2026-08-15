@@ -24,15 +24,15 @@ Run from the repo root via the console venv:
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / "console" / "src"))  # noqa: E402
-sys.path.insert(0, str(REPO / "src"))  # noqa: E402
+sys.path.insert(0, str(REPO / "console" / "src"))
+sys.path.insert(0, str(REPO / "src"))
 
-from console._config import load_config  # noqa: E402
-from console.queries import _derive_cycle_state, pipeline_cycle_health  # noqa: E402
+from console._config import load_config
+from console.queries import _derive_cycle_state, pipeline_cycle_health
 
 CFG = load_config(str(REPO / "config" / "default.yaml"))
 
@@ -49,7 +49,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         print(f"  FAIL  {name}  {detail}")
 
 
-NOW = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 7, 1, 12, 0, 0, tzinfo=UTC)
 STALE_MIN = 120
 
 
@@ -192,7 +192,7 @@ class _StubES:
 
 # pipeline_cycle_health uses the REAL utcnow, so build these rows relative to it
 # (not the frozen NOW the pure-helper cases use).
-_real_now = datetime.now(timezone.utc)
+_real_now = datetime.now(UTC)
 
 
 def _live_row(verb, status, finished_delta_min):

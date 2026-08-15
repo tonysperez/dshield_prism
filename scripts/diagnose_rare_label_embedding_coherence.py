@@ -19,7 +19,7 @@ import math
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -28,13 +28,13 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from eval_novel_pool import _EMB, _scan, _session
+from validate_eval_labels import KNOWN_PLAYBOOK_LABELS
+
 from enrich.classification import CLASSIFICATION_KEYWORD, PUBLIC, releasable_filter
 from enrich.clustering import l2_normalize
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
-
-from eval_novel_pool import _EMB, _scan, _session  # noqa: E402
-from validate_eval_labels import KNOWN_PLAYBOOK_LABELS  # noqa: E402
 
 TARGET_LABELS = (
     "inband_payload_drop",
@@ -212,7 +212,7 @@ def analyze(inputs: RareLabelInputs, labels: dict[str, str], *, assignment_tau: 
         }
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "read_only": True,
         "session_classification": "public_only",
         "n_public_embedded_sessions": int(inputs.embeddings.shape[0]),
@@ -228,9 +228,9 @@ def analyze(inputs: RareLabelInputs, labels: dict[str, str], *, assignment_tau: 
 
 def summarize(report: dict) -> str:
     lines = [
-        "rare-label embedding coherence "
-        f"(public_sessions={report['n_public_embedded_sessions']}, "
-        f"tau={report['effective_config']['assignment_tau']})",
+        ("rare-label embedding coherence "
+         f"(public_sessions={report['n_public_embedded_sessions']}, "
+         f"tau={report['effective_config']['assignment_tau']})"),
         f"labels={report['labels']}",
     ]
     for label, detail in report["target_labels"].items():

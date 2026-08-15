@@ -45,7 +45,6 @@ from __future__ import annotations
 import logging
 import time
 from datetime import timedelta
-from typing import Optional
 
 import httpx
 
@@ -54,8 +53,8 @@ from .base import (
     DerivedSignals,
     HealthStatus,
     Provider,
-    ProviderResult,
     ProviderRateLimited,
+    ProviderResult,
     ProviderUnavailable,
     RateLimit,
 )
@@ -65,11 +64,11 @@ log = logging.getLogger(__name__)
 
 # GreyNoise classification → DerivedSignals fields.
 def classify_greynoise(
-    classification: Optional[str],
+    classification: str | None,
     is_noise: bool,
     is_riot: bool,
-    name: Optional[str],
-) -> tuple[Optional[bool], Optional[str], Optional[int], tuple[str, ...], bool, bool]:
+    name: str | None,
+) -> tuple[bool | None, str | None, int | None, tuple[str, ...], bool, bool]:
     """Pure-function: map a GreyNoise Community response to derived signals.
 
     Returns `(malicious, label, confidence, tags, authoritative_clean,

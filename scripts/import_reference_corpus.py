@@ -33,18 +33,20 @@ import subprocess
 import sys
 import tempfile
 from collections import Counter
-from datetime import datetime, timezone
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any
 
 import yaml  # PyYAML — already in the deps for cowrie config parsing.
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from enrich.config import load_config, load_secrets  # noqa: E402
-from enrich.es_client import init_index, make_client  # noqa: E402
-from enrich.sources.cowrie.commands import (  # noqa: E402
-    hash_command, normalize,
+from enrich.config import load_config, load_secrets
+from enrich.es_client import init_index, make_client
+from enrich.sources.cowrie.commands import (
+    hash_command,
+    normalize,
 )
 
 log = logging.getLogger("import_reference_corpus")
@@ -92,7 +94,7 @@ def _iter_atomic_yamls(repo_dir: Path) -> Iterable[Path]:
 
 def _resolve_placeholders(
     command_block: str, input_args: dict[str, Any],
-) -> Optional[str]:
+) -> str | None:
     """Replace `#{var}` with `input_arguments.<var>.default`. Returns
     None when any placeholder has no default — those tests aren't
     runnable without operator-supplied args and don't belong in a
@@ -139,7 +141,7 @@ def _split_commands(block: str) -> list[str]:
 def _build_session_doc(
     *, atomic_id: str, test: dict, commit_sha: str,
     imported_at: str, max_chars: int,
-) -> Optional[dict]:
+) -> dict | None:
     """Build one reference-corpus session doc from one atomic test.
     Returns None when the test isn't eligible (wrong platform,
     non-shell executor, unresolved placeholders, no resolvable
@@ -214,7 +216,7 @@ def _build_session_doc(
 
 def _iter_test_docs(
     repo_dir: Path, commit_sha: str, imported_at: str, *,
-    max_sessions: Optional[int], max_chars: int,
+    max_sessions: int | None, max_chars: int,
 ) -> Iterable[dict]:
     """Yield session docs from every eligible atomic test. Caps the
     yield count when `max_sessions` is set (verification path)."""
@@ -252,7 +254,7 @@ def _bulk_index(es, idx: str, docs: list[dict]) -> tuple[int, int]:
     return n_ok, len(errors) if isinstance(errors, list) else 0
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", default="config/default.yaml")
@@ -275,7 +277,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     secrets = load_secrets()
 
     # Resolve checkout. Self-cleaning tempdir when --repo-dir wasn't given.
-    cleanup: Optional[Path] = None
+    cleanup: Path | None = None
     if args.repo_dir:
         repo_dir = Path(args.repo_dir)
         if not repo_dir.is_dir():
@@ -288,7 +290,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     try:
         commit_sha = _git_head_sha(repo_dir)
-        imported_at = datetime.now(timezone.utc).isoformat()
+        imported_at = datetime.now(UTC).isoformat()
         log.info("commit %s; imported_at %s", commit_sha, imported_at)
 
         docs = list(_iter_test_docs(

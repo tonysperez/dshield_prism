@@ -31,7 +31,6 @@ from enrich.command_shape import (
     normalize_to_shape,
 )
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

@@ -24,7 +24,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from enrich.sources.cowrie.commands import score_cooccurring_siblings
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 
@@ -127,7 +126,7 @@ check("hi_signal score > low_signal score",
       expected_hi > expected_low,
       f"expected_hi={expected_hi:.3f}, expected_low={expected_low:.3f}")
 out6 = score_cooccurring_siblings(tf6, df6, N, top_k=8)
-check("low_df sibling ranks first", [s for s, _ in out6][0] == "hi_signal",
+check("low_df sibling ranks first", next(s for s, _ in out6) == "hi_signal",
       f"got {out6!r}")
 
 

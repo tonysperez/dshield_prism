@@ -29,7 +29,7 @@ import argparse
 import json
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -45,6 +45,8 @@ from sklearn.metrics import (
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from eval_jsonl import open_jsonl
+
 from enrich.clustering import (
     compute_centroids,
     l2_normalize,
@@ -53,8 +55,6 @@ from enrich.clustering import (
 )
 from enrich.config import load_config
 from enrich.sources.cowrie.sessions import build_session_scalar_block
-from eval_jsonl import open_jsonl
-
 
 # ---------------------------------------------------------------------------
 # F-phase small-cluster + outlier metrics (handoff-small-cluster-surfacing-plan
@@ -170,7 +170,7 @@ def small_cluster_metrics(
     reporting a wrong zero.
     """
     labels = np.asarray(cluster_pred)
-    n = int(len(labels))
+    n = len(labels)
     n_outliers = int((labels == -1).sum())
     outlier_rate = round(n_outliers / n, 4) if n else 0.0
 
@@ -332,7 +332,7 @@ def render_small_cluster_block(metrics: dict, sc: dict) -> list[str]:
             cos = d["nearest_large_cosine"]
             out.append(
                 f"    #{d['cluster_label']:<6} n={d['size']:<3} "
-                f"{str(d['dominant_intent'] or '—'):22} "
+                f"{d['dominant_intent'] or '—'!s:22} "
                 f"is={_fmt_opt(d['intent_share'])} "
                 f"sig={_fmt_opt(d['modal_signature_share'])} "
                 f"cos={'—' if cos is None else f'{cos:.3f}'} "
@@ -432,7 +432,7 @@ def _per_label_breakdown(
       * ``outlier_share``    — share of sessions HDBSCAN tagged as ``-1``.
     """
     by_label: dict[str, list[int]] = {}
-    for lbl, c in zip(label_truth, cluster_pred):
+    for lbl, c in zip(label_truth, cluster_pred, strict=False):
         by_label.setdefault(lbl, []).append(int(c))
     out: dict[str, dict] = {}
     for lbl, clusters in sorted(by_label.items()):
@@ -530,7 +530,7 @@ def _evaluate(labels_path: Path, jsonl_path: Path, cfg) -> dict:
     n_outliers = int(sum(1 for c in cluster_pred if c == -1))
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "config": {
             "min_cluster_size": cfg.session.cluster_min_cluster_size,
             "min_samples":      cfg.session.cluster_min_samples,
@@ -638,8 +638,8 @@ def _compare_to_baseline(report: dict, baseline_path: Path) -> tuple[list[dict],
 
 def _render_gate(rows: list[dict], ok: bool) -> str:
     out = ["", "=" * 72, "Regression gate vs baseline", "=" * 72,
-           f"  {'metric':14} {'baseline':>10} {'current':>10} "
-           f"{'tolerance':>10} {'delta':>10}  status"]
+           (f"  {'metric':14} {'baseline':>10} {'current':>10} "
+            f"{'tolerance':>10} {'delta':>10}  status")]
     for r in rows:
         cur = "—" if r["current"] is None else f"{r['current']:.4f}"
         dlt = "—" if r["delta"]   is None else f"{r['delta']:+.4f}"
@@ -682,7 +682,7 @@ def main() -> int:
 
     if not args.no_json:
         args.output_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         out_path = args.output_dir / f"clustering-{ts}.json"
         out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(f"\nwrote {out_path}")

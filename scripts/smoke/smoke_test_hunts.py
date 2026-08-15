@@ -37,12 +37,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from enrich.findings.hunts import (  # noqa: E402
-    HUNT_ID_RE, _filter_to_es_clause, _run_one_hunt, _validate_filter,
-    delete_hunt, enabled_hunts, load_hunts, preview_hunt, run_hunts,
-    set_hunt_enabled, validate_hunt_doc, write_hunt,
+from enrich.findings.hunts import (
+    HUNT_ID_RE,
+    _filter_to_es_clause,
+    _run_one_hunt,
+    _validate_filter,
+    delete_hunt,
+    enabled_hunts,
+    load_hunts,
+    preview_hunt,
+    run_hunts,
+    set_hunt_enabled,
+    validate_hunt_doc,
+    write_hunt,
 )
-
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -387,7 +395,7 @@ with tempfile.TemporaryDirectory() as td:
     check("reloads as enabled", load_hunts(td)[0]["enabled"] is True)
     # The whole point of the surgical rewrite: only `enabled` moves.
     diff = [(a, b) for a, b in zip(original.splitlines(),
-                                   after_on.splitlines()) if a != b]
+                                   after_on.splitlines(), strict=False) if a != b]
     check("exactly one line changed", len(diff) == 1, repr(diff))
     check("the changed line is `enabled`",
           diff and diff[0][1].startswith("enabled: true"), repr(diff))
@@ -727,7 +735,7 @@ expect_raises("validate_hunt_doc rejects an empty filter list",
 
 # Create: round-trips through the loader, disabled, seed-shaped.
 with tempfile.TemporaryDirectory() as td:
-    written = write_hunt(td, _doc(**{"_source_path": "/etc/passwd"}))
+    written = write_hunt(td, _doc(_source_path="/etc/passwd"))
     check("write_hunt targets <hunts_dir>/<id>.yaml",
           Path(written) == Path(td).resolve() / "new-hunt.yaml", written)
     body = Path(written).read_text()
@@ -906,8 +914,10 @@ sys.path.insert(0, str(REPO / "console" / "src"))
 
 try:
     import asyncio
+
     import httpx
-    from console import server as console_server  # noqa: E402
+
+    from console import server as console_server
 except ImportError as exc:
     print(f"  SKIP  console routes — {exc} "
           "(fastapi/console not installed in this venv)")

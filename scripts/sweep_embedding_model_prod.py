@@ -36,27 +36,27 @@ import json
 import logging
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from enrich.config import load_config, load_secrets
-from enrich.es_client import make_client
-from enrich.sources.cowrie.commands import _build_embed_text
+from eval_clustering import _load_labels  # type: ignore
 
 # Reuse the prod-scale data plumbing from E8.2 — same rollup iteration,
 # same enrichment mget, same pool + cluster + score pipeline.
 from sweep_embed_input_order import (  # type: ignore
-    _pull_sessions,
-    _pull_command_enrichments,
-    _pool_sessions,
     _cluster_at_production_scale,
+    _pool_sessions,
+    _pull_command_enrichments,
+    _pull_sessions,
     _score_against_labels,
 )
-from eval_clustering import _load_labels  # type: ignore
+
+from enrich.config import load_config, load_secrets
+from enrich.es_client import make_client
+from enrich.sources.cowrie.commands import _build_embed_text
 
 log = logging.getLogger(__name__)
 
@@ -136,7 +136,7 @@ def _encode_all_commands(
         normalize_embeddings=True,
     )
     log.info("  encoded %d commands in %.1fs", len(texts), time.time() - t0)
-    return {k: list(map(float, v)) for k, v in zip(keys, vectors)}
+    return {k: list(map(float, v)) for k, v in zip(keys, vectors, strict=False)}
 
 
 _METRIC_ORDER = (
@@ -159,7 +159,7 @@ def _render_markdown(
                f"full production corpus (~{rollups} rollups), scored on the "
                "108-session labeled subset.")
     out.append("")
-    headers = ["model"] + list(_METRIC_ORDER) + ["n_clusters_total", "n_outliers_total"]
+    headers = ["model", *list(_METRIC_ORDER), "n_clusters_total", "n_outliers_total"]
     out.append("| " + " | ".join(headers) + " |")
     out.append("|" + "|".join(["---"] * len(headers)) + "|")
     # Baseline row
@@ -230,7 +230,7 @@ def main() -> int:
     if not sid_to_label:
         raise SystemExit(f"No labels found in {args.labels} or {args.labels_v2}")
 
-    started_at = datetime.now(timezone.utc).isoformat()
+    started_at = datetime.now(UTC).isoformat()
     log.info("pulling rollups from %s", sessions_idx)
     sessions = _pull_sessions(es, sessions_idx, scfg.page_size, sid_to_label, args.limit_rollups)
     log.info("pulled %d rollups", len(sessions))
@@ -264,7 +264,7 @@ def main() -> int:
         baseline_completeness = float("nan")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     md_path = args.output_dir / f"embed-model-prod-scale-{ts}.md"
     json_path = args.output_dir / f"embed-model-prod-scale-{ts}.json"
     md = _render_markdown(

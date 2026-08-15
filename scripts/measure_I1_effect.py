@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -62,7 +62,7 @@ def main() -> int:
     fail_pop = _count(es, idx, {"range": {_CMD_FAIL: {"gt": 0}}})
 
     out = ["# I1.4 — effect measurement: promoted Cowrie fields", ""]
-    out.append(f"_Captured {datetime.now(timezone.utc).isoformat()}_ · index `{idx}`")
+    out.append(f"_Captured {datetime.now(UTC).isoformat()}_ · index `{idx}`")
     out.append("")
     out.append(f"- total rollup sessions: **{total}**")
     out.append(f"- command-bearing (command_count > 0): **{cmd_bearing}**")
@@ -78,7 +78,7 @@ def main() -> int:
         md = "\n".join(out)
         print(md)
         args.output_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         p = args.output_dir / f"I1-effect-{ts}.md"
         p.write_text(md, encoding="utf-8")
         print(f"\nwrote {p}")
@@ -159,7 +159,7 @@ def main() -> int:
     md = "\n".join(out)
     print(md)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     p = args.output_dir / f"I1-effect-{ts}.md"
     p.write_text(md, encoding="utf-8")
     print(f"\nwrote {p}")

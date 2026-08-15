@@ -29,7 +29,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from enrich.sources.cowrie.sessions import _session_cluster_query, iter_session_docs_with_text
+from enrich.sources.cowrie.sessions import (
+    _session_cluster_query,
+    iter_session_docs_with_text,
+)
 
 EMB_FIELD = "dshield.cowrie.enrichment.session.embedding"
 
@@ -134,7 +137,7 @@ class _RecordingES:
     def __init__(self) -> None:
         self.body = None
 
-    def search(self, index, **body):  # noqa: ANN001
+    def search(self, index, **body):
         self.body = body
         return {"hits": {"hits": []}}
 

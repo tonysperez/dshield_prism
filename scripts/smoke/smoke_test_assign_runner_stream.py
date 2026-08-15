@@ -20,11 +20,11 @@ except ImportError:
     print("SKIP: numpy not installed ([cluster] extra); streaming test needs it")
     sys.exit(0)
 
-from enrich.sources.cowrie.assign_runner import (  # noqa: E402
+from enrich.sources.cowrie.assign_runner import (
     _iter_scan,
+    _sb,
     _scan,
     _scan_window_embeddings,
-    _sb,
 )
 
 PASSED: list[str] = []
@@ -58,7 +58,7 @@ class MockES:
         self._hits = hits
         self.searches = 0
 
-    def search(self, index, **body):  # noqa: A002 - mirrors es client signature
+    def search(self, index, **body):
         self.searches += 1
         size = body["size"]
         after = body.get("search_after")

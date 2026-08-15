@@ -28,8 +28,7 @@ import re
 import time
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from elasticsearch import Elasticsearch
 
@@ -59,7 +58,7 @@ _FILENAME_PAT_CACHE: dict[str, re.Pattern] = {}
 
 def _crossref_id(sha256: str, ip: str) -> str:
     """Content-addressed id stable across re-mines."""
-    digest = hashlib.sha256(f"{sha256}:{ip}".encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256(f"{sha256}:{ip}".encode()).hexdigest()[:16]
     return f"fcx-{digest}"
 
 
@@ -89,7 +88,7 @@ def _filename_pat(basename: str) -> re.Pattern:
 
 def _iter_session_file_events(
     es: Elasticsearch, sessions_idx: str,
-) -> "list[tuple[str, str, str, list[dict], list[str]]]":
+) -> list[tuple[str, str, str, list[dict], list[str]]]:
     """Scroll the session rollup yielding tuples of
     `(session_id, source_ip, event_start, file_events, command_set)`
     for every session that touched at least one file.
@@ -146,8 +145,8 @@ def _resolve_first_executed(
     first_seen_ts: str,
     filenames: set[str],
     first_seen_session: str,
-    first_seen_attr: Optional[str],
-) -> Optional[dict]:
+    first_seen_attr: str | None,
+) -> dict | None:
     """Find the earliest session by `ip` (at or after `first_seen_ts`)
     where any command's `process.command_line` contains one of
     `filenames` as a whole-token match.
@@ -261,7 +260,7 @@ def _same_session_first_executed(
     *,
     ip: str, session_id: str, ts: str,
     filenames: set[str],
-) -> Optional[dict]:
+) -> dict | None:
     """Fallback when the same-session drop+exec is the only attribution
     available — read the command's line out of the commands enrichment
     index so the surface can render it. Used when filename-specificity
@@ -277,7 +276,7 @@ def _same_session_first_executed(
 def _build_doc(
     sha256: str, ip: str,
     timeline: list[dict],
-    first_executed: Optional[dict],
+    first_executed: dict | None,
     run_id: str,
     now_iso: str,
 ) -> dict:
@@ -301,7 +300,7 @@ def _build_doc(
 
     cross_session = False
     n_sessions_executed = 0
-    fexec_block: Optional[dict] = None
+    fexec_block: dict | None = None
     if first_executed:
         fexec_block = {
             "session_id":   first_executed["session_id"],
@@ -380,7 +379,7 @@ def run_mine_file_crossref(
 
     init_index(es, _MAPPING, out_idx)
     run_id = str(uuid.uuid4())
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     pairs_written = 0
     cross_session_count = 0
     actions: list[dict] = []
@@ -422,13 +421,13 @@ def run_mine_file_crossref(
         pairs_written += 1
 
         if not dry_run and len(actions) >= BATCH:
-            ok, errs = bulk_write(es, out_idx, actions)
+            _ok, errs = bulk_write(es, out_idx, actions)
             if errs:
                 log.warning("[crossref] bulk errors (%d): %s", len(errs), errs[:2])
             actions = []
 
     if not dry_run and actions:
-        ok, errs = bulk_write(es, out_idx, actions)
+        _ok, errs = bulk_write(es, out_idx, actions)
         if errs:
             log.warning("[crossref] bulk errors (%d): %s", len(errs), errs[:2])
 

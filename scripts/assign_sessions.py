@@ -56,10 +56,10 @@ def main() -> int:
     if args.allow_unclassified:
         print("WARNING: --allow-unclassified set; assigning/writing WITHOUT the public-only "
               "filter (operator-authorised).", file=sys.stderr)
-    window = list(cls) + [_EMB_EXISTS]
+    window = [*list(cls), _EMB_EXISTS]
     if args.window_days > 0:
         window.append({"range": {"@timestamp": {"gte": f"now-{args.window_days}d"}}})
-    anchor_sample = list(cls) + [_EMB_EXISTS, _PB_EXISTS]
+    anchor_sample = [*list(cls), _EMB_EXISTS, _PB_EXISTS]
 
     authoritative = bool(getattr(cfg.session, "assignment_authoritative", False))
     mode = "AUTHORITATIVE (writes playbook_id)" if authoritative else "shadow-only"

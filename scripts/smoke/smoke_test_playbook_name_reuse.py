@@ -27,7 +27,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from enrich.sources.cowrie.sessions import _should_reuse_playbook_name
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

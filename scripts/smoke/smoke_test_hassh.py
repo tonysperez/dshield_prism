@@ -18,10 +18,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-import numpy as np  # noqa: E402
+import numpy as np
 
-from enrich.sources.cowrie.sessions import _compute_hassh  # noqa: E402
-from enrich.sources.cowrie.ips import _build_hassh_block, _hash_credential_bin  # noqa: E402
+from enrich.sources.cowrie.ips import (
+    _build_hassh_block,
+    _hash_credential_bin,
+)
+from enrich.sources.cowrie.sessions import _compute_hassh
 
 # A real cowrie-captured client algorithm string + the `hassh` md5 cowrie
 # emitted for it (verified against the live corpus). Proves _compute_hassh
@@ -64,7 +67,7 @@ def main() -> int:
     # 1. _compute_hassh reproduces cowrie's md5.
     check("compute_hassh matches cowrie", _compute_hassh(_REAL_ALGOS), _REAL_HASSH)
     check("compute_hassh is md5", _compute_hassh("a;b;c;d"),
-          hashlib.md5(b"a;b;c;d").hexdigest())
+          hashlib.md5(b"a;b;c;d", usedforsecurity=False).hexdigest())
 
     W, K = 0.05, 8
     # Two fake HASSH md5s chosen to land in DIFFERENT bins under K (feature

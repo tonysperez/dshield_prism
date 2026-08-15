@@ -14,27 +14,34 @@ import math
 import re
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Iterator, Optional
+from collections.abc import Iterator
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import numpy as np
 
-from pydantic import ValidationError
-from elasticsearch import Elasticsearch
+import contextlib
 
+from elasticsearch import Elasticsearch
+from pydantic import ValidationError
+
+from ... import triage as triage_mod
 from ...cache import StateDB
 from ...classification import aggregate as _aggregate_classification
 from ...classification import is_releasable, releasable_filter
 from ...command_shape import compute_shape_hash, extract_iocs_regex
 from ...config import (
-    AppConfig, Secrets, CommandClusterConfig,
-    compute_embed_config_hash, compute_llm_config_hash, load_prompt,
+    AppConfig,
+    CommandClusterConfig,
+    Secrets,
+    compute_embed_config_hash,
+    compute_llm_config_hash,
+    load_prompt,
 )
 from ...es_client import bulk_write, make_client
 from ...llm import make_llm_client
-from ...llm.schemas import CommandEnrichment, CloudCommandEnrichment
-from ... import triage as triage_mod
+from ...llm.schemas import CloudCommandEnrichment, CommandEnrichment
 from .predicates import SUBSIGNAL_NAMES, command_subsignals
 
 log = logging.getLogger(__name__)
@@ -55,7 +62,8 @@ def _note_degraded(key: str, msg: str, *args) -> None:
     _DEGRADED_FALLBACKS[key] += 1
     if key not in _DEGRADED_WARNED:
         _DEGRADED_WARNED.add(key)
-        log.warning(msg + " [per-item fallback; further occurrences this run at debug]", *args)
+        once = f"{msg} [per-item fallback; further occurrences this run at debug]"
+        log.warning(once, *args)
     else:
         log.debug(msg, *args)
 
@@ -244,7 +252,7 @@ _CLUSTER_SAMPLE_SIZE = 5
 def iter_command_events(
     es: Elasticsearch,
     index: str,
-    since: Optional[str],
+    since: str | None,
     page_size: int = 1000,
 ) -> Iterator[dict]:
     """Yield Cowrie command.input events ordered by @timestamp asc.
@@ -275,8 +283,7 @@ def iter_command_events(
         hits = resp["hits"]["hits"]
         if not hits:
             return
-        for h in hits:
-            yield h
+        yield from hits
         search_after = hits[-1]["sort"]
 
 
@@ -360,24 +367,24 @@ def hash_command(normalized: str) -> str:
     return hash_command_full(normalized)[:16]
 
 
-def _extract_command(src: dict) -> Optional[str]:
+def _extract_command(src: dict) -> str | None:
     p = src.get("process") or {}
     cmd = p.get("command_line")
     return cmd if isinstance(cmd, str) and cmd else None
 
 
-def _extract_session(src: dict) -> Optional[str]:
+def _extract_session(src: dict) -> str | None:
     c = src.get("cowrie") or {}
     return c.get("session_id")
 
 
-def _extract_ip(src: dict) -> Optional[str]:
+def _extract_ip(src: dict) -> str | None:
     s = src.get("source") or {}
     return s.get("ip")
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _build_indicators(iocs: dict) -> list[dict]:
@@ -410,8 +417,8 @@ def _build_ecs_doc(
     full_hash: str,
     command: str,
     truncated: bool,
-    first_seen: Optional[str],
-    last_seen: Optional[str],
+    first_seen: str | None,
+    last_seen: str | None,
     occurrence_count: int,
     unique_sessions: int,
     unique_source_ips: int,
@@ -424,13 +431,13 @@ def _build_ecs_doc(
     confidence: int,
     indicators: list[dict],
     embedding: list[float],
-    triage_reasons: Optional[list[str]] = None,
+    triage_reasons: list[str] | None = None,
     notes: str = "",
-    local_fallback: Optional[dict] = None,
-    shape: Optional[dict] = None,
-    analyst_artifacts: Optional[list[dict]] = None,
-    classification: Optional[str] = None,
-    predicates: Optional[dict] = None,
+    local_fallback: dict | None = None,
+    shape: dict | None = None,
+    analyst_artifacts: list[dict] | None = None,
+    classification: str | None = None,
+    predicates: dict | None = None,
 ) -> dict:
     enrichment_block = {
         "intent": intent,
@@ -495,7 +502,7 @@ def _build_ecs_doc(
     }
 
 
-def _with_classification(dshield_block: dict, classification: Optional[str]) -> dict:
+def _with_classification(dshield_block: dict, classification: str | None) -> dict:
     """Stamp `dshield.classification` on a fresh command doc when known. Absent
     (None) is left unset so the fail-safe gates treat it as confidential."""
     if classification is not None:
@@ -503,7 +510,7 @@ def _with_classification(dshield_block: dict, classification: Optional[str]) -> 
     return dshield_block
 
 
-def _try_parse(raw: str) -> Optional[CommandEnrichment]:
+def _try_parse(raw: str) -> CommandEnrichment | None:
     try:
         return CommandEnrichment(**json.loads(raw))
     except (json.JSONDecodeError, ValidationError) as e:
@@ -711,9 +718,9 @@ def _format_cooccurring_block(siblings: list[tuple[str, int]]) -> str:
 
 def _build_embed_text(
     command: str,
-    parsed: Optional[CommandEnrichment],
+    parsed: CommandEnrichment | None,
     context_fields: list[str],
-    cooccurring: Optional[list[tuple[str, int]]] = None,
+    cooccurring: list[tuple[str, int]] | None = None,
     embed_cooccurrence: bool = False,
     order: str = "prelude_first",
 ) -> str:
@@ -769,7 +776,7 @@ def _build_embed_text(
     return f"{head}\nCommand: {command}"
 
 
-def _build_local_fallback(parsed: Optional[CommandEnrichment], model: str) -> Optional[dict]:
+def _build_local_fallback(parsed: CommandEnrichment | None, model: str) -> dict | None:
     if parsed is None:
         return {"model": model, "intent": "unknown", "confidence": 1, "description": ""}
     return {
@@ -786,9 +793,9 @@ def cloud_enrich_one(
     command: str,
     triage_reasons: list[str],
     cooccurring_block: str = "(none)",
-) -> tuple[Optional[CloudCommandEnrichment], int, int]:
+) -> tuple[CloudCommandEnrichment | None, int, int]:
     """Returns (parsed_or_None, input_tokens, output_tokens)."""
-    from ...llm.anthropic import parse_cloud_json, _strip_code_fences
+    from ...llm.anthropic import _strip_code_fences, parse_cloud_json
     from ...llm.fencing import SYSTEM_PROMPT, fence, make_nonce
     # Fence attacker-controlled regions (the command + co-occurring siblings);
     # the triage-reason tags are a trusted enum, left unfenced.
@@ -815,7 +822,7 @@ def lookup_canonical_for_shape(
     shape_hash: str,
     min_confidence: int,
     require_known_intent: bool,
-) -> Optional[dict]:
+) -> dict | None:
     """Find the best already-enriched canonical doc for a shape signature.
 
     Returns a compact dict of inheritable fields, or None when no parent
@@ -914,7 +921,7 @@ def enrich_one(
     command: str,
     max_retries: int,
     cooccurring_block: str = "(none)",
-) -> tuple[Optional[CommandEnrichment], str, str]:
+) -> tuple[CommandEnrichment | None, str, str]:
     """Returns (enrichment_or_None, source, model).
 
     Injects a `<<<COMMAND_GROUND_TRUTH>>>` block (ROADMAP #11) listing the
@@ -969,7 +976,7 @@ def enrich_one(
 
 def run_enrich(
     cfg: AppConfig, secrets: Secrets, dry_run: bool = False, no_cloud: bool = False,
-    *, reference_mode: bool = False, budget: Optional[int] = None,
+    *, reference_mode: bool = False, budget: int | None = None,
     full_rescan: bool = False,
 ) -> dict:
     """Main worker entry. Returns stats dict.
@@ -1019,7 +1026,7 @@ def run_enrich(
         embed_config_hash = ""
 
     cloud_enabled = bool(cfg.cloud.enabled and not no_cloud and secrets.anthropic_api_key)
-    cloud_prompt: Optional[str] = None
+    cloud_prompt: str | None = None
     cloud_client = None
     if cloud_enabled:
         if cfg.prompts.command_deep_dive is None:
@@ -1042,10 +1049,8 @@ def run_enrich(
                          triage_mod.budget_remaining_usd(db, cfg.cloud))
             except Exception as e:
                 log.warning("cloud preflight failed (%s); continuing local-only", e)
-                try:
+                with contextlib.suppress(Exception):
                     cloud_client.close()
-                except Exception:
-                    pass
                 cloud_client = None
                 cloud_enabled = False
 
@@ -1102,7 +1107,7 @@ def run_enrich(
         since = db.get_watermark()
         if since is None and cfg.worker.initial_lookback_days is not None:
             from datetime import timedelta
-            since_dt = datetime.now(timezone.utc) - timedelta(days=cfg.worker.initial_lookback_days)
+            since_dt = datetime.now(UTC) - timedelta(days=cfg.worker.initial_lookback_days)
             since = since_dt.isoformat()
         log.info("Watermark: %s", since or "(none, full backfill)")
 
@@ -1149,7 +1154,7 @@ def run_enrich(
             }
             groups[h] = g
         g["count"] += 1
-        g["class_set"].add(((src.get("dshield") or {}).get("classification")))
+        g["class_set"].add((src.get("dshield") or {}).get("classification"))
         sid = _extract_session(src)
         if sid:
             g["sessions"].add(sid)
@@ -1172,7 +1177,7 @@ def run_enrich(
     # for each unique command. Same shape_hash → candidate to inherit
     # enrichment from a canonical sibling instead of running the LLM.
     dedup_cfg = cfg.command_shape_dedup
-    for h, g in groups.items():
+    for g in groups.values():
         g["shape_hash"] = compute_shape_hash(g["command"]) if dedup_cfg.enabled else ""
 
     # Iterate so that for each shape_hash bucket, the highest-count
@@ -1194,9 +1199,8 @@ def run_enrich(
             with_shape[sh].sort(key=lambda h: -groups[h]["count"])
         for h in no_shape:
             yield h
-        for sh, members in with_shape.items():
-            for h in members:
-                yield h
+        for members in with_shape.values():
+            yield from members
 
     # Cached canonical info for shapes seen in this run. Populated either
     # by an ES lookup (cross-corpus parent) or by a just-built in-batch
@@ -1268,7 +1272,7 @@ def run_enrich(
             # inherit intent / description. The per-command-unique parts
             # (regex IOCs, embedding) still run.
             sh = g.get("shape_hash") or ""
-            inherit_parent: Optional[dict] = None
+            inherit_parent: dict | None = None
             if sh and dedup_cfg.enabled:
                 inherit_parent = shape_canonical_cache.get(sh)
                 if inherit_parent is None:
@@ -1409,7 +1413,7 @@ def run_enrich(
 
             triage_reasons: list[str] = []
             notes = ""
-            local_fallback_doc: Optional[dict] = None
+            local_fallback_doc: dict | None = None
             doc_provider = source
             doc_model = model
             final_parsed = parsed
@@ -1436,7 +1440,7 @@ def run_enrich(
                     # consensus, suppress the cloud call. The skip
                     # reason is appended to triage_reasons so the doc
                     # records why we didn't escalate.
-                    intel_skip: Optional[str] = None
+                    intel_skip: str | None = None
                     if intel_lookup is not None:
                         ip_summaries_map = intel_lookup.get_many("ip", list(g["ips"]))
                         ip_summaries = [
@@ -1514,7 +1518,7 @@ def run_enrich(
                 shape_role = "canonical"
             else:
                 shape_role = "standalone"
-            shape_block_canon: Optional[dict] = None
+            shape_block_canon: dict | None = None
             if sh:
                 shape_block_canon = {
                     "hash": sh,
@@ -1692,8 +1696,7 @@ def iter_novel_local_docs(
         hits = resp["hits"]["hits"]
         if not hits:
             return
-        for h in hits:
-            yield h
+        yield from hits
         search_after = hits[-1]["sort"]
 
 
@@ -1731,7 +1734,8 @@ def run_escalate(
         _fetch_total_session_count(es, events_idx) if cooc_cfg.enabled else 0
     )
 
-    from ...llm.anthropic import AnthropicClient, cost_usd as _cost_usd
+    from ...llm.anthropic import AnthropicClient
+    from ...llm.anthropic import cost_usd as _cost_usd
     cloud_client = AnthropicClient(
         api_key=secrets.anthropic_api_key,
         model=cfg.cloud.model,
@@ -2310,8 +2314,8 @@ def iter_docs_for_reenrich(
     es: Elasticsearch,
     index: str,
     page_size: int = 200,
-    role_filter: Optional[str] = None,
-    exclude_role: Optional[str] = None,
+    role_filter: str | None = None,
+    exclude_role: str | None = None,
 ) -> Iterator[dict]:
     """Yield {doc_id, command_line, shape_hash, shape_role} for every
     enriched-commands doc.
@@ -2433,9 +2437,9 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
     # parent's llm_config_hash) so a partial drift — where some shape
     # members are fresh and others aren't — converges in one pass.
     dedup_cfg = cfg.command_shape_dedup
-    shape_parent_cache: dict[str, Optional[dict]] = {}
+    shape_parent_cache: dict[str, dict | None] = {}
 
-    def _maybe_get_fresh_parent(sh: str, exclude_id: str) -> Optional[dict]:
+    def _maybe_get_fresh_parent(sh: str, exclude_id: str) -> dict | None:
         """Lookup helper memoized for the run. Returns the parent only
         when its `llm_config_hash` already matches live (we won't
         inherit from a parent that's itself stale — its values are
@@ -2481,7 +2485,7 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
                 stats["would_reenrich"] += 1
                 continue
 
-            norm, truncated = normalize(doc["command_line"], cfg.worker.command_max_chars)
+            norm, _truncated = normalize(doc["command_line"], cfg.worker.command_max_chars)
             if not norm:
                 stats["skipped_empty_command"] += 1
                 continue
@@ -2677,7 +2681,7 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
     # llm_config_hash already matches live (so the inherited values
     # aren't about to change). Pass-2 runs after pass-1's refresh, so
     # any newly-fresh canonical is fair game.
-    canonical_cache: dict[str, Optional[dict]] = {}
+    canonical_cache: dict[str, dict | None] = {}
 
     actions = []
     with make_llm_client(cfg.llm) as llm:
@@ -2857,7 +2861,7 @@ def _strip_rule_reasons(reasons: list[str]) -> list[str]:
 def _iter_docs_for_retriage(
     es: Elasticsearch,
     commands_index: str,
-    window_days: Optional[int] = None,
+    window_days: int | None = None,
     page_size: int = 1000,
 ) -> Iterator[tuple[str, dict]]:
     """Yield `(doc_id, source_dict)` for every enriched command. Optional
@@ -2907,7 +2911,7 @@ def run_retriage(
     secrets: Secrets,
     *,
     dry_run: bool = False,
-    window_days: Optional[int] = None,
+    window_days: int | None = None,
 ) -> dict:
     """Retroactively re-evaluate `triage_reasons` on every enriched command
     using the *current* rules in `enrich.triage`. No LLM/cloud calls.
@@ -2937,6 +2941,7 @@ def run_retriage(
     the last N days.
     """
     import random
+
     from ...clustering import load_centroids
     from ...llm.schemas import IOCs
 
@@ -2947,7 +2952,7 @@ def run_retriage(
     t0 = time.time()
     log.info(
         "[re-triage] scanning %s (window_days=%s, dry_run=%s)",
-        commands_idx, window_days if window_days else "all", dry_run,
+        commands_idx, window_days or "all", dry_run,
     )
 
     # Load centroids once for the novel_embedding rule. If there are no
@@ -3141,7 +3146,7 @@ def iter_enriched_docs(
         search_after = hits[-1]["sort"]
 
 
-def build_command_scalar_block(scalars_list: list[dict], weight: float) -> "np.ndarray":
+def build_command_scalar_block(scalars_list: list[dict], weight: float) -> np.ndarray:
     """(n, 4) weighted scalar matrix appended to L2-normalized embeddings.
 
     log1p-normalized fields use fixed corpus-scale denominators (ROADMAP #14)

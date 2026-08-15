@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 from ..config import AppConfig
 
@@ -52,7 +51,7 @@ class IntelSummary:
     external_rarity_score: float
     malicious_provider_count: int
     clean_provider_count: int
-    confidence_max: Optional[int]
+    confidence_max: int | None
     tags: tuple[str, ...]
     # Names of every provider that voted `malicious=True` on this
     # artifact. Used by the M3 consensus gate to verify the malicious
@@ -63,7 +62,7 @@ class IntelSummary:
     malicious_providers: frozenset[str] = frozenset()
 
     @classmethod
-    def from_doc(cls, source: dict) -> Optional["IntelSummary"]:
+    def from_doc(cls, source: dict) -> IntelSummary | None:
         """Build an IntelSummary from an intel ES doc body, or None on missing/malformed input."""
         if not isinstance(source, dict):
             return None
@@ -121,12 +120,12 @@ class IntelLookup:
     def __init__(self, es, cfg: AppConfig) -> None:
         self.es = es
         self.cfg = cfg
-        self._cache: dict[tuple[str, str], Optional[IntelSummary]] = {}
-        self._index_exists: dict[str, Optional[bool]] = {}
+        self._cache: dict[tuple[str, str], IntelSummary | None] = {}
+        self._index_exists: dict[str, bool | None] = {}
 
     # --- helpers ------------------------------------------------------------
 
-    def _index_for_kind(self, kind: str) -> Optional[str]:
+    def _index_for_kind(self, kind: str) -> str | None:
         """Resolve the configured ES index name for an artifact kind, or None when unsupported."""
         indexes = self.cfg.intel.indexes
         mapping = {
@@ -150,7 +149,7 @@ class IntelLookup:
 
     # --- multi-kind API -----------------------------------------------------
 
-    def get_one(self, kind: str, value: str) -> Optional[IntelSummary]:
+    def get_one(self, kind: str, value: str) -> IntelSummary | None:
         """Fetch intel for a single (kind, value). Cached. Returns None when absent."""
         if not value:
             return None
@@ -174,14 +173,14 @@ class IntelLookup:
         self._cache[key] = summary
         return summary
 
-    def get_many(self, kind: str, values: list[str]) -> dict[str, Optional[IntelSummary]]:
+    def get_many(self, kind: str, values: list[str]) -> dict[str, IntelSummary | None]:
         """Bulk-fetch intel for many values of one kind. Caches everything.
 
         Uses ES mget in chunks of `_MGET_CHUNK`. Return dict maps
         `value -> Optional[IntelSummary]`. Duplicates dedupe
         transparently.
         """
-        out: dict[str, Optional[IntelSummary]] = {}
+        out: dict[str, IntelSummary | None] = {}
         to_fetch: list[str] = []
         for v in values:
             if not v:
@@ -225,11 +224,11 @@ class IntelLookup:
 
     # --- IP-only convenience (existing callers) -----------------------------
 
-    def get_one_ip(self, ip: str) -> Optional[IntelSummary]:
+    def get_one_ip(self, ip: str) -> IntelSummary | None:
         """Backward-compat shortcut for the IP path. Equivalent to `get_one('ip', ip)`."""
         return self.get_one("ip", ip)
 
-    def get_many_ip(self, ips: list[str]) -> dict[str, Optional[IntelSummary]]:
+    def get_many_ip(self, ips: list[str]) -> dict[str, IntelSummary | None]:
         """Backward-compat shortcut for bulk IP fetches."""
         return self.get_many("ip", ips)
 

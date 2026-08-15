@@ -35,7 +35,6 @@ import threading
 import time
 from datetime import timedelta
 from pathlib import Path
-from typing import Optional
 
 import httpx
 
@@ -96,7 +95,7 @@ def parse_urlhaus_csv(text: str) -> dict[str, dict[str, str]]:
 
     # Step 1: locate the header — the LAST `#`-prefixed line whose
     # stripped form parses as a clean identifier-only CSV header.
-    header: Optional[list[str]] = None
+    header: list[str] | None = None
     data_start_idx = len(lines)
     for i, raw in enumerate(lines):
         stripped = raw.strip()
@@ -167,8 +166,8 @@ _URLHAUS_EMPTY_SENTINELS: frozenset[str] = frozenset({"", "none", "null"})
 
 
 def classify_urlhaus(
-    in_urlhaus: bool, threat: Optional[str], tags: tuple[str, ...],
-) -> tuple[Optional[bool], Optional[str], Optional[int], tuple[str, ...], bool, bool]:
+    in_urlhaus: bool, threat: str | None, tags: tuple[str, ...],
+) -> tuple[bool | None, str | None, int | None, tuple[str, ...], bool, bool]:
     """Pure-function: URLhaus per-URL hit data → DerivedSignals fields.
 
     Returns `(malicious, label, confidence, tags, authoritative_clean,
@@ -206,7 +205,7 @@ class URLhausProvider(Provider):
     ttl = timedelta(days=1)
     rate_limit = RateLimit(capacity=1000, refill_per_second=1000.0, daily_budget=None)
 
-    def __init__(self, provider_cfg, auth_key: Optional[str] = None) -> None:
+    def __init__(self, provider_cfg, auth_key: str | None = None) -> None:
         super().__init__(provider_cfg)
         self._rows: dict[str, dict[str, str]] = {}
         self._loaded_at: float = 0.0
@@ -224,7 +223,7 @@ class URLhausProvider(Provider):
             or (time.time() - self._loaded_at) >= self.cfg.refresh_minutes * 60
         )
 
-    def _load_from_cache_file(self) -> Optional[dict[str, dict[str, str]]]:
+    def _load_from_cache_file(self) -> dict[str, dict[str, str]] | None:
         p = Path(self.cfg.cache_file)
         if not p.exists():
             return None

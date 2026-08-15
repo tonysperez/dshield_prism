@@ -23,8 +23,7 @@ the thin ES wiring around them and the assignment core (`assignment.assign_batch
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from ...es_client import bulk_write
 from .assignment import ASSIGNED, NOVEL, compute_assignment_window
@@ -51,7 +50,7 @@ def _sb(src: dict) -> dict:
 # Pure write-action cores (unit-tested)
 # ---------------------------------------------------------------------------
 def assignment_action(doc_id: str, a, now: str, *, authoritative: bool,
-                      playbook_name: Optional[str] = None) -> dict:
+                      playbook_name: str | None = None) -> dict:
     """ES bulk partial-update for one session. Always writes the `cluster.assignment_*`
     shadow fields. When `authoritative`, ALSO sets the real `playbook_id`/`playbook_name`
     (assigned) or clears them (novel), and bumps `playbook_named_at`."""
@@ -81,7 +80,7 @@ def build_actions(ids: list[str], assignments: list, name_of: dict, now: str, *,
     """Map (doc_id, assignment) → bulk actions, resolving each assigned anchor's name."""
     return [assignment_action(i, a, now, authoritative=authoritative,
                               playbook_name=name_of.get(a.playbook_id))
-            for i, a in zip(ids, assignments)]
+            for i, a in zip(ids, assignments, strict=False)]
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +180,7 @@ def _resolve_names(es, idx, filt, playbook_ids):
         if pb is None:
             continue
         r = es.search(index=idx, size=1, _source=[_PBNAME_FIELD],
-                      query={"bool": {"filter": filt + [{"term": {_PB_FIELD: pb}}]}})
+                      query={"bool": {"filter": [*filt, {"term": {_PB_FIELD: pb}}]}})
         hits = r["hits"]["hits"]
         names[pb] = _sb(hits[0]["_source"]).get("playbook_name") if hits else None
     return names
@@ -224,7 +223,7 @@ def run_assignment(es, cfg, *, window_filter: list[dict], anchor_sample_filter: 
     # per-anchor sample → anchor TF-IDF centroids; one fit over (anchors + window)
     anc_sets, anc_pb = [], []
     for pb in anchor_ids:
-        f = anchor_sample_filter + [{"term": {_PB_FIELD: pb}}]
+        f = [*anchor_sample_filter, {"term": {_PB_FIELD: pb}}]
         for h in _scan(es, idx, f, [_CMDSET_FIELD], page=min(per_anchor, 2000), limit=per_anchor):
             anc_sets.append(list(_sb(h["_source"]).get("command_set") or []))
             anc_pb.append(pb)
@@ -247,7 +246,7 @@ def run_assignment(es, cfg, *, window_filter: list[dict], anchor_sample_filter: 
         ),
     )
     res = result.assignments
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     name_of = (_resolve_names(es, idx, anchor_sample_filter,
                               {a.playbook_id for a in res if a.status == ASSIGNED})
                if authoritative else {})

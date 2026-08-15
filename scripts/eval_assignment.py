@@ -39,9 +39,10 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from enrich.sources.cowrie.assignment import assign_batch
 from eval_jsonl import open_jsonl
 from validate_eval_labels import KNOWN_PLAYBOOK_LABELS
+
+from enrich.sources.cowrie.assignment import assign_batch
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +131,7 @@ def load_records_detailed(labels_path: Path, jsonl_path: Path) -> EvidenceLoad:
     parse_errors = 0
     with open_jsonl(jsonl_path) as fh:
         lines = fh.read().splitlines()
-    for line_number, line in enumerate(lines, 1):
+    for _line_number, line in enumerate(lines, 1):
         if not line.strip():
             continue
         try:
@@ -206,7 +207,7 @@ def load_records_detailed(labels_path: Path, jsonl_path: Path) -> EvidenceLoad:
         }
         if len(embed_config_hashes) > 1:
             reasons["mixed_record_embed_config_metadata"] += 1
-        embed_config_hash = sorted(embed_config_hashes)[0] if embed_config_hashes else None
+        embed_config_hash = min(embed_config_hashes) if embed_config_hashes else None
         capture_timestamp = (rec.get("rollup_doc") or {}).get("@timestamp")
         for reason, value in (
             ("missing_rubric_metadata", rubric_version),
@@ -218,7 +219,7 @@ def load_records_detailed(labels_path: Path, jsonl_path: Path) -> EvidenceLoad:
                 reasons[reason] += 1
         if capture_timestamp:
             try:
-                datetime.fromisoformat(str(capture_timestamp).replace("Z", "+00:00"))
+                datetime.fromisoformat(str(capture_timestamp))
             except ValueError:
                 reasons["invalid_capture_timestamp"] += 1
         records.append(EvalRecord(
@@ -391,13 +392,13 @@ def classification_metrics(test_embs, test_labels, proto_ids, proto_mat,
     only what no prototype could have fixed."""
     res = assign_batch(test_embs, proto_mat, proto_ids, tau=0.0, confident_tau=0.0)
     pred = [r.playbook_id for r in res]
-    correct = sum(1 for p, t in zip(pred, test_labels) if p == t)
+    correct = sum(1 for p, t in zip(pred, test_labels, strict=False) if p == t)
     # macro precision/recall over labels present in the test set
     per: dict[str, dict] = {}
     for lb in sorted(set(test_labels)):
-        tp = sum(1 for p, t in zip(pred, test_labels) if p == lb and t == lb)
-        fp = sum(1 for p, t in zip(pred, test_labels) if p == lb and t != lb)
-        fn = sum(1 for p, t in zip(pred, test_labels) if p != lb and t == lb)
+        tp = sum(1 for p, t in zip(pred, test_labels, strict=False) if p == lb and t == lb)
+        fp = sum(1 for p, t in zip(pred, test_labels, strict=False) if p == lb and t != lb)
+        fn = sum(1 for p, t in zip(pred, test_labels, strict=False) if p != lb and t == lb)
         prec = tp / (tp + fp) if (tp + fp) else 0.0
         rec = tp / (tp + fn) if (tp + fn) else 0.0
         f1 = 2 * prec * rec / (prec + rec) if (prec + rec) else 0.0
@@ -439,7 +440,7 @@ def novelty_metrics(embs: np.ndarray, labels: list[str], min_label_size: int = 4
         if len(held_idx) < min_label_size:
             continue
         keep_mask = np.array([labels[i] != lb for i in range(len(labels))])
-        proto_ids, proto_mat = build_prototypes(embs[keep_mask], [labels[i] for i in range(len(labels)) if keep_mask[i]])
+        _proto_ids, proto_mat = build_prototypes(embs[keep_mask], [labels[i] for i in range(len(labels)) if keep_mask[i]])
         held = embs[held_idx]
         held_cos = (held @ proto_mat.T).max(axis=1)            # nearest surviving (should be low)
         indist = embs[keep_mask]

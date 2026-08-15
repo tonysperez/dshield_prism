@@ -14,9 +14,10 @@ import hashlib
 import logging
 import time
 from collections import Counter, defaultdict
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Iterator, Optional
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import numpy as np
@@ -27,7 +28,13 @@ from ...cache import StateDB
 from ...classification import aggregate as _aggregate_classification
 from ...config import AppConfig, IPConfig, Secrets
 from ...data.hassh_known import lookup as _lookup_hassh_known
-from ...es_client import bulk_write, deep_get, fetch_source_subset, init_index, make_client
+from ...es_client import (
+    bulk_write,
+    deep_get,
+    fetch_source_subset,
+    init_index,
+    make_client,
+)
 from .sessions import _is_protocol_noise_credential, _mean_pool, _summarize_intents
 
 log = logging.getLogger(__name__)
@@ -88,6 +95,7 @@ _SCALAR_DENOM_UNIQUE_PLAYBOOKS = 50.0
 # Phase K Tier 1 — fixed intent-vector ordering (one cell per honeypot-native
 # intent enum value). Sorted for a stable column layout across runs.
 from ...llm.schemas import INTENTS as _INTENTS  # noqa: E402
+
 _TIER1_INTENT_ORDER = sorted(_INTENTS)
 # Diversity-block denominator = the intent enum cardinality, derived from
 # INTENTS so it can never drift from the enum (was a hardcoded 16.0; the
@@ -95,14 +103,14 @@ _TIER1_INTENT_ORDER = sorted(_INTENTS)
 _SCALAR_DENOM_UNIQUE_INTENTS = float(len(_INTENTS))
 
 
-def _active_days(first_seen: Optional[str], last_seen: Optional[str]) -> float:
+def _active_days(first_seen: str | None, last_seen: str | None) -> float:
     """`(last_seen − first_seen)` in days from two ISO timestamps; 0.0 when
     either is missing/unparseable or the span is negative. Phase K Tier 1."""
     if not first_seen or not last_seen:
         return 0.0
     try:
-        f = datetime.fromisoformat(str(first_seen).replace("Z", "+00:00"))
-        l = datetime.fromisoformat(str(last_seen).replace("Z", "+00:00"))
+        f = datetime.fromisoformat(str(first_seen))
+        l = datetime.fromisoformat(str(last_seen))
     except (ValueError, AttributeError):
         return 0.0
     return max(0.0, (l - f).total_seconds() / 86400.0)
@@ -121,7 +129,7 @@ _MAX_CREDENTIALS_PER_IP = 200
 def _iter_updated_session_ips(
     es: Elasticsearch,
     sessions_index: str,
-    since: Optional[str],
+    since: str | None,
     page_size: int = 1000,
 ) -> Iterator[str]:
     """Yield distinct source.ip values from session docs updated after `since`.
@@ -228,8 +236,8 @@ def _build_ip_doc(
     intents: list[str] = []
     novelty_scores: list[float] = []
     durations_s: list[float] = []
-    first_seen: Optional[str] = None
-    last_seen: Optional[str] = None
+    first_seen: str | None = None
+    last_seen: str | None = None
     geo_info: dict = {}
     as_info: dict = {}
     credentials_set: set[str] = set()
@@ -266,12 +274,10 @@ def _build_ip_doc(
 
         start = ev.get("start")
         end = ev.get("end") or start
-        if start:
-            if not first_seen or start < first_seen:
-                first_seen = start
-        if end:
-            if not last_seen or end > last_seen:
-                last_seen = end
+        if start and (not first_seen or start < first_seen):
+            first_seen = start
+        if end and (not last_seen or end > last_seen):
+            last_seen = end
 
         if not geo_info and (s.get("source") or {}).get("geo"):
             geo_info = s["source"]["geo"]
@@ -324,7 +330,7 @@ def _build_ip_doc(
     max_novelty = round(max(novelty_scores), 4) if novelty_scores else None
     mean_duration_s = round(sum(durations_s) / len(durations_s), 2) if durations_s else None
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
     ip_block: dict = {
         "total_sessions": total_sessions,
@@ -406,7 +412,7 @@ def _build_ip_doc(
     }
 
 
-def _preserve_ip_cluster(doc: dict, old_source: Optional[dict]) -> bool:
+def _preserve_ip_cluster(doc: dict, old_source: dict | None) -> bool:
     """Graft the cross-writer `ip.cluster` sub-block from a prior rollup doc
     (`old_source`, as returned by `fetch_source_subset`) onto a freshly built
     `doc`, in place. The block is written by the backward `cluster ips` step,
@@ -448,7 +454,7 @@ def run_rollup(
     affected_ips = list(_iter_updated_session_ips(es, sessions_idx, since, cfg.ip.page_size))
     log.info("Found %d IPs with updated sessions", len(affected_ips))
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
     if not affected_ips:
         db.close()
@@ -473,7 +479,7 @@ def run_rollup(
     actions: list[dict] = []
     workers = max(1, int(getattr(cfg.ip, "rollup_workers", 1)))
 
-    def _build_one(ip: str) -> Optional[tuple[dict, bool]]:
+    def _build_one(ip: str) -> tuple[dict, bool] | None:
         """Per-IP fetch + build — the parallelisable, read-only part (the IP
         rollup's dominant cost is this one-ES-query-per-IP fetch). Returns
         (index_action, cluster_preserved) or None when the IP has no sessions.
@@ -486,7 +492,7 @@ def run_rollup(
         preserved_flag = _preserve_ip_cluster(doc, preserved.get(ip))
         return {"_op_type": "index", "_id": ip, "_source": doc}, preserved_flag
 
-    def _consume(result: Optional[tuple[dict, bool]]) -> None:
+    def _consume(result: tuple[dict, bool] | None) -> None:
         """Single-threaded: tally stats + flush bulk writes at batch_size."""
         if result is None:
             stats["ips_no_sessions"] += 1
@@ -719,7 +725,7 @@ def _build_attribution_block(
     weight: float,
     cred_hash_dim: int,
     include_provenance: bool = True,
-) -> "np.ndarray":
+) -> np.ndarray:
     """Attribution scalar sub-block: (country one-hot + ASN bucket +) cred hash.
 
     Each feature group is pre-normalised to L2 ≤ 1, then scaled by `weight`.
@@ -743,7 +749,7 @@ def _build_attribution_block(
     if n == 0:
         return np.zeros((0, 0), dtype=np.float32)
 
-    blocks: list["np.ndarray"] = []
+    blocks: list[np.ndarray] = []
 
     if include_provenance:
         # --- country one-hot -----------------------------------------------
@@ -786,7 +792,7 @@ def _build_attribution_block(
 
 def _build_hassh_block(
     scalars_list: list[dict], weight: float, hassh_hash_dim: int,
-) -> "np.ndarray":
+) -> np.ndarray:
     """SSH-client-fingerprint (HASSH) scalar sub-block.
 
     Feature-hashes the IP's HASSH distribution into `hassh_hash_dim` bins,
@@ -819,7 +825,7 @@ def _build_hassh_block(
 
 def _build_intel_block(
     scalars_list: list[dict], weight: float,
-) -> "np.ndarray":
+) -> np.ndarray:
     """External-intel scalar sub-block: `external_rarity_score` + `consensus_malicious`.
 
     Two-column block, each scaled by `weight`. Pulls from the per-IP
@@ -859,7 +865,7 @@ def _build_intel_block(
 
 def _build_behavior_block(
     scalars_list: list[dict], weight: float,
-) -> "np.ndarray":
+) -> np.ndarray:
     """Behavior scalar sub-block: total_sessions, login_success_rate,
     mean_novelty_score, mean_session_duration_s.
 
@@ -884,7 +890,7 @@ def _build_behavior_block(
     return block
 
 
-def _build_tier1_block(scalars_list: list[dict], weight: float) -> "np.ndarray":
+def _build_tier1_block(scalars_list: list[dict], weight: float) -> np.ndarray:
     """Phase K Tier 1 — per-IP *behaviour* sub-block, sourced entirely from
     existing IP-rollup fields (no new ingestion, no LLM).
 
@@ -987,7 +993,7 @@ def _pull_session_cluster_bags(
     field_ip = "source.ip"
     field_cl = "dshield.cowrie.enrichment.session.cluster.id"
     bags: dict[str, dict[str, int]] = {}
-    after: Optional[dict] = None
+    after: dict | None = None
     while True:
         comp: dict = {"size": page_size, "sources": [{"ip": {"terms": {"field": field_ip}}}]}
         if after:
@@ -1015,7 +1021,7 @@ def _pull_session_cluster_bags(
 def _build_tier2_block(
     scalars_list: list[dict], weight: float, *,
     bags: dict[str, dict[str, int]], dim: int,
-) -> "np.ndarray":
+) -> np.ndarray:
     """Phase K Tier 2 — IP-as-bag-of-session-clusters sub-block.
 
     TF-IDF over each IP's session-cluster-id bag (looked up by the
@@ -1055,7 +1061,7 @@ def _build_tier2_block(
     return (reduced / norms).astype(np.float32) * weight
 
 
-def build_ip_scalar_block(scalars_list: list[dict], weight: float) -> "np.ndarray":
+def build_ip_scalar_block(scalars_list: list[dict], weight: float) -> np.ndarray:
     """Backward-compat shim: behavior-only block at the given weight.
 
     The full IP scalar block (behavior + attribution) is built by
@@ -1077,7 +1083,7 @@ def make_full_scalar_builder(
     include_provenance: bool = True,
     include_tier1: bool = False,
     include_tier2: bool = False,
-    session_cluster_bags: Optional[dict] = None,
+    session_cluster_bags: dict | None = None,
     tier2_dim: int = 24,
 ):
     """Return a builder closure that produces the combined IP scalar
@@ -1102,7 +1108,7 @@ def make_full_scalar_builder(
     """
     import numpy as np
 
-    def _builder(scalars_list: list[dict], behavior_weight: float) -> "np.ndarray":
+    def _builder(scalars_list: list[dict], behavior_weight: float) -> np.ndarray:
         behavior = _build_behavior_block(scalars_list, behavior_weight)
         attribution = _build_attribution_block(
             scalars_list,
@@ -1510,6 +1516,7 @@ def run_assign(cfg: AppConfig, secrets: Secrets, *, dry_run: bool = False) -> di
     records ``skipped="no_centroids"``.
     """
     import numpy as np
+
     from ...clustering import load_run_centroids
 
     es = make_client(cfg.elasticsearch, secrets)
@@ -1531,7 +1538,7 @@ def run_assign(cfg: AppConfig, secrets: Secrets, *, dry_run: bool = False) -> di
     cnorm = np.linalg.norm(cmat, axis=1, keepdims=True)
     cnorm[cnorm == 0.0] = 1.0
     cmat_unit = cmat / cnorm
-    now_str = datetime.now(timezone.utc).isoformat()
+    now_str = datetime.now(UTC).isoformat()
 
     actions: list[dict] = []
     for doc_id, emb in _iter_unassigned_embedded_ips(es, ips_idx, cfg.ip.page_size):

@@ -35,8 +35,8 @@ import re
 import time
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
-from typing import Iterable, Optional
+from collections.abc import Iterable
+from datetime import UTC, datetime
 
 from elasticsearch import Elasticsearch
 from elasticsearch.helpers import bulk
@@ -125,7 +125,7 @@ _HEX_RE = re.compile(rf"\b{_HEX_LEN}\b")
 # ===========================================================================
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _campaign_id(kind: str, fingerprint: str) -> str:
@@ -140,7 +140,7 @@ def _campaign_id(kind: str, fingerprint: str) -> str:
     return f"cmp-{kind[:3]}-{h}"
 
 
-def _build_window_query(field: str, window_days: Optional[int]) -> dict:
+def _build_window_query(field: str, window_days: int | None) -> dict:
     """Return an ES query that scopes results to the last `window_days` days
     by `field` (e.g. `event.start` for rollups, `@timestamp` for raw events).
 
@@ -158,7 +158,7 @@ def _build_window_query(field: str, window_days: Optional[int]) -> dict:
 def _iter_session_rollups(
     es: Elasticsearch, idx: str,
     *,
-    window_days: Optional[int] = _DEFAULT_MINE_WINDOW_DAYS,
+    window_days: int | None = _DEFAULT_MINE_WINDOW_DAYS,
     page_size: int = 1000,
 ) -> Iterable[dict]:
     """Yield session rollup docs whose `event.start` is within the last
@@ -226,7 +226,7 @@ def _frequent_itemsets(
     while L and k <= max_size:
         # Generate candidates by joining size-(k-1) frequent itemsets.
         candidates: set[frozenset[str]] = set()
-        L_list = sorted(L, key=lambda s: sorted(s))
+        L_list = sorted(L, key=sorted)
         for i in range(len(L_list)):
             for j in range(i + 1, len(L_list)):
                 u = L_list[i] | L_list[j]
@@ -251,7 +251,7 @@ def _build_ip_to_playbooks(
     es: Elasticsearch,
     sessions_idx: str,
     *,
-    window_days: Optional[int] = _DEFAULT_MINE_WINDOW_DAYS,
+    window_days: int | None = _DEFAULT_MINE_WINDOW_DAYS,
 ) -> dict[str, dict]:
     """Group session-rollup docs by source.ip; for each IP collect the
     *set* of canonical playbook ids it visited, plus the session ids and a
@@ -350,7 +350,7 @@ def run_mine_behaviour(
     min_support: int = _BEHAVIOUR_MIN_SUPPORT_IPS,
     min_size: int   = _BEHAVIOUR_MIN_ITEMSET_SIZE,
     max_size: int   = _BEHAVIOUR_MAX_ITEMSET_SIZE,
-    window_days: Optional[int] = _DEFAULT_MINE_WINDOW_DAYS,
+    window_days: int | None = _DEFAULT_MINE_WINDOW_DAYS,
 ) -> dict:
     """Itemset-mining campaign discovery (the "A" approach).
 
@@ -370,7 +370,7 @@ def run_mine_behaviour(
     t0 = time.time()
     log.info(
         "[mine behaviour] reading session rollup %s (window_days=%s)",
-        sessions_idx, window_days if window_days else "all",
+        sessions_idx, window_days or "all",
     )
     ip_to_pb = _build_ip_to_playbooks(es, sessions_idx, window_days=window_days)
     log.info("[mine behaviour] %d IPs with >=1 non-outlier playbook session", len(ip_to_pb))
@@ -413,8 +413,7 @@ def run_mine_behaviour(
         last_seen  = None
         for ip in ips:
             rec = ip_to_pb[ip]
-            for sid in rec["sessions"]:
-                sessions.append(sid)
+            sessions.extend(rec["sessions"])
             fs = rec.get("first_seen"); ls = rec.get("last_seen")
             if fs and (first_seen is None or fs < first_seen): first_seen = fs
             if ls and (last_seen  is None or ls > last_seen):  last_seen  = ls
@@ -672,7 +671,7 @@ def _fetch_llm_iocs(
 def _iter_command_input_events(
     es: Elasticsearch, idx: str,
     *,
-    window_days: Optional[int] = _DEFAULT_MINE_WINDOW_DAYS,
+    window_days: int | None = _DEFAULT_MINE_WINDOW_DAYS,
     page_size: int = 1000,
 ) -> Iterable[dict]:
     """Yield raw cowrie command-input event _sources within the last
@@ -735,7 +734,7 @@ def run_mine_infrastructure(
     dry_run: bool = False,
     min_sessions:    int = _INFRA_MIN_SESSIONS,
     min_distinct_ips: int = _INFRA_MIN_DISTINCT_IPS,
-    window_days: Optional[int] = _DEFAULT_MINE_WINDOW_DAYS,
+    window_days: int | None = _DEFAULT_MINE_WINDOW_DAYS,
 ) -> dict:
     """Shared-artifact campaign discovery (the "D" approach).
 
@@ -755,7 +754,7 @@ def run_mine_infrastructure(
     t0 = time.time()
     log.info(
         "[mine infra] reading %s for command-input events (window_days=%s)",
-        raw_idx, window_days if window_days else "all",
+        raw_idx, window_days or "all",
     )
 
     # session -> set of (kind, value); session -> source.ip; session -> earliest_ts
@@ -987,7 +986,7 @@ def run_mine_infrastructure(
 def run_mine(
     cfg: AppConfig, secrets: Secrets, *,
     kind: str = "all", dry_run: bool = False,
-    window_days: Optional[int] = None,
+    window_days: int | None = None,
 ) -> dict:
     """Dispatch to the requested miner(s).
 

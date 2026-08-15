@@ -25,7 +25,6 @@ from pathlib import Path
 import yaml
 from eval_jsonl import open_jsonl
 
-
 # Closed vocabulary for `expected_findings`. Mirrors the kinds emitted
 # by src/enrich/findings/{discovery,drift}.py at the time the rubric
 # was written. Keep this in sync when new finding kinds ship — the
@@ -242,7 +241,7 @@ def _check_block(sid: str, block: object, errors: list[str]) -> tuple[bool, str 
 def _load_jsonl_session_ids(path: Path) -> set[str]:
     out: set[str] = set()
     with open_jsonl(path) as f:
-        for lineno, line in enumerate(f, start=1):
+        for _lineno, line in enumerate(f, start=1):
             line = line.strip()
             if not line:
                 continue

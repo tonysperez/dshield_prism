@@ -11,9 +11,10 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "src"))
 
-import eval_band_labelled as target  # noqa: E402
-from enrich.classification import releasable_filter  # noqa: E402
-from enrich.sources.cowrie.assignment import ASSIGNED, Assignment  # noqa: E402
+import eval_band_labelled as target
+
+from enrich.classification import releasable_filter
+from enrich.sources.cowrie.assignment import ASSIGNED, Assignment
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -249,7 +250,7 @@ with tempfile.TemporaryDirectory() as tmp:
     try:
         target.load_scorable_labels(missing_path)
         missing_raised = None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         missing_raised = exc
     check(
         "a missing labels file fails clean with ValueError, not a raw OSError traceback",
@@ -262,7 +263,7 @@ with tempfile.TemporaryDirectory() as tmp:
     try:
         target.load_scorable_labels(bad_yaml_path)
         bad_yaml_raised = None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         bad_yaml_raised = exc
     check(
         "malformed YAML fails clean with ValueError, not a raw yaml.YAMLError traceback",
@@ -528,10 +529,10 @@ check(
     str((valley["status_delta_vs_deployed"], disabled["status_delta_vs_deployed"])),
 )
 
-deployed_target_trace = [
+deployed_target_trace = next(
     row for row in deployed["candidate_trace"]
     if row["true_label"] == "inband_payload_drop"
-][0]
+)
 deployed_target_candidates = deployed_target_trace["candidates"]
 check(
     "deployed inband_payload_drop trace assigns configured thick anchor by band bypass",

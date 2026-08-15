@@ -24,9 +24,9 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Callable, Iterable
+from datetime import UTC, datetime
 
 import numpy as np
 from elasticsearch import Elasticsearch
@@ -67,7 +67,7 @@ def _last_snapshot_field(es: Elasticsearch, lifecycle_index: str,
     out: list[float] = []
     try:
         resp = es.search(index=lifecycle_index, **body)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("threshold-distribution: lifecycle scan on %s failed: %s",
                     lifecycle_index, exc)
         return []
@@ -135,7 +135,7 @@ def _campaign_convergence_ratio(es: Elasticsearch, cfg) -> list[float]:
             body["search_after"] = search_after
         try:
             resp = es.search(index=cidx, **body)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning(
                 "threshold-distribution: campaign scan on %s failed: %s",
                 cidx, exc,
@@ -200,7 +200,7 @@ def _ip_behavior_shift_js(es: Elasticsearch, cfg) -> list[float]:
             body["search_after"] = search_after
         try:
             resp = es.search(index=lc_idx, **body)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning(
                 "threshold-distribution: ip_behavior_shift_js scan on %s "
                 "failed: %s", lc_idx, exc,
@@ -274,7 +274,7 @@ def _distribution_doc(*, kind: str, layer: str, values: Iterable[float]) -> dict
     arr = np.array(list(values), dtype=np.float64)
     return {
         "run_id":       str(uuid.uuid4()),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "kind":         kind,
         "layer":        layer,
         "p50":          round(float(np.percentile(arr, 50)), 4),
@@ -294,7 +294,7 @@ def compute_threshold_distributions(es: Elasticsearch, cfg) -> list[dict]:
     for spec in _THRESHOLD_QUANTITIES:
         try:
             values = spec.fn(es, cfg)
-        except Exception as exc:  # noqa: BLE001 — best-effort observability
+        except Exception as exc:
             log.warning("threshold-distribution: %s computer failed: %s",
                         spec.kind, exc)
             continue
@@ -328,7 +328,7 @@ def write_threshold_distributions(es: Elasticsearch, cfg) -> dict:
             es.index(index=metrics_idx, document=doc)
             written += 1
             kinds.append(doc["kind"])
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("threshold-distribution: write failed (%s): %s",
                         doc.get("kind"), exc)
             errors.append(f"{doc.get('kind')}: {type(exc).__name__}")

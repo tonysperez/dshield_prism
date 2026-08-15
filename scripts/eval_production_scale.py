@@ -39,7 +39,7 @@ import argparse
 import gzip
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -55,19 +55,19 @@ from sklearn.metrics import (
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from eval_clustering import (  # type: ignore
+    _load_labels,
+    _per_label_breakdown,
+    render_small_cluster_block,
+    small_cluster_metrics,
+)
+
 from enrich.clustering import compute_centroids, l2_normalize, rescue_noise_points
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
 from enrich.sources.cowrie.sessions import (
     build_session_scalar_block,
     merge_clusters_into_playbooks,
-)
-
-from eval_clustering import (  # type: ignore
-    _load_labels,
-    _per_label_breakdown,
-    render_small_cluster_block,
-    small_cluster_metrics,
 )
 
 # Source fields the production-scale small-cluster axis (F0.2) needs on top of
@@ -390,7 +390,7 @@ def _evaluate(
 
     # Restrict to the labeled eval subset.
     sid_to_cluster: dict[str, int] = {
-        sid: int(c) for sid, c in zip(session_ids, labels)
+        sid: int(c) for sid, c in zip(session_ids, labels, strict=False)
     }
     eval_sids_found: list[str] = []
     eval_label_truth: list[str] = []
@@ -441,7 +441,7 @@ def _evaluate(
     metrics.update(sc_result["metrics"])
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "run_label": run_label,
         "scale": "production",
         "config": {
@@ -489,7 +489,7 @@ def _evaluate(
         # it adds ~4k entries the gate doesn't need; the G capture runs ask
         # for it. Post-merge labels when merge ran.
         "assignments": (
-            {sid: int(c) for sid, c in zip(session_ids, labels)}
+            {sid: int(c) for sid, c in zip(session_ids, labels, strict=False)}
             if dump_assignments else None
         ),
     }
@@ -505,10 +505,10 @@ def _snapshot_staleness(metadata: dict) -> tuple[float | None, str]:
     if not captured_at:
         return None, "unknown"
     try:
-        ts = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+        ts = datetime.fromisoformat(captured_at)
     except (ValueError, TypeError):
         return None, "unknown"
-    age = (datetime.now(timezone.utc) - ts).total_seconds() / 86400.0
+    age = (datetime.now(UTC) - ts).total_seconds() / 86400.0
     if age > _SNAPSHOT_STALE_FAIL_DAYS:
         return age, "fail"
     if age > _SNAPSHOT_STALE_WARN_DAYS:
@@ -740,7 +740,7 @@ def _write_baseline(report: dict, path: Path) -> None:
         )
     }
     doc = {
-        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "captured_at": datetime.now(UTC).isoformat(),
         "captured_from": "scripts/eval_production_scale.py --write-baseline",
         "snapshot_at_capture": inp.get("snapshot_path"),
         "snapshot_metadata": inp.get("snapshot_metadata"),
@@ -848,7 +848,7 @@ def main() -> int:
 
     if not args.no_json:
         args.output_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         out_path = args.output_dir / f"prod-scale-{ts}.json"
         out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(f"\nwrote {out_path}")

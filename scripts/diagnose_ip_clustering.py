@@ -28,7 +28,7 @@ import argparse
 import json
 import sys
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -217,7 +217,7 @@ def main() -> int:
     ).fit_predict(cluster_matrix)]
 
     by_cluster: dict[int, list[dict]] = defaultdict(list)
-    for m, lbl in zip(corpus, labels):
+    for m, lbl in zip(corpus, labels, strict=False):
         by_cluster[lbl].append(m)
     outliers = by_cluster.pop(-1, [])
     n_clusters = len(by_cluster)
@@ -245,13 +245,13 @@ def main() -> int:
                      for pb, sz in pb_to_clusters.items() if len(sz) > 1}
 
     zgrab_clusters = Counter(
-        lbl for m, lbl in zip(corpus, labels) if m["playbook"] == _ZGRAB_PLAYBOOK
+        lbl for m, lbl in zip(corpus, labels, strict=False) if m["playbook"] == _ZGRAB_PLAYBOOK
     )
     zgrab_real = {c: cnt for c, cnt in zgrab_clusters.items() if c != -1}
 
     result = {
         "geometry": args.geometry, "fix_hassh": args.fix_hassh,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "n_ips": n, "n_clusters": n_clusters, "n_clustered": n_clustered,
         "n_outliers": n_outliers, "outlier_rate": round(n_outliers / n, 4),
         "largest_cluster_size": largest["size"] if largest else 0,
@@ -268,7 +268,7 @@ def main() -> int:
     }
 
     label = args.label or f"K-ip-clustering-{args.geometry}"
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / f"{label}-{ts}.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
 

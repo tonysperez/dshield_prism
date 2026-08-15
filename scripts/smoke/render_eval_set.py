@@ -22,12 +22,12 @@ import gzip
 import json
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import yaml
-
 
 # ---------------------------------------------------------------------------
 # Field accessors
@@ -52,7 +52,7 @@ def _parse_ts(ts: str | None) -> datetime | None:
     s = ts.rstrip("Z")
     # ES emits "...Z" or "...+00:00"; tolerate both.
     try:
-        return datetime.fromisoformat(s).replace(tzinfo=timezone.utc) \
+        return datetime.fromisoformat(s).replace(tzinfo=UTC) \
             if "+" not in s else datetime.fromisoformat(s)
     except ValueError:
         return None
@@ -321,11 +321,10 @@ def _render_session(rec: dict) -> str:
     analyst_arts_session = enrichment.get("analyst_artifacts") or []
     analyst_arts_all: list[dict] = list(analyst_arts_session)
     for cmd_doc in rec.get("command_enrichments") or []:
-        for a in (
+        analyst_arts_all.extend((
             ((cmd_doc.get("dshield") or {}).get("cowrie") or {})
             .get("enrichment") or {}
-        ).get("analyst_artifacts") or []:
-            analyst_arts_all.append(a)
+        ).get("analyst_artifacts") or [])
     seen_keys: set[tuple] = set()
     deduped: list[dict] = []
     for a in analyst_arts_all:
@@ -363,9 +362,9 @@ def _render_index(records: list[dict]) -> str:
     bands_order = ["large", "medium", "small", "solo", "unattributed"]
     out = ["# Eval set index", "",
            f"Total sessions: **{len(records)}**.",
-           "", "Click a session_id to open its rendered view; label "
-           "decisions go into [`labels.yaml`](labels.yaml) "
-           "per [`RUBRIC.md`](RUBRIC.md).", ""]
+           "", ("Click a session_id to open its rendered view; label "
+                 "decisions go into [`labels.yaml`](labels.yaml) "
+                 "per [`RUBRIC.md`](RUBRIC.md)."), ""]
     seen_bands = set(by_band.keys())
     for band in bands_order + [b for b in seen_bands if b not in bands_order]:
         if band not in by_band:

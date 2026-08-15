@@ -122,7 +122,7 @@ def _run():
 
 def _summary_call_index():
     """(call_idx, source) of the run_summary write, or (None, None)."""
-    for i, (idx, acts) in enumerate(CAPTURED):
+    for i, (_idx, acts) in enumerate(CAPTURED):
         for a in acts:
             if (a.get("_source") or {}).get("doc_type") == "run_summary":
                 return i, a["_source"]

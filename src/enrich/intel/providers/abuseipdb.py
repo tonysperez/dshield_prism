@@ -34,7 +34,6 @@ from __future__ import annotations
 import logging
 import time
 from datetime import timedelta
-from typing import Optional
 
 import httpx
 
@@ -43,8 +42,8 @@ from .base import (
     DerivedSignals,
     HealthStatus,
     Provider,
-    ProviderResult,
     ProviderRateLimited,
+    ProviderResult,
     ProviderUnavailable,
     RateLimit,
 )
@@ -57,11 +56,11 @@ _MALICIOUS_SCORE_THRESHOLD = 50
 
 
 def classify_abuseipdb(
-    abuse_score: Optional[int],
-    total_reports: Optional[int],
-    usage_type: Optional[str],
+    abuse_score: int | None,
+    total_reports: int | None,
+    usage_type: str | None,
     is_whitelisted: bool = False,
-) -> tuple[Optional[bool], Optional[str], Optional[int], tuple[str, ...], bool, bool]:
+) -> tuple[bool | None, str | None, int | None, tuple[str, ...], bool, bool]:
     """Pure-function: AbuseIPDB response → derived signals.
 
     Returns `(malicious, label, confidence, tags, authoritative_clean,

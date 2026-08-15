@@ -23,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from enrich.sources.cowrie.sessions import (  # noqa: E402
+from enrich.sources.cowrie.sessions import (
     _MAX_PROXY_ATTEMPTS_PER_SESSION,
     _build_session_doc,
 )

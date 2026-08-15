@@ -22,8 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from enrich.findings.miner import apply_noise_gate  # noqa: E402
-
+from enrich.findings.miner import apply_noise_gate
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -52,9 +51,9 @@ class _FakeES:
                  missing_indexes: set[str] | None = None) -> None:
         self.counts = counts
         self.indices = _FakeIndices(
-            {idx: False for idx in (missing_indexes or set())}
+            dict.fromkeys(missing_indexes or set(), False)
         )
-    def count(self, *, index: str, **kwargs):  # noqa: ARG002
+    def count(self, *, index: str, **kwargs):
         return {"count": self.counts.get(index, 0)}
 
 

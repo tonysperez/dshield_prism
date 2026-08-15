@@ -38,7 +38,6 @@ from enrich.sources.cowrie.campaigns import (
     _validate_llm_iocs,
 )
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

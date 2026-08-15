@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import sys
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -44,13 +45,16 @@ from pathlib import Path
 import numpy as np
 from sklearn.cluster import HDBSCAN
 
-import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from enrich.clustering import l2_normalize, rescue_noise_points, svd_reduce  # noqa: E402
-from enrich.config import load_config, load_secrets  # noqa: E402
-from enrich.es_client import make_client  # noqa: E402
-from enrich.sources.cowrie.sessions import build_session_scalar_block  # noqa: E402
+from enrich.clustering import (
+    l2_normalize,
+    rescue_noise_points,
+    svd_reduce,
+)
+from enrich.config import load_config, load_secrets
+from enrich.es_client import make_client
+from enrich.sources.cowrie.sessions import build_session_scalar_block
 
 
 def _parse_session(src: dict):
@@ -138,7 +142,7 @@ def _metrics(labels, intents, n_rescued):
     n_outliers = int((labels == -1).sum())
     n_clusters = len({int(c) for c in labels if c >= 0})
     byc: dict = defaultdict(list)
-    for lbl, it in zip(labels, intents):
+    for lbl, it in zip(labels, intents, strict=False):
         if lbl >= 0:
             byc[int(lbl)].append(it or "")
     purities = []

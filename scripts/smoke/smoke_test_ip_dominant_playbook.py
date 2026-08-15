@@ -26,7 +26,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from enrich.sources.cowrie.ips import annotate_ip_clusters_with_dominant_playbook
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

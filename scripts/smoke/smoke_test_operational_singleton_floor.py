@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # scripts/
 
-import eval_operational as eo  # noqa: E402
+import eval_operational as eo
 
 
 def test_singleton_excluded_from_hard_floor() -> None:
@@ -59,7 +59,7 @@ def test_missing_label_count_defaults_to_gated() -> None:
         "label_counts": {},
     }
     baseline = {"metrics": {}, "per_label_floor": 0.3}
-    lines, ok = eo.gate(report, baseline)
+    _lines, ok = eo.gate(report, baseline)
     assert ok is False, "an unknown label count must not be silently excluded"
     print("  ok: missing label_counts entry fails closed (still gated)")
 

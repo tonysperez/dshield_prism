@@ -25,15 +25,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import numpy as np  # noqa: E402
+import numpy as np
 
-from enrich.sources.cowrie.ips import (  # noqa: E402
+from enrich.sources.cowrie.ips import (
     _build_attribution_block,
     _build_behavior_block,
     _hash_credential_bin,
     make_full_scalar_builder,
 )
-
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []

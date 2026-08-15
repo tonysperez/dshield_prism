@@ -15,10 +15,9 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable, Optional
 from urllib.parse import urlsplit, urlunsplit
-
 
 # Order matters for stable serialisation in derived signals.
 ARTIFACT_KINDS: tuple[str, ...] = (
@@ -57,7 +56,7 @@ class Artifact:
 # ---------------------------------------------------------------------------
 
 
-def canonical_ip(raw: str) -> Optional[str]:
+def canonical_ip(raw: str) -> str | None:
     """Validate + canonicalise an IP literal. Returns None on failure.
 
     Accepts IPv4 and IPv6. Strips surrounding whitespace, lowercases
@@ -90,7 +89,7 @@ def canonical_ip(raw: str) -> Optional[str]:
     return str(ip)
 
 
-def canonical_domain(raw: str) -> Optional[str]:
+def canonical_domain(raw: str) -> str | None:
     """Validate + canonicalise a domain. Lowercased, trailing dot stripped.
 
     Rejects values containing slashes, scheme markers, or whitespace.
@@ -115,7 +114,7 @@ def canonical_domain(raw: str) -> Optional[str]:
     return s
 
 
-def canonical_url(raw: str) -> Optional[str]:
+def canonical_url(raw: str) -> str | None:
     """Canonicalise a URL: scheme + host + path. Query and fragment dropped.
 
     Dropping the query string matches the existing campaign-miner URL
@@ -139,10 +138,7 @@ def canonical_url(raw: str) -> Optional[str]:
     if not host:
         return None
     port = parts.port
-    if port in (None, 80, 443):
-        netloc = host
-    else:
-        netloc = f"{host}:{port}"
+    netloc = host if port in (None, 80, 443) else f"{host}:{port}"
     path = parts.path or "/"
     return urlunsplit((scheme, netloc, path, "", ""))
 
@@ -150,7 +146,7 @@ def canonical_url(raw: str) -> Optional[str]:
 _HASH_RE = re.compile(r"^[A-Fa-f0-9]+$")
 
 
-def canonical_hash(raw: str) -> Optional[str]:
+def canonical_hash(raw: str) -> str | None:
     """Canonicalise a file hash. Must be exactly 32 / 40 / 64 hex chars."""
     if raw is None:
         return None
@@ -170,7 +166,7 @@ _CANONICALIZERS = {
 }
 
 
-def make_artifact(kind: str, raw: str) -> Optional[Artifact]:
+def make_artifact(kind: str, raw: str) -> Artifact | None:
     """Canonicalise + wrap, or None when canonicalisation rejects.
 
     Single entry point used by the artifact-discovery scan over the

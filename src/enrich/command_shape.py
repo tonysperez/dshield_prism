@@ -204,7 +204,7 @@ def normalize_to_shape(cmd: str) -> str:
             continue
 
         seen_valid = True
-        out_tokens = env_tokens + [cmd_name]
+        out_tokens = [*env_tokens, cmd_name]
         j = i + 1
 
         # Multi-call binaries (`busybox <sub> ...`) — keep the next
@@ -386,7 +386,7 @@ def extract_iocs_regex(cmd: str) -> dict[str, list[str]]:
 # ---------------------------------------------------------------------------
 
 __all__ = (
-    "normalize_to_shape",
     "compute_shape_hash",
     "extract_iocs_regex",
+    "normalize_to_shape",
 )

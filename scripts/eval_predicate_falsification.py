@@ -25,8 +25,8 @@ import json
 import re
 import sys
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import yaml
 
@@ -227,7 +227,7 @@ PAIRS: tuple[tuple[str, str, Callable[[dict[str, bool]], str]], ...] = (
     ("ssh_key_chattr_persistence", "host_recon", classify_sshkey_vs_hostrecon),
     ("single_command_probe", "host_recon", classify_single_vs_hostrecon),
 )
-assert all(a in KNOWN_PLAYBOOK_LABELS and b in KNOWN_PLAYBOOK_LABELS for a, b, _ in PAIRS), (
+assert all(a in KNOWN_PLAYBOOK_LABELS and b in KNOWN_PLAYBOOK_LABELS for a, b, _ in PAIRS), (  # noqa: S101
     "PAIRS references a label outside KNOWN_PLAYBOOK_LABELS -- check for a typo"
 )
 
@@ -242,7 +242,7 @@ def evaluate_pair(
                if label in (label_a, label_b)}
     confusion: Counter[tuple[str, str]] = Counter()
     no_evidence = 0
-    for _sid, (actual, lines) in members.items():
+    for (actual, lines) in members.values():
         if not lines:
             no_evidence += 1
         predicted = classifier(compute_predicates(lines))

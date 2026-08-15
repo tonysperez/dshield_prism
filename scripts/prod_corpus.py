@@ -139,13 +139,16 @@ def score_full(
     eval/archive/semantic-clustering-claim/.)
     """
     del pair_to_sessions  # retired; accepted for caller back-compat only
-    from sklearn.metrics import (
-        adjusted_rand_score, completeness_score, homogeneity_score,
-        normalized_mutual_info_score, v_measure_score,
-    )
     from eval_clustering import small_cluster_metrics  # local import
+    from sklearn.metrics import (
+        adjusted_rand_score,
+        completeness_score,
+        homogeneity_score,
+        normalized_mutual_info_score,
+        v_measure_score,
+    )
 
-    sid_to_cluster = {sid: int(c) for sid, c in zip(corpus.session_ids, labels)}
+    sid_to_cluster = {sid: int(c) for sid, c in zip(corpus.session_ids, labels, strict=False)}
     eval_sids: list[str] = []
     truth: list[str] = []
     pred: list[int] = []
@@ -195,7 +198,7 @@ def _labeled_in_small_clusters(
 ) -> int:
     small_lbls = {d["cluster_label"] for d in detail}
     return sum(
-        1 for sid, c in zip(session_ids, labels)
+        1 for sid, c in zip(session_ids, labels, strict=False)
         if int(c) in small_lbls and sid in sid_to_label
     )
 

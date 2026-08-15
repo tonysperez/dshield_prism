@@ -36,8 +36,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "scripts"))
 
-import eval_agreement as ea  # noqa: E402
-import validate_eval_labels as vel  # noqa: E402
+import eval_agreement as ea
+import validate_eval_labels as vel
 
 
 def _block(label: str) -> dict:

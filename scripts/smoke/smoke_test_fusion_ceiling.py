@@ -28,7 +28,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from enrich.clustering import _fusion_over_ceiling
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

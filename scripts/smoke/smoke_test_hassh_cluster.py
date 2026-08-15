@@ -24,10 +24,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from enrich.sources.cowrie.ips import (  # noqa: E402
-    _build_ip_doc, _hassh_cluster_id,
+from enrich.sources.cowrie.ips import (
+    _build_ip_doc,
+    _hassh_cluster_id,
 )
-
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []

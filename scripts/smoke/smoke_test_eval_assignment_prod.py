@@ -59,7 +59,7 @@ check("n_assigned == 4", rep["n_assigned"] == 4)
 
 # A session far from every anchor → novel (lowers assigned_rate).
 embs2 = np.vstack([embs, _u([0, 0, 1, 0])])  # orthogonal to both anchors
-labels2 = labels + ["weird"]
+labels2 = [*labels, "weird"]
 rep2 = score_against_anchors(embs2, labels2, anchor_ids, anchors, tau=0.9, confident_tau=0.98)
 check("far session lands novel → assigned_rate 0.8", rep2["assigned_rate"] == 0.8, str(rep2))
 
@@ -84,7 +84,7 @@ check("legacy baseline without n_anchors preserves metric-gate behavior",
       baseline_anchor_count_error(current_report, {"metrics": {}}) is None)
 
 # --- public-derived centroid math (capture_anchor_snapshot.centroid) ---
-import math  # noqa: E402
+import math
 
 check("centroid of identical unit vecs == itself", centroid([[1, 0], [1, 0]]) == [1.0, 0.0])
 check("centroid normalises the mean",

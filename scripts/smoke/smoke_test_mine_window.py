@@ -47,7 +47,6 @@ from enrich.sources.cowrie.campaigns import (
     run_mine_infrastructure,
 )
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 

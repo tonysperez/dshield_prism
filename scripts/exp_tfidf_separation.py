@@ -32,7 +32,7 @@ import argparse
 import itertools
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -40,13 +40,13 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # scripts/
 
+from cluster_bag_prod import _BAG_SVD_COMPONENTS, build_bag_texts, pull_hash_to_cluster
+from exp_prototype_assignment import _l2, load_anchors
+
 from enrich.classification import releasable_filter
 from enrich.clustering import compute_lexical_features
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
-from exp_prototype_assignment import _l2, load_anchors
-
-from cluster_bag_prod import _BAG_SVD_COMPONENTS, build_bag_texts, pull_hash_to_cluster
 
 _S = "dshield.cowrie.enrichment.session"
 _PB_FIELD = f"{_S}.playbook_id"
@@ -107,7 +107,7 @@ def pair_report(emb_cents: dict, tfidf_cents: dict,
                 cross_assign_rate(emb_by_group[b], emb_cents[b], emb_cents[a]), 4),
             "tfidf_cross_assign_b_to_a": round(
                 cross_assign_rate(tfidf_by_group[b], tfidf_cents[b], tfidf_cents[a]), 4),
-            "n_a": int(len(emb_by_group[a])), "n_b": int(len(emb_by_group[b])),
+            "n_a": len(emb_by_group[a]), "n_b": len(emb_by_group[b]),
         })
     return rows
 
@@ -123,7 +123,7 @@ def top_playbook_ids(es, index: str, filt: list[dict], size: int) -> list[str]:
 
 def sample_playbook(es, index: str, filt: list[dict], pb: str, n: int, seed: int):
     """Up to `n` (embedding, command_set) tuples for one playbook id."""
-    base = {"bool": {"filter": filt + [{"term": {_PB_FIELD: pb}}]}}
+    base = {"bool": {"filter": [*filt, {"term": {_PB_FIELD: pb}}]}}
     embs, sets, seen, batch = [], [], set(), 0
     while len(embs) < n:
         take = min(n - len(embs), _MAX_WINDOW)
@@ -222,8 +222,8 @@ def run(es, idx, cmd_idx, anch_idx, filt, *, n_families, per_pb, family_tau,
 
 def render_md(report, meta) -> str:
     L = ["# Experiment 3 — TF-IDF separation of embedding-close behaviours\n",
-         f"_Captured {meta['captured_at']}. classification={meta['classification']}, "
-         f"family_tau={report.get('family_tau')}._\n"]
+         (f"_Captured {meta['captured_at']}. classification={meta['classification']}, "
+          f"family_tau={report.get('family_tau')}._\n")]
     if report.get("error"):
         L.append(f"**{report['error']}.** On the untagged corpus the public-only filter "
                  "returns 0 docs; operator may re-run with `--allow-unclassified`.\n")
@@ -293,7 +293,7 @@ def main() -> int:
                  explicit_pairs=explicit_pairs)
 
     meta = {
-        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "captured_at": datetime.now(UTC).isoformat(),
         "classification": classification,
         "sessions_index": idx,
         "tfidf_input": "command-cluster-id bag (build_bag_texts)",
@@ -302,7 +302,7 @@ def main() -> int:
     report.setdefault("family_tau", family_tau)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     stem = out_dir / f"exp-tfidf-separation-{ts}"
     stem.with_suffix(".json").write_text(json.dumps({"meta": meta, "report": report}, indent=2))
     stem.with_suffix(".md").write_text(render_md(report, meta))

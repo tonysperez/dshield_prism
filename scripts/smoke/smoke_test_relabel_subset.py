@@ -30,7 +30,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "scripts"))
 
-import build_relabel_subset as brs  # noqa: E402
+import build_relabel_subset as brs
 
 
 def _pool() -> dict[str, str]:
@@ -105,7 +105,7 @@ def test_core_n_clamps_to_pool() -> None:
 def test_skeleton_leaks_nothing() -> None:
     skel = brs._skeleton(["s1", "s2"])
     assert list(skel) == ["s1", "s2"], "order must be preserved (shuffled walk)"
-    for sid, block in skel.items():
+    for block in skel.values():
         assert block["annotated"] is False, block
         assert block["playbook_label"] is None, block
         assert block["notes"] == "", block
@@ -119,10 +119,10 @@ def test_skeleton_leaks_nothing() -> None:
 
 def test_staleness_note() -> None:
     import datetime
-    today = datetime.date.today().isoformat()
+    today = datetime.datetime.now(datetime.UTC).date().isoformat()
     fresh = {"a": {"labeled_at": today}}
     assert brs._staleness_note(fresh), "a same-day first pass must warn"
-    old = {"a": {"labeled_at": (datetime.date.today()
+    old = {"a": {"labeled_at": (datetime.datetime.now(datetime.UTC).date()
                                - datetime.timedelta(days=40)).isoformat()}}
     assert brs._staleness_note(old) is None, "a 40-day-old first pass must not warn"
     assert brs._staleness_note({"a": {"labeled_at": "not-a-date"}}) is None

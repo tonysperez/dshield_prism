@@ -23,7 +23,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from enrich.sources.cowrie.sessions import _summarize_intents
 
-
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 
@@ -87,6 +86,7 @@ check(
 # -----------------------------------------------------------------------------
 print("\n[4] 3-way tie at top — distribution and dominant_intent stable")
 import itertools
+
 intents = ["execute_payload", "host_recon", "cryptomining"]
 all_results = set()
 for perm in itertools.permutations(intents):
