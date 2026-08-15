@@ -509,13 +509,13 @@ f6bf6f15c3b9:
   boost_weight: 1.0
 3b3a422154de:
   annotated: true
-  is_real: true
-  playbook_label: single_command_probe
+  is_real: false
+  playbook_label: null
   expected_findings: []
-  notes: Repeated FTP-style 'USER test' — auth probe, no shell behavior.
+  notes: 'FTP framing recorded as SSH command input; a bare `USER test` is not a shell command. Protocol leakage, not attacker shell behavior (rubric v2 is_real rule).'
   annotator: ts
-  labeled_at: '2026-07-27'
-  rubric_version: v1
+  labeled_at: '2026-07-28'
+  rubric_version: v2
   boost_weight: 1.0
 2d4317bae883:
   annotated: true
@@ -599,13 +599,13 @@ fdd6a935c33a:
   boost_weight: 1.0
 bcf38f2e85aa:
   annotated: true
-  is_real: true
-  playbook_label: single_command_probe
+  is_real: false
+  playbook_label: null
   expected_findings: []
-  notes: Repeated FTP-style 'USER test' — auth probe, no shell behavior.
+  notes: 'FTP framing recorded as SSH command input; a bare `USER test` is not a shell command. Protocol leakage, not attacker shell behavior (rubric v2 is_real rule).'
   annotator: ts
-  labeled_at: '2026-07-27'
-  rubric_version: v1
+  labeled_at: '2026-07-28'
+  rubric_version: v2
   boost_weight: 1.0
 3f45a8cdcb2b:
   annotated: true
@@ -749,13 +749,13 @@ f64f5c4bea89:
   boost_weight: 1.0
 9aed3e9e158c:
   annotated: true
-  is_real: true
-  playbook_label: single_command_probe
+  is_real: false
+  playbook_label: null
   expected_findings: []
-  notes: Repeated FTP-style 'USER test' — auth probe, no shell behavior.
+  notes: 'FTP framing recorded as SSH command input; a bare `USER test` is not a shell command. Protocol leakage, not attacker shell behavior (rubric v2 is_real rule).'
   annotator: ts
-  labeled_at: '2026-07-27'
-  rubric_version: v1
+  labeled_at: '2026-07-28'
+  rubric_version: v2
   boost_weight: 1.0
 3cecf4e0b4e5:
   annotated: true
@@ -1259,53 +1259,53 @@ ef5762787742:
   boost_weight: 1.0
 e52cf4dbd897:
   annotated: true
-  is_real: true
-  playbook_label: single_command_probe
+  is_real: false
+  playbook_label: null
   expected_findings: []
-  notes: Single PING liveness probe.
+  notes: 'Redis RESP framing recorded as SSH command input; a bare `PING` is not a shell command. Protocol leakage, not attacker shell behavior (rubric v2 is_real rule).'
   annotator: ts
-  labeled_at: '2026-07-27'
-  rubric_version: v1
+  labeled_at: '2026-07-28'
+  rubric_version: v2
   boost_weight: 1.0
 354f783ce304:
   annotated: true
-  is_real: true
-  playbook_label: single_command_probe
+  is_real: false
+  playbook_label: null
   expected_findings: []
-  notes: Single PING liveness probe.
+  notes: 'Redis RESP framing recorded as SSH command input; a bare `PING` is not a shell command. Protocol leakage, not attacker shell behavior (rubric v2 is_real rule).'
   annotator: ts
-  labeled_at: '2026-07-27'
-  rubric_version: v1
+  labeled_at: '2026-07-28'
+  rubric_version: v2
   boost_weight: 1.0
 fae4e2f6c60c:
   annotated: true
-  is_real: true
-  playbook_label: single_command_probe
+  is_real: false
+  playbook_label: null
   expected_findings: []
-  notes: Single PING liveness probe.
+  notes: 'Redis RESP framing recorded as SSH command input; a bare `PING` is not a shell command. Protocol leakage, not attacker shell behavior (rubric v2 is_real rule).'
   annotator: ts
-  labeled_at: '2026-07-27'
-  rubric_version: v1
+  labeled_at: '2026-07-28'
+  rubric_version: v2
   boost_weight: 1.0
 8fa89defe1a9:
   annotated: true
-  is_real: true
-  playbook_label: single_command_probe
+  is_real: false
+  playbook_label: null
   expected_findings: []
-  notes: Single PING liveness probe.
+  notes: 'Redis RESP framing recorded as SSH command input; a bare `PING` is not a shell command. Protocol leakage, not attacker shell behavior (rubric v2 is_real rule).'
   annotator: ts
-  labeled_at: '2026-07-27'
-  rubric_version: v1
+  labeled_at: '2026-07-28'
+  rubric_version: v2
   boost_weight: 1.0
 cec4acfee663:
   annotated: true
-  is_real: true
-  playbook_label: single_command_probe
+  is_real: false
+  playbook_label: null
   expected_findings: []
-  notes: Single PING liveness probe.
+  notes: 'Redis RESP framing recorded as SSH command input; a bare `PING` is not a shell command. Protocol leakage, not attacker shell behavior (rubric v2 is_real rule).'
   annotator: ts
-  labeled_at: '2026-07-27'
-  rubric_version: v1
+  labeled_at: '2026-07-28'
+  rubric_version: v2
   boost_weight: 1.0
 6ce6bb4c32ac:
   annotated: true

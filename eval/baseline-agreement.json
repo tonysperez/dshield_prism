@@ -1,0 +1,36 @@
+{
+  "n_overlap": 160,
+  "metrics": {
+    "percent_agreement": 0.89375,
+    "cohen_kappa": 0.8656060082019863,
+    "pabak": 0.7875000000000001
+  },
+  "captured_from": "eval_agreement.py --write-baseline",
+  "sources": {
+    "labels_a": {
+      "path": "eval/labels.yaml",
+      "annotators": {
+        "ts": 160
+      },
+      "rubric_versions": {
+        "v1": 152,
+        "v2": 8
+      }
+    },
+    "labels_b": {
+      "path": "eval/labels-secondary.yaml",
+      "annotators": {
+        "llm-gpt-5-codex": 160
+      },
+      "rubric_versions": {
+        "v2": 160
+      }
+    }
+  },
+  "vocabulary": {
+    "n_vocab_a": 11,
+    "n_vocab_b": 11,
+    "n_vocab_shared": 11,
+    "aligned_percent_agreement": 0.89375
+  }
+}
