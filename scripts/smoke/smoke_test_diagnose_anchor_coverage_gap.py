@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -59,7 +60,7 @@ assignments = [
     _A(target.NOVEL),               # 4: now lands in a real group
 ]
 loo_majority = {0: "gap_label", 1: "other_label", 2: None}
-outlier_status = {3: (True, 0), 4: (False, 7)}
+outlier_status = {3: (True, 0, -1), 4: (False, 7, 2)}
 
 report_full = target._target_label_report(
     "gap_label", [0, 1, 2, 3, 4], assignments, loo_majority, outlier_status,
@@ -71,9 +72,10 @@ check("anchor_unknown counted", report_full["assigned_detail"]["anchor_unknown"]
       str(report_full))
 check("still_outlier counted", report_full["novel_detail"]["still_outlier"] == 1,
       str(report_full))
-check("now_clustered counted with its group size",
+check("now_clustered counted with its group size and joinable group id",
       report_full["novel_detail"]["now_clustered"] == 1
-      and report_full["novel_detail"]["clustered_group_sizes"] == [7], str(report_full))
+      and report_full["novel_detail"]["clustered_group_sizes"] == [7]
+      and report_full["novel_detail"]["clustered_group_ids"] == [2], str(report_full))
 check("status_counts reconcile with n_labelled",
       sum(report_full["status_counts"].values()) == report_full["n_labelled"] == 5,
       str(report_full))
@@ -84,8 +86,44 @@ check("a target label absent from the window reports n_labelled=0, no crash",
           "n_labelled": 0,
           "status_counts": {"assigned": 0, "novel": 0},
           "assigned_detail": {"conflated": 0, "matches_majority": 0, "anchor_unknown": 0},
-          "novel_detail": {"still_outlier": 0, "now_clustered": 0, "clustered_group_sizes": []},
+          "novel_detail": {
+              "still_outlier": 0, "now_clustered": 0,
+              "clustered_group_sizes": [], "clustered_group_ids": [],
+          },
       }, str(report_empty))
+
+
+# --- _novel_group_composition: pure, no ES ------------------------------------
+# Finding 66C's exact shape: a group whose modal label rests on a minority of
+# labelled members, a tie, and a group with no labelled member at all.
+
+comp = target._novel_group_composition(
+    np.asarray([10, 11, 12, 13, 20, 21, 30]),
+    # group 0 holds 4 labelled of 9; group 1 is a 2-2 tie; group 2 has none labelled
+    np.asarray([0, 0, 0, 0, 1, 1, 2]),
+    Counter({0: 9, 1: 4, 2: 5}),
+    {10: "botnet_loader", 11: "botnet_loader", 12: "botnet_loader",
+     13: "host_recon", 20: "scp_upload", 21: "iot_cli_probe"},
+)
+by_group = {group["group"]: group for group in comp}
+
+check("composition is ordered by group size, largest first",
+      [group["group"] for group in comp] == [0, 2, 1], str(comp))
+check("a modal label carried by a minority of the whole group still reads modal, "
+      "with the unlabelled remainder reported separately",
+      by_group[0]["modal_label"] == "botnet_loader"
+      and by_group[0]["n_labelled"] == 4 and by_group[0]["n_unlabelled"] == 5
+      and by_group[0]["modal_share_of_labelled"] == 0.75
+      and by_group[0]["modal_share_of_group"] == round(3 / 9, 4), str(by_group[0]))
+check("a tie reports no modal label and names both tied labels",
+      by_group[1]["modal_label"] is None
+      and by_group[1]["modal_tie"] == ["iot_cli_probe", "scp_upload"], str(by_group[1]))
+check("a group with no labelled member reports empty, not a spurious modal label",
+      by_group[2]["n_labelled"] == 0 and by_group[2]["labels"] == {}
+      and by_group[2]["modal_label"] is None and by_group[2]["modal_tie"] == []
+      and by_group[2]["modal_share_of_labelled"] == 0.0, str(by_group[2]))
+check("HDBSCAN noise (group -1) never becomes a group",
+      all(group["group"] >= 0 for group in comp), str(comp))
 
 
 # --- analyze() end to end, against a scripted fake ES -------------------------
@@ -289,6 +327,21 @@ with tempfile.TemporaryDirectory() as tmp:
           inband["novel_detail"]["now_clustered"] == 2
           and inband["novel_detail"]["clustered_group_sizes"] == [2, 2], str(inband))
 
+    composition = report["novel_group_composition"]
+    pair_group = inband["novel_detail"]["clustered_group_ids"][0]
+    check("both clustered sessions report the same group id, joinable to the composition",
+          set(inband["novel_detail"]["clustered_group_ids"]) == {pair_group}
+          and pair_group in {group["group"] for group in composition},
+          str((inband["novel_detail"], composition)))
+    pair = next(group for group in composition if group["group"] == pair_group)
+    check("the pair's group composition is pure inband_payload_drop, fully labelled",
+          pair["labels"] == {"inband_payload_drop": 2} and pair["n_unlabelled"] == 0
+          and pair["modal_label"] == "inband_payload_drop"
+          and pair["modal_share_of_group"] == 1.0, str(pair))
+    check("every composition group's labelled + unlabelled reconciles with its size",
+          all(group["n_labelled"] + group["n_unlabelled"] == group["size"]
+              for group in composition), str(composition))
+
     check("novel count includes the 3 labelled + 2 filler novel sessions",
           report["novel"] == 5, str(report["novel"]))
     check("novel_pool_shape reports a real HDBSCAN partition, not an all-noise pool",
@@ -298,6 +351,8 @@ with tempfile.TemporaryDirectory() as tmp:
     line = target.summarize(report)
     check("summarize renders every target label without raising",
           all(label in line for label in target.TARGET_LABELS), line)
+    check("summarize renders the group composition block",
+          "novel groups:" in line and "modal=inband_payload_drop" in line, line)
 
     # --- the pool_group_labels / cluster_novel_pool cross-check --------------
 
@@ -343,8 +398,12 @@ with tempfile.TemporaryDirectory() as tmp:
     inband_too_few = report_too_few["by_label"]["inband_payload_drop"]
     check("below the size floor, every novel target session reports still_outlier",
           inband_too_few["novel_detail"] == {
-              "still_outlier": 3, "now_clustered": 0, "clustered_group_sizes": [],
+              "still_outlier": 3, "now_clustered": 0,
+              "clustered_group_sizes": [], "clustered_group_ids": [],
           }, str(inband_too_few))
+    check("a skipped HDBSCAN run reports no composition groups at all",
+          report_too_few["novel_group_composition"] == [],
+          str(report_too_few["novel_group_composition"]))
 
 
 # --- CLI gating: no live path without operator confirmation --------------------

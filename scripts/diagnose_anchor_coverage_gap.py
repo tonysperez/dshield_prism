@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Item 68 recheck — do the 4 anchor-coverage-gap labels still starve/conflate?
+"""Item 68 recheck — do the anchor-coverage-gap labels still starve/conflate?
 
 Finding 50 found real-anchor macro-F1 capped at 0.41 because 4 of 10 labels have no
 anchor that represents them: `account_backdoor_persistence`, `inband_payload_drop`
@@ -14,6 +14,15 @@ possibly moot. This script answers that follow-up: replay the live assignment
 window at the deployed thresholds, then for each of the 4 target labels report
 whether it is still an HDBSCAN outlier in *today's* novel pool (cause a) or, if
 assigned, whether its anchor's labelled majority still disagrees with it (cause b).
+
+Finding 66 added `botnet_loader` (item 83's target) and the per-group label
+composition block. A group *size* cannot answer whether minting would carry the
+target label: the live run put 4 `botnet_loader` sessions in one size-9 group, which
+mints as `botnet_loader` if the other 5 members are unlabelled and as something else
+if they share a label. `novel_group_composition` reports, per HDBSCAN group, the
+label counts over its labelled members, the modal label (or an explicit tie), and how
+much of the group is unlabelled -- enough to predict the mint before an operator
+spends a recluster cycle on it.
 
 Read-only and aggregate-only, same posture as items 56/61/65: counts, cosines,
 cluster shape and `spb-` anchor ids only -- no `cowrie.session_id`, IP or command
@@ -75,6 +84,7 @@ from enrich.sources.cowrie.lexical import build_bag_texts, pull_hash_to_cluster
 
 TARGET_LABELS = (
     "account_backdoor_persistence",
+    "botnet_loader",
     "inband_payload_drop",
     "iot_cli_probe",
     "scp_upload",
@@ -195,15 +205,22 @@ def _target_label_report(
     indices: list[int],
     assignments: list,
     leave_one_out_majority: dict[int, str | None],
-    outlier_status: dict[int, tuple[bool, int]],
+    outlier_status: dict[int, tuple[bool, int, int]],
 ) -> dict:
     """One target label's aggregate verdict. `leave_one_out_majority` maps an
     assigned-status window index to the majority label among every OTHER labelled
     row assigned to the same anchor (`None` if no other labelled row is assigned
     there). `outlier_status` maps a novel-status window index to
-    (still_outlier, group_size) -- group_size is 0 for an outlier."""
+    (still_outlier, group_size, group_id) -- (0, -1) for an outlier. The group ids
+    join this label's clustered rows to `novel_group_composition`, so a
+    `now_clustered` count can be read against what else is in the same group."""
     assigned_detail = {"conflated": 0, "matches_majority": 0, "anchor_unknown": 0}
-    novel_detail = {"still_outlier": 0, "now_clustered": 0, "clustered_group_sizes": []}
+    novel_detail = {
+        "still_outlier": 0,
+        "now_clustered": 0,
+        "clustered_group_sizes": [],
+        "clustered_group_ids": [],
+    }
     status_counts = {"assigned": 0, "novel": 0}
     for i in indices:
         assignment = assignments[i]
@@ -218,18 +235,70 @@ def _target_label_report(
                 assigned_detail["conflated"] += 1
         else:
             status_counts["novel"] += 1
-            still_outlier, group_size = outlier_status[i]
+            still_outlier, group_size, group_id = outlier_status[i]
             if still_outlier:
                 novel_detail["still_outlier"] += 1
             else:
                 novel_detail["now_clustered"] += 1
                 novel_detail["clustered_group_sizes"].append(group_size)
+                novel_detail["clustered_group_ids"].append(group_id)
     return {
         "n_labelled": len(indices),
         "status_counts": status_counts,
         "assigned_detail": assigned_detail,
         "novel_detail": novel_detail,
     }
+
+
+def _novel_group_composition(
+    novel_idx: np.ndarray,
+    pool_labels,
+    sizes: Counter,
+    resolved: dict[int, str],
+) -> list[dict]:
+    """Per-HDBSCAN-group label composition over the novel pool (Finding 66C).
+
+    Composition is over the group's LABELLED members only. The unlabelled
+    remainder is reported as `n_unlabelled` and is genuinely unknown -- it is not
+    evidence for or against the modal label, and a group whose modal label rests on
+    2 labelled members out of 9 should be read as weakly determined, not as a 2/9
+    minority. `modal_label` is `None` when the top count ties, with the tied labels
+    listed in `modal_tie`: a tie is the case where minting cannot be predicted at
+    all, and it must not silently collapse to whichever label sorts first.
+
+    Aggregate-only, matching the rest of this script: group ids, counts and label
+    strings, never a session id.
+    """
+    labelled_by_group: dict[int, Counter] = {}
+    for position, window_index in enumerate(novel_idx):
+        group = int(pool_labels[position])
+        if group < 0:
+            continue
+        label = resolved.get(int(window_index))
+        if label is not None:
+            labelled_by_group.setdefault(group, Counter())[label] += 1
+
+    groups: list[dict] = []
+    for group, size in sorted(sizes.items(), key=lambda kv: (-kv[1], kv[0])):
+        counts = labelled_by_group.get(group, Counter())
+        n_labelled = sum(counts.values())
+        modal_count = max(counts.values()) if counts else 0
+        tied = sorted(name for name, count in counts.items() if count == modal_count)
+        groups.append({
+            "group": group,
+            "size": size,
+            "n_labelled": n_labelled,
+            "n_unlabelled": size - n_labelled,
+            "labels": dict(counts.most_common()),
+            "modal_label": tied[0] if len(tied) == 1 else None,
+            "modal_tie": tied if len(tied) > 1 else [],
+            "modal_count": modal_count,
+            "modal_share_of_labelled": (
+                round(modal_count / n_labelled, 4) if n_labelled else 0.0
+            ),
+            "modal_share_of_group": round(modal_count / size, 4) if size else 0.0,
+        })
+    return groups
 
 
 def analyze(es, cfg, labels_path: Path, *, per_anchor: int = 300) -> dict:
@@ -287,7 +356,8 @@ def analyze(es, cfg, labels_path: Path, *, per_anchor: int = 300) -> dict:
         "n_jobs": int(cfg.worker.cluster_n_jobs),
     }
     novel_pool_shape: dict = {"status": "no_novel_pool"}
-    outlier_status: dict[int, tuple[bool, int]] = {}
+    outlier_status: dict[int, tuple[bool, int, int]] = {}
+    novel_group_composition: list[dict] = []
     if novel_idx.size > 0:
         novel_embeddings = inputs.embeddings[novel_mask]
         novel_scalars = [s for s, keep in zip(inputs.scalars, novel_mask, strict=False) if keep]
@@ -308,8 +378,11 @@ def analyze(es, cfg, labels_path: Path, *, per_anchor: int = 300) -> dict:
         for position, window_index in enumerate(novel_idx):
             group = int(pool_labels[position])
             outlier_status[int(window_index)] = (
-                (group < 0, 0) if group < 0 else (False, sizes[group])
+                (True, 0, -1) if group < 0 else (False, sizes[group], group)
             )
+        novel_group_composition = _novel_group_composition(
+            novel_idx, pool_labels, sizes, resolved,
+        )
 
     by_label = {}
     for label in TARGET_LABELS:
@@ -338,6 +411,7 @@ def analyze(es, cfg, labels_path: Path, *, per_anchor: int = 300) -> dict:
         "novel": int(novel_idx.size),
         "unresolved_label_join_reasons": unresolved_reasons,
         "novel_pool_shape": novel_pool_shape,
+        "novel_group_composition": novel_group_composition,
         "by_label": by_label,
     }
 
@@ -352,6 +426,24 @@ def summarize(report: dict) -> str:
         lines.append(f"  {label}: n={detail['n_labelled']} status={detail['status_counts']}")
         lines.append(f"    assigned={detail['assigned_detail']}")
         lines.append(f"    novel={detail['novel_detail']}")
+    groups = report.get("novel_group_composition") or []
+    labelled_groups = [group for group in groups if group["n_labelled"]]
+    if groups:
+        lines.append(
+            f"  novel groups: {len(groups)} "
+            f"({len(labelled_groups)} carrying labelled members)",
+        )
+        for group in labelled_groups:
+            modal = group["modal_label"] or (
+                "TIE:" + "|".join(group["modal_tie"]) if group["modal_tie"] else "none"
+            )
+            lines.append(
+                f"    group {group['group']}: size={group['size']} "
+                f"labelled={group['n_labelled']} unlabelled={group['n_unlabelled']} "
+                f"modal={modal} "
+                f"share_of_labelled={group['modal_share_of_labelled']} "
+                f"labels={group['labels']}",
+            )
     return "\n".join(lines)
 
 
