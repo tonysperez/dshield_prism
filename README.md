@@ -105,7 +105,7 @@ box.
 
 <p align="center"><img src=".github/screenshots/graph.png" alt="Graph-based investigation pivot" width="900"></p>
 
-**Report tool.** Gather every in-view artifact — IPs, commands, credentials, file hashes, session sequences — into a copy-ready writeup, with IOCs defanged by default and a choice of plain / markdown / CSV / JSON output.
+**Report tool.** Gather every in-view artifact — IPs, commands, credentials, file hashes, session sequences — into a copy-ready writeup, with IOCs defanged by default and a choice of plain / markdown / CSV / JSON output. Generation runs against the local LLM; cloud escalation for write-ups is currently disabled — the console can't yet re-resolve a write-up's source documents server-side to prove they're explicit-public before that content would leave the box.
 
 <p align="center"><img src=".github/screenshots/report.png" alt="Report tool with category and format options" width="900"></p>
 

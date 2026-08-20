@@ -722,47 +722,17 @@ def call_cloud(
     cfg: Any, secrets: Any, db: Any,
     prompt: str, system_prompt: str, *, max_tokens: int = 2048,
 ) -> tuple[str, int, int, float]:
-    if not cfg.cloud.enabled:
-        raise RuntimeError("cloud LLM disabled in config")
-    if cfg.cloud.provider != "anthropic":
-        raise RuntimeError(f"cloud.provider={cfg.cloud.provider} unsupported for writeup")
-    cap = float(getattr(cfg.cloud, "writeup_daily_budget_usd", 0.0) or 0.0)
-    if cap <= 0.0:
-        raise RuntimeError("cloud.writeup_daily_budget_usd is 0 — cloud escalation disabled")
-    if writeup_budget_remaining_usd(db, cfg) <= 0.0:
-        raise RuntimeError(f"writeup cloud budget exhausted for today (cap=${cap:.2f})")
-    api_key = (
-        getattr(secrets, "anthropic_api_key", None)
-        or getattr(secrets, "cloud_api_key", None)
+    """Disabled (release-readiness P0-2): write-up's anchor/scope are
+    client-supplied JSON, never resolved server-side against ES by stable ID,
+    so nothing in this call path can prove the prompt content is
+    explicit-public before it leaves the box. The `/api/writeup` route already
+    refuses `escalate=True` before reaching here; this raise is the same gate
+    for any other caller, until server-side resolution + classification proof
+    exists (see docs/release-readiness.md)."""
+    raise RuntimeError(
+        "write-up cloud escalation is disabled pending server-side "
+        "classification verification of anchor/scope source documents"
     )
-    if not api_key:
-        raise RuntimeError("anthropic_api_key not set in secrets")
-
-    from enrich.llm.anthropic import AnthropicClient
-    client = AnthropicClient(
-        api_key=api_key,
-        model=cfg.cloud.model,
-        max_tokens=max_tokens,
-        base_url=cfg.cloud.base_url,
-        timeout=cfg.cloud.request_timeout,
-    )
-    try:
-        text, in_tok, out_tok = client.generate_with_usage(
-            prompt, system=system_prompt, max_tokens=max_tokens,
-        )
-    finally:
-        try:
-            client.close()
-        except Exception:
-            pass
-
-    pricing = cfg.cloud.pricing
-    cost = (
-        (in_tok  / 1_000_000.0) * float(pricing.input_per_mtok) +
-        (out_tok / 1_000_000.0) * float(pricing.output_per_mtok)
-    )
-    db.add_writeup_spend(_utc_today(), in_tok, out_tok, cost)
-    return text, int(in_tok), int(out_tok), float(cost)
 
 
 # ---------------------------------------------------------------------------

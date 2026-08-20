@@ -2073,18 +2073,22 @@ def build_app(config_path: str | None = None) -> FastAPI:
 
     @app.post("/api/writeup")
     def write_writeup(body: WriteupRequest) -> JSONResponse:
-        if not llm_cfg and not body.escalate:
+        if body.escalate:
+            # Release-readiness P0-2: `anchor`/`scope` are client-supplied
+            # JSON, not resolved server-side from stable IDs, so there is no
+            # way to prove every source document is explicit-public before
+            # this leaves the box. Disabled until server-side resolution +
+            # classification proof exists (see docs/release-readiness.md).
+            raise HTTPException(
+                403,
+                "write-up cloud escalation is disabled: the console cannot "
+                "yet verify the source documents behind a client-supplied "
+                "anchor/scope are explicit-public before sending them to the "
+                "cloud LLM. Use the local write-up instead.",
+            )
+        if not llm_cfg:
             raise HTTPException(503, "local LLM not configured — add an llm: block to local.yaml")
         parent_cfg, parent_secrets, db = _load_pipeline_state()
-        # Cloud escalation strictly requires the parent state (config +
-        # secrets + writeup_spend bucket). The local path doesn't.
-        if body.escalate and (parent_cfg is None or db is None):
-            raise HTTPException(
-                503,
-                "cloud escalation needs the pipeline's state DB; "
-                "run the console as the dshield_prism user or "
-                "expose cfg.worker.state_db read+write to this user",
-            )
         try:
             from console.writeup import generate_writeup
             result = generate_writeup(
