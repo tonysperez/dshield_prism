@@ -29,6 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from enrich.classification import explicit_public_filters
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
 
@@ -44,12 +45,20 @@ _SOURCE_FIELDS = [
     "dshield.cowrie.enrichment.intent",
 ]
 
+_EMBEDDING_EXISTS = {"exists": {"field": "dshield.cowrie.enrichment.embedding"}}
 
-def _iter_embedded(es, index: str, page_size: int):
+
+def _iter_embedded(es, index: str, page_size: int, cfg):
+    # Committed artifact — only explicit-public docs, regardless of the
+    # configurable releasability posture (release-readiness P1-3; mirrors
+    # capture_anchor_snapshot.py).
     body: dict = {
         "size": page_size,
         "_source": _SOURCE_FIELDS,
-        "query": {"exists": {"field": "dshield.cowrie.enrichment.embedding"}},
+        "query": {"bool": {
+            "must": [_EMBEDDING_EXISTS],
+            "filter": explicit_public_filters(cfg),
+        }},
         "sort": [{"@timestamp": "asc"}, {"_doc": "asc"}],
     }
     search_after = None
@@ -63,6 +72,17 @@ def _iter_embedded(es, index: str, page_size: int):
         for h in hits:
             yield h["_id"], h["_source"]
         search_after = hits[-1]["sort"]
+
+
+def _count_non_public_skipped(es, index: str, cfg) -> int:
+    """How many embedded commands were excluded by the public filter — an
+    audit signal, not a gate input."""
+    total = es.count(index=index, query=_EMBEDDING_EXISTS)["count"]
+    public = es.count(index=index, query={"bool": {
+        "must": [_EMBEDDING_EXISTS],
+        "filter": explicit_public_filters(cfg),
+    }})["count"]
+    return max(0, total - public)
 
 
 def main() -> int:
@@ -80,6 +100,15 @@ def main() -> int:
     idx = cfg.elasticsearch.indexes.cowrie.commands
     if not es.indices.exists(index=idx):
         raise SystemExit(f"Commands index '{idx}' not found.")
+
+    n_skipped_non_public = _count_non_public_skipped(es, idx, cfg)
+    if n_skipped_non_public:
+        print(
+            f"skipping {n_skipped_non_public} embedded command(s) that are not "
+            f"explicit-public (confidential or untagged) — committed snapshots "
+            f"are public-only.",
+            flush=True,
+        )
 
     ccfg = cfg.command_cluster
     metadata = {
@@ -101,12 +130,19 @@ def main() -> int:
     n = 0
     with gzip.open(tmp, "wt", encoding="utf-8") as f:
         f.write(json.dumps(metadata) + "\n")
-        for doc_id, src in _iter_embedded(es, idx, args.page_size):
+        for doc_id, src in _iter_embedded(es, idx, args.page_size, cfg):
             f.write(json.dumps({"_id": doc_id, "_source": src},
                                 separators=(",", ":")) + "\n")
             n += 1
             if n % 1000 == 0:
                 print(f"  wrote {n} commands...", flush=True)
+    if n == 0:
+        tmp.unlink(missing_ok=True)
+        raise SystemExit(
+            "refusing to write an empty snapshot: 0 explicit-public embedded "
+            "commands found. Do NOT leave a committable empty snapshot — "
+            "re-ingest sensors with dshield.classification tags first."
+        )
     tmp.replace(args.output)
     mb = args.output.stat().st_size / (1024 * 1024)
     print(f"\nwrote {args.output} — {n} commands, {mb:.2f} MB gzipped")

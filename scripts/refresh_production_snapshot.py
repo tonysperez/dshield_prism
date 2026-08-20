@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from build_eval_set import _redact_event  # type: ignore
 
+from enrich.classification import explicit_public_filters
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
 
@@ -57,13 +58,20 @@ _SNAPSHOT_SOURCE_FIELDS = [
 ]
 
 
-def _iter_embedded_rollups(es, index: str, page_size: int):
+_EMBEDDING_EXISTS = {"exists": {"field": "dshield.cowrie.enrichment.session.embedding"}}
+
+
+def _iter_embedded_rollups(es, index: str, page_size: int, cfg):
+    # Committed artifact — only explicit-public docs, regardless of the
+    # configurable releasability posture (release-readiness P1-3; mirrors
+    # capture_anchor_snapshot.py).
     body: dict = {
         "size": page_size,
         "_source": _SNAPSHOT_SOURCE_FIELDS,
-        "query": {
-            "exists": {"field": "dshield.cowrie.enrichment.session.embedding"}
-        },
+        "query": {"bool": {
+            "must": [_EMBEDDING_EXISTS],
+            "filter": explicit_public_filters(cfg),
+        }},
         "sort": [{"@timestamp": "asc"}, {"_doc": "asc"}],
     }
     search_after = None
@@ -77,6 +85,17 @@ def _iter_embedded_rollups(es, index: str, page_size: int):
         for h in hits:
             yield h["_id"], h["_source"]
         search_after = hits[-1]["sort"]
+
+
+def _count_non_public_skipped(es, index: str, cfg) -> int:
+    """How many embedded rollups were excluded by the public filter — an
+    audit signal, not a gate input."""
+    total = es.count(index=index, query=_EMBEDDING_EXISTS)["count"]
+    public = es.count(index=index, query={"bool": {
+        "must": [_EMBEDDING_EXISTS],
+        "filter": explicit_public_filters(cfg),
+    }})["count"]
+    return max(0, total - public)
 
 
 def main() -> int:
@@ -102,6 +121,15 @@ def main() -> int:
         raise SystemExit(
             f"Sessions rollup index '{sessions_idx}' not found. "
             f"Check elasticsearch.indexes.cowrie.sessions_rollup."
+        )
+
+    n_skipped_non_public = _count_non_public_skipped(es, sessions_idx, cfg)
+    if n_skipped_non_public:
+        print(
+            f"skipping {n_skipped_non_public} embedded rollup(s) that are not "
+            f"explicit-public (confidential or untagged) — committed snapshots "
+            f"are public-only.",
+            flush=True,
         )
 
     captured_at = datetime.now(UTC).isoformat()
@@ -134,7 +162,7 @@ def main() -> int:
     with gzip.open(tmp_out, "wt", encoding="utf-8") as f:
         f.write(json.dumps(metadata) + "\n")
         for doc_id, src in _iter_embedded_rollups(
-            es, sessions_idx, args.page_size,
+            es, sessions_idx, args.page_size, cfg,
         ):
             n_seen += 1
             redacted = _redact_event(src)
@@ -143,6 +171,13 @@ def main() -> int:
             n_written += 1
             if n_written % 1000 == 0:
                 print(f"  wrote {n_written} rollups...", flush=True)
+    if n_written == 0:
+        tmp_out.unlink(missing_ok=True)
+        raise SystemExit(
+            "refusing to write an empty snapshot: 0 explicit-public embedded "
+            "rollups found. Do NOT leave a committable empty snapshot — "
+            "re-ingest sensors with dshield.classification tags first."
+        )
     # Atomic swap so a partial dump can't be picked up by the gate.
     tmp_out.replace(args.output)
     size_mb = args.output.stat().st_size / (1024 * 1024)

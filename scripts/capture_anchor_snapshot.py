@@ -56,7 +56,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from enrich.classification import CLASSIFICATION_KEYWORD, PUBLIC, releasable_filter
+from enrich.classification import explicit_public_filters as explicitly_public_filters
 from enrich.config import load_config, load_secrets
 from enrich.es_client import make_client
 from enrich.sources.cowrie.lexical import (
@@ -129,18 +129,6 @@ def require_public_command_taxonomy(hash_to_cluster: dict[str, str]) -> dict[str
             "rebuild the command enrichment index before rerunning",
         )
     return hash_to_cluster
-
-
-def explicitly_public_filters(cfg) -> list[dict]:
-    """Return capture filters that always require an explicit public tag.
-
-    The global releasability setting may permit unclassified records for other
-    local operations. Committed capture artifacts are stricter: every source
-    document must be explicitly public regardless of that configurable posture.
-    """
-    explicit = {"term": {CLASSIFICATION_KEYWORD: PUBLIC}}
-    releasable = releasable_filter(cfg)
-    return [releasable] if releasable == explicit else [releasable, explicit]
 
 
 def resolve_min_public(explicit: int | None, cfg) -> int:
