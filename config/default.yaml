@@ -314,6 +314,21 @@ session:
   # while homogeneity holds at 0.86 and density fragments are absorbed; 0.92
   # over-merges. See eval/results/F-spike-verdict.md.
   playbook_merge_threshold: 0.94
+  # Anchor-identity match only — NOT the cluster merge above, which stays 0.94 on
+  # the 2026-06-01 fragmentation sweep. 0.96 sits in an empty valley: the live
+  # run's 13 group centroids score 0.9457, 0.9485, then nothing until 0.9629 and
+  # a cluster at 1.0000. Only the two hair's-margin inheritances change, and both
+  # then mint pure anchors (Finding 71D/E).
+  playbook_anchor_match_threshold: 0.96
+  # E4 (Finding 76) — mint-time predicate split. When a playbook group that REUSED an
+  # existing anchor id splits cleanly into {fires no structural predicate} / {fires any},
+  # with both sides at or above novel_pool_cluster_min_cluster_size, mint the minority as
+  # its own anchor and re-pin the parent onto its retained members. The re-pin is a
+  # deliberate, narrow exception to write-once anchor pinning (see
+  # setup/es-mappings/cowrie/playbook_anchors.json) and is reversible via
+  # `repinned_from_centroid`. Measured: 24 of 9,351 sessions move, all parent -> new,
+  # novel rate unchanged, iot_cli_probe 0.000 -> 1.0000. OFF by default.
+  mint_predicate_split: false
   # Option A assignment thresholds. Embedding cosine to the nearest anchor:
   # >= confident_tau assigns outright; [tau, confident_tau) is the band, confirmed
   # by the TF-IDF secondary signal >= tfidf_tau (else the anchor is treated as a

@@ -320,6 +320,25 @@ class SessionConfig(BaseModel):
     # disables merging (1 cluster = 1 playbook, legacy behaviour). 0.96 is
     # the empirically-tuned default — see scripts/diagnose_centroid_similarity.py.
     playbook_merge_threshold: float = 0.96
+    # Cosine floor for reusing an existing anchor's `playbook_id` when a playbook
+    # group's centroid is matched against the pinned anchor library. None = share
+    # `playbook_merge_threshold` (historical behaviour). Split out because that one
+    # value also drives cluster->playbook merging and noise rescue, and it equals
+    # `assignment_tau` — which compares *sessions* to anchors, not centroids. A
+    # group can therefore clear the centroid match, inherit an id, and never mint,
+    # while every one of its members falls below `assignment_tau` and stays novel
+    # forever (Findings 70/71). Must be >= playbook_merge_threshold. See
+    # `effective_anchor_match_threshold`.
+    playbook_anchor_match_threshold: float | None = None
+    # E4 (Finding 76) — mint-time predicate split. When a playbook group's member
+    # sessions partition into {fires no structural predicate} / {fires any} with both
+    # sides at or above the novel-pool minting floor, mint the minority side as its own
+    # anchor and RE-PIN the parent from its retained members. The re-pin is the
+    # load-bearing half: without it both parts sit at cosine ~0.99 of the original
+    # centroid and re-inherit its id, so the split is a no-op (Finding 76A/B). Ships
+    # OFF — the re-pin is a deliberate, narrow exception to write-once anchor pinning
+    # and is the operator's call to enable.
+    mint_predicate_split: bool = False
     # Option A — direct nearest-anchor assignment (the pipeline inversion). See
     # src/enrich/sources/cowrie/assignment.py and
     # docs/decisions.md §5f. Embedding cosine to the nearest
