@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shlex
 from pathlib import Path
@@ -47,8 +48,19 @@ log = logging.getLogger(__name__)
 _DATA_DIR = Path(__file__).parent / "data" / "commands"
 _CURATED_DIR = _DATA_DIR / "curated"
 _TLDR_BUNDLE = _DATA_DIR / "tldr.json"
-_DENYLIST_PATH = _DATA_DIR / "denylist.yaml"
 _ANALYST_NOTES_PATH = _DATA_DIR / "analyst_notes.yaml"
+
+# The denylist is the one file this module *writes* (Tune page block/unblock).
+# Under systemd, the installed source tree is read-only (`ProtectSystem=strict`)
+# — release-readiness P1-5 — so a writable deploy sets `PRISM_STATE_DIR` (every
+# unit that imports this module does, see systemd/*.service) to redirect both
+# the read and the write there. Unset (local/dev checkout): falls back to the
+# package-relative path, as before.
+_STATE_DIR_OVERRIDE = os.environ.get("PRISM_STATE_DIR")
+_DENYLIST_PATH = (
+    Path(_STATE_DIR_OVERRIDE) / "command_grounding" / "denylist.yaml"
+    if _STATE_DIR_OVERRIDE else _DATA_DIR / "denylist.yaml"
+)
 
 # Cap on how many analyst notes can render into a single prompt block —
 # defends against a YAML with hundreds of broad-pattern entries.

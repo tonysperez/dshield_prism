@@ -1,6 +1,7 @@
 # Per-deploy / secret config — never commit
 .env
 config/local.yaml
+*.bak
 
 # Python
 pyvenv.cfg

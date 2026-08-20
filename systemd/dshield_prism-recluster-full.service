@@ -24,6 +24,13 @@ TimeoutStartSec=6h
 # unit's full name — no per-file hardcoding and no console-side unit->verb map
 # to drift. Set AFTER the EnvironmentFile so it wins.
 Environment=PRISM_SYSTEMD_UNIT=%n
+# Release-readiness P1-5: the installed source tree is read-only
+# (ProtectSystem=strict below), so command_grounding's denylist read/write
+# path resolves under this unit's ReadWritePaths instead of the package dir.
+# Must match every other unit that touches command_grounding (console + all
+# pipeline units) or the console's denylist edits split-brain from what the
+# pipeline actually reads.
+Environment=PRISM_STATE_DIR=/var/lib/dshield_prism
 
 # Post-Option-A-cutover this weekly unit does four things:
 #   * SESSIONS (assign): a single all-time `assign_sessions --window-days 0` — sweeps

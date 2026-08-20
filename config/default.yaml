@@ -614,3 +614,17 @@ ops:
   # verb): the backward cycle runs ~hourly, so 2h (120) with no run = the
   # schedule stalled. Read by the console's OpsConfig mirror.
   cycle_stale_min: 120
+
+hunts:
+  # Where the console's Hunts page reads/writes `*.yaml` hunt files (create,
+  # edit, delete, toggle). Same pattern as `worker.state_db` above: an
+  # absolute path under the systemd unit's `ReadWritePaths`
+  # (`/var/lib/dshield_prism`), because the installed source tree at
+  # `/opt/dshield_prism` is read-only (`ProtectSystem=strict`) and the Python
+  # default (`config/hunts`, relative to cwd) would resolve inside it.
+  # `setup/scripts/install.sh` creates this directory and seeds it from the
+  # repo's shipped `config/hunts/*.yaml` on install. A workstation git
+  # checkout needs the same `PRISM_LOCAL_CONFIG` override workaround
+  # documented for `worker.state_db` in docs/operations.md if this path isn't
+  # writable locally.
+  config_dir: "/var/lib/dshield_prism/hunts"

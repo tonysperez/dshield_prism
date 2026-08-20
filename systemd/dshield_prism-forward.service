@@ -16,6 +16,13 @@ EnvironmentFile=/opt/dshield_prism/.env
 # unit's full name — no per-file hardcoding and no console-side unit->verb map
 # to drift. Set AFTER the EnvironmentFile so it wins.
 Environment=PRISM_SYSTEMD_UNIT=%n
+# Release-readiness P1-5: the installed source tree is read-only
+# (ProtectSystem=strict below), so command_grounding's denylist read/write
+# path resolves under this unit's ReadWritePaths instead of the package dir.
+# Must match every other unit that touches command_grounding (console + all
+# pipeline units) or the console's denylist edits split-brain from what the
+# pipeline actually reads.
+Environment=PRISM_STATE_DIR=/var/lib/dshield_prism
 
 # Mutex with the backward pass — they both touch the SQLite cache and the
 # enriched-commands index. flock blocks (no -n) so a 30-min firing waits

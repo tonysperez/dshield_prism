@@ -287,12 +287,43 @@ rsync -a --delete \
     --exclude='*.egg-info/' \
     --exclude='*.pyc' \
     --exclude='.git/' \
+    --exclude='*.bak' \
+    --exclude='eval/' \
+    --exclude='.agents/' \
     "${SRC_DIR}/" "${INSTALL_DIR}/"
 
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}"
 chmod 600 "${INSTALL_DIR}/.env" 2>/dev/null || true
 chmod 600 "${INSTALL_DIR}/config/local.yaml" 2>/dev/null || true
 chmod 600 "${INSTALL_DIR}/config/local.yml"  2>/dev/null || true
+
+# hunts.config_dir (config/default.yaml) points at ${STATE_DIR}/hunts, not the
+# installed (read-only under systemd's ProtectSystem=strict) source tree — the
+# console's Hunts page writes there. Create it and, on first install only,
+# seed it from the shipped starter hunts so the page isn't empty; a re-install
+# leaves an operator's own hunts (created/edited via the console) untouched.
+HUNTS_DIR="${STATE_DIR}/hunts"
+mkdir -p "${HUNTS_DIR}"
+if ! find "${HUNTS_DIR}" -maxdepth 1 \( -name '*.yaml' -o -name '*.yml' \) -print -quit | grep -q .; then
+    log "Seeding ${HUNTS_DIR} with the shipped starter hunts"
+    cp "${INSTALL_DIR}/config/hunts/"*.y*ml "${HUNTS_DIR}/" 2>/dev/null || true
+fi
+chown -R "${SERVICE_USER}:${SERVICE_USER}" "${HUNTS_DIR}"
+chmod 750 "${HUNTS_DIR}"
+
+# Same reasoning for the command-grounding denylist: every systemd unit sets
+# PRISM_STATE_DIR=/var/lib/dshield_prism (release-readiness P1-5) so
+# command_grounding.py reads/writes it there instead of the read-only
+# installed package. Seed from the shipped curated denylist on first install
+# only — re-installs must not clobber tokens block/unblocked since via Tune.
+GROUNDING_DIR="${STATE_DIR}/command_grounding"
+mkdir -p "${GROUNDING_DIR}"
+if [[ ! -f "${GROUNDING_DIR}/denylist.yaml" ]]; then
+    log "Seeding ${GROUNDING_DIR}/denylist.yaml with the shipped curated denylist"
+    cp "${INSTALL_DIR}/src/enrich/data/commands/denylist.yaml" "${GROUNDING_DIR}/denylist.yaml" 2>/dev/null || true
+fi
+chown -R "${SERVICE_USER}:${SERVICE_USER}" "${GROUNDING_DIR}"
+chmod 750 "${GROUNDING_DIR}"
 
 # ---- D. venv + install -----------------------------------------------------
 

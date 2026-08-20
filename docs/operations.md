@@ -378,6 +378,14 @@ workstation:
    write. Override via `PRISM_LOCAL_CONFIG` pointing at a *merged* config
    (copy `local.yaml`, append a `worker.state_db: /tmp/...` redirect) — the
    loader uses the override as the entire `local.yaml`, so merge, don't replace.
+3. `default.yaml` similarly points `hunts.config_dir` at
+   `/var/lib/dshield_prism/hunts` (production's `ReadWritePaths`) — same
+   `PRISM_LOCAL_CONFIG` merge-override trick, or just run against the repo's
+   shipped `config/hunts/` by adding `hunts: {config_dir: config/hunts}` to
+   the merged config. The command-grounding denylist has the analogous
+   `PRISM_STATE_DIR` env-var override (default unset → package-relative
+   `src/enrich/data/commands/denylist.yaml`, which is what a workstation run
+   gets automatically since it doesn't set the var).
 
 **Reading ES directly** (self-signed cert → `-k`), bounded with the public-only
 filter for any cowrie data index:
