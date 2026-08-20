@@ -270,6 +270,8 @@ def iter_command_events(
             "process.command_line",
             "cowrie.session_id",
             "source.ip",
+            "dshield.classification",
+            "observer.name",
         ],
         "query": {"bool": {"must": must}},
         "sort": [{"@timestamp": "asc"}, {"_doc": "asc"}],
@@ -381,6 +383,16 @@ def _extract_session(src: dict) -> str | None:
 def _extract_ip(src: dict) -> str | None:
     s = src.get("source") or {}
     return s.get("ip")
+
+
+def _single_sensor(sensors: set) -> str | None:
+    """A command's contributing sensors, collapsed to one name only when
+    exactly one (non-None) sensor is present. Ambiguous (multi-sensor or
+    unknown) commands get no sensor scope — co-occurrence still stays
+    public-only via `releasable_filter`, just without the extra per-sensor
+    narrowing."""
+    named = {s for s in sensors if s}
+    return next(iter(named)) if len(named) == 1 else None
 
 
 def _now() -> str:
@@ -592,10 +604,12 @@ def fetch_cooccurring_commands(
     events_index: str,
     command: str,
     *,
+    cfg: AppConfig,
     session_sample_size: int,
     top_k: int,
     min_sessions: int,
     total_sessions: int,
+    sensor: str | None = None,
 ) -> list[tuple[str, int]]:
     """Return [(sibling_command, window_session_count), ...] ordered by
     TF-IDF salience (most informative siblings first).
@@ -615,17 +629,31 @@ def fetch_cooccurring_commands(
     are *demoted*, not rejected. Net cost is lower than the old code,
     which ran one cardinality query per candidate above the cutoff.
     ROADMAP issue #6.
+
+    Every query is bounded by `releasable_filter(cfg)` — these results feed
+    cloud prompt context (`cooccurring_block`), so a sibling command from a
+    confidential or untagged session must never surface here, regardless of
+    the anchor command's own classification. When `sensor` is known (single
+    sensor contributed the anchor command), results are additionally scoped
+    to that sensor so a raw `cowrie.session_id` collision across sensors
+    can't pull in another sensor's (still-public) siblings.
     """
     if not command:
         return []
+    public_filter = [releasable_filter(cfg)]
+    if sensor:
+        public_filter.append({"term": {"observer.name": sensor}})
     try:
         resp = es.search(
             index=events_index,
             size=0,
-            query={"bool": {"must": [
-                {"term": {"event.action": "cowrie.command.input"}},
-                {"term": {"process.command_line": command}},
-            ]}},
+            query={"bool": {
+                "must": [
+                    {"term": {"event.action": "cowrie.command.input"}},
+                    {"term": {"process.command_line": command}},
+                ],
+                "filter": public_filter,
+            }},
             aggs={"sessions": {"terms": {"field": "cowrie.session_id", "size": session_sample_size}}},
         )
         sids = [b["key"] for b in resp["aggregations"]["sessions"]["buckets"] if b.get("key")]
@@ -645,10 +673,13 @@ def fetch_cooccurring_commands(
         resp2 = es.search(
             index=events_index,
             size=0,
-            query={"bool": {"must": [
-                {"term": {"event.action": "cowrie.command.input"}},
-                {"terms": {"cowrie.session_id": sids}},
-            ]}},
+            query={"bool": {
+                "must": [
+                    {"term": {"event.action": "cowrie.command.input"}},
+                    {"terms": {"cowrie.session_id": sids}},
+                ],
+                "filter": public_filter,
+            }},
             aggs={
                 "siblings": {
                     "terms": {"field": "process.command_line", "size": bucket_size},
@@ -682,10 +713,13 @@ def fetch_cooccurring_commands(
             resp3 = es.search(
                 index=events_index,
                 size=0,
-                query={"bool": {"must": [
-                    {"term": {"event.action": "cowrie.command.input"}},
-                    {"terms": {"process.command_line": list(tf_by_sib.keys())}},
-                ]}},
+                query={"bool": {
+                    "must": [
+                        {"term": {"event.action": "cowrie.command.input"}},
+                        {"terms": {"process.command_line": list(tf_by_sib.keys())}},
+                    ],
+                    "filter": [releasable_filter(cfg)],
+                }},
                 aggs={
                     "by_cmd": {
                         "terms": {"field": "process.command_line", "size": len(tf_by_sib)},
@@ -1151,10 +1185,15 @@ def run_enrich(
                 # (content-deduped) command — aggregated later, "most
                 # restrictive source wins", to gate cloud escalation.
                 "class_set": set(),
+                # Sensors that contributed an event to this command. Used to
+                # scope co-occurrence lookups by observer.name when a single
+                # sensor contributed — see fetch_cooccurring_commands.
+                "sensors": set(),
             }
             groups[h] = g
         g["count"] += 1
         g["class_set"].add((src.get("dshield") or {}).get("classification"))
+        g["sensors"].add((src.get("observer") or {}).get("name"))
         sid = _extract_session(src)
         if sid:
             g["sessions"].add(sid)
@@ -1295,10 +1334,12 @@ def run_enrich(
                 if cooc_cfg.enabled:
                     cooccurring = fetch_cooccurring_commands(
                         es, events_idx, g["command"],
+                        cfg=cfg,
                         session_sample_size=cooc_cfg.session_sample_size,
                         top_k=cooc_cfg.top_k,
                         min_sessions=cooc_cfg.min_sessions,
                         total_sessions=total_sessions,
+                        sensor=_single_sensor(g["sensors"]),
                     )
 
                 parent_parsed = _synth_parsed_from_parent(inherit_parent)
@@ -1381,10 +1422,12 @@ def run_enrich(
             if cooc_cfg.enabled:
                 cooccurring = fetch_cooccurring_commands(
                     es, events_idx, g["command"],
+                    cfg=cfg,
                     session_sample_size=cooc_cfg.session_sample_size,
                     top_k=cooc_cfg.top_k,
                     min_sessions=cooc_cfg.min_sessions,
                     total_sessions=total_sessions,
+                    sensor=_single_sensor(g["sensors"]),
                 )
                 if cooccurring:
                     stats["cooccurrence_hits"] += 1
@@ -1801,6 +1844,7 @@ def run_escalate(
         if cooc_cfg.enabled:
             cooccurring = fetch_cooccurring_commands(
                 es, events_idx, command,
+                cfg=cfg,
                 session_sample_size=cooc_cfg.session_sample_size,
                 top_k=cooc_cfg.top_k,
                 min_sessions=cooc_cfg.min_sessions,
@@ -1993,6 +2037,7 @@ def run_reembed(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) -> dict
             if use_cooc:
                 cooccurring = fetch_cooccurring_commands(
                     es, events_idx, doc["command"],
+                    cfg=cfg,
                     session_sample_size=cooc_cfg.session_sample_size,
                     top_k=cooc_cfg.top_k,
                     min_sessions=cooc_cfg.min_sessions,
@@ -2498,6 +2543,7 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
                 if cooc_cfg.enabled:
                     cooccurring2 = fetch_cooccurring_commands(
                         es, events_idx, norm,
+                        cfg=cfg,
                         session_sample_size=cooc_cfg.session_sample_size,
                         top_k=cooc_cfg.top_k,
                         min_sessions=cooc_cfg.min_sessions,
@@ -2565,6 +2611,7 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
             if cooc_cfg.enabled:
                 cooccurring = fetch_cooccurring_commands(
                     es, events_idx, norm,
+                    cfg=cfg,
                     session_sample_size=cooc_cfg.session_sample_size,
                     top_k=cooc_cfg.top_k,
                     min_sessions=cooc_cfg.min_sessions,
@@ -2734,6 +2781,7 @@ def run_reenrich_stale(cfg: AppConfig, secrets: Secrets, dry_run: bool = False) 
             if cooc_cfg.enabled:
                 cooccurring2 = fetch_cooccurring_commands(
                     es, events_idx, norm,
+                    cfg=cfg,
                     session_sample_size=cooc_cfg.session_sample_size,
                     top_k=cooc_cfg.top_k,
                     min_sessions=cooc_cfg.min_sessions,
