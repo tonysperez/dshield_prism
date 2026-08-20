@@ -466,24 +466,29 @@ def increment_silent_runs(
     """
     if not es.indices.exists(index=index):
         return 0
-    body = {
-        "query": {
-            "bool": {
-                "must_not": [
-                    {"term": {"last_run_id": current_run_id}},
-                ]
-            }
-        },
-        "script": {
-            "source": (
-                "ctx._source.silent_runs_current = "
-                "(ctx._source.silent_runs_current == null ? 0 : ctx._source.silent_runs_current) + 1;"
-            ),
-            "lang": "painless",
-        },
+    query = {
+        "bool": {
+            "must_not": [
+                {"term": {"last_run_id": current_run_id}},
+            ]
+        }
+    }
+    script = {
+        "source": (
+            "ctx._source.silent_runs_current = "
+            "(ctx._source.silent_runs_current == null ? 0 : ctx._source.silent_runs_current) + 1;"
+        ),
+        "lang": "painless",
     }
     try:
-        resp = es.update_by_query(index=index, body=body, refresh=True, conflicts="proceed")
+        # `query`/`script` as keyword args, not `body=`: elasticsearch-py counts
+        # `conflicts` among update_by_query's body fields, so body + conflicts
+        # raises "Received multiple values for 'conflicts'" and this bump
+        # silently returns 0 — which stalls the retirement sweep.
+        resp = es.update_by_query(
+            index=index, query=query, script=script,
+            refresh=True, conflicts="proceed",
+        )
         return int(resp.get("updated") or 0)
     except Exception as exc:
         log.warning("[lifecycle] silent-run bump on %s failed: %s", index, exc)

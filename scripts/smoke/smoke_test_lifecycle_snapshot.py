@@ -76,11 +76,21 @@ class _StubES:
         self.store.setdefault(index, {})[id] = dict(document)
         return {"result": "indexed"}
 
-    def update_by_query(self, *, index: str, body: dict, refresh=True, conflicts="proceed"):
+    def update_by_query(self, *, index: str, query: dict, script: dict | None = None,
+                        refresh=True, conflicts="proceed", **kwargs):
+        # `query`/`script` as keyword args mirrors the real client: `conflicts`
+        # is one of update_by_query's body fields, so a caller passing `body=`
+        # alongside it gets "Received multiple values for 'conflicts'" and loses
+        # the write. Reject that shape here so it can't come back.
+        if "body" in kwargs:
+            raise TypeError(
+                "Received multiple values for 'conflicts', specify parameters "
+                "using either body or parameters, not both."
+            )
         # Naive implementation: parse must_not -> last_run_id != X, bump
         # silent_runs_current on the remaining docs.
-        self.update_by_query_calls.append({"index": index, "body": body})
-        must_not = ((body.get("query") or {}).get("bool") or {}).get("must_not") or []
+        self.update_by_query_calls.append({"index": index, "query": query})
+        must_not = ((query or {}).get("bool") or {}).get("must_not") or []
         exclude_run = None
         for clause in must_not:
             term = clause.get("term") or {}
