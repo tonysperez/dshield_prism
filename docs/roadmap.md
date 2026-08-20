@@ -6,6 +6,34 @@ Open work, forward-only. Shipped behavior is described in
 
 Remove an item from this file when it ships; add new open items as they surface.
 
+## Quality — raising real-anchor macro-F1
+
+Real-anchor macro-F1 is **0.6385** as deployed and **0.6702** with the TF-IDF band disabled
+([evaluation.md](evaluation.md)), against 0.7898 on label prototypes; it was 0.4944 before the
+anchor-library fixes. The coverage share of the gap is largely paid — behaviors with no anchor
+representing them went **4 of 10 → 2** — and the novel pool is down to 21 sessions, all honestly
+below threshold. What remains is the band divergence, the geometry share, and one conflated label.
+
+Ordered work, highest value-per-hour first:
+
+1. **Find out why the band started rejecting labelled rows.** The deployed and band-disabled arms
+   scored identically until the last mint cycle; they now differ by 0.0317, entirely three
+   `botnet_loader` rows the band sends to the novel pool, and every one of those rejections is wrong.
+   Not an argument for disabling the band — its measured work is thousands of corpus-scale checks the
+   labelled sample contains none of — but the new behaviour needs an explanation.
+2. **Enable `mint_predicate_split`** — shipped off. Built and measured (`iot_cli_probe` 0.000 → 0.667 —
+   two of its three sessions, re-derived after the last cycle); what remains is the operator
+   decision to turn on its re-pin exception to write-once anchor pinning, then a cycle and a fixture
+   recapture. Note it declines the anchor behind item 1, so it is not that fix.
+3. **Grow the labelled set** — four labels sit at n≤3, and two of them report 0.0000 or 1.0000 off
+   three sessions. The real-anchor CI is now ±0.080, so this is about per-label reporting, not the
+   headline.
+4. **Novel precision** — the last real-geometry figure (0.21) predates the anchor-library fixes and
+   is void; re-measure before scoping.
+
+Not on the list, each declined with evidence in [decisions.md](decisions.md): lowering
+`assignment_tau`, globally disabling the band, and any third structural-predicate threshold rule.
+
 ## Ingestion sources
 
 - **Webhoneypot ingestion** — second data source past cowrie. The pipeline is
@@ -123,18 +151,17 @@ utilities, and it's wired into `.github/workflows/eval.yml:37` +
   geometry. Commit a representative public anchor/sample snapshot with capture
   identity, then establish the new baseline without retuning the shipped
   thresholds to the eval set.
-- **Make the structural predicates discriminative** — the rescue tier is measured
-  and stays off (`docs/decisions.md`); the blocker is that three of the seven
-  predicates fire on 71-87% of sessions, so set-overlap is nearly unconditional.
-  Unmeasured options: weight overlap by corpus rarity (IDF-like), require >=2
-  overlapping predicates, or split the saturated predicates into finer
-  sub-behaviours. The four rare predicates are the discriminative ones and already
-  separate the confusable label pairs at 0.9091-1.0000
-  (`scripts/eval_predicate_falsification.py`) — the separation signal exists, the
-  unweighted overlap rule dilutes it. Re-run
-  `eval_assignment_faithful.py --anchors ... --rescue-tau-sweep` to score any
-  candidate rule; the bar is a gated arm that rescues *correctly*, which today it
-  never does.
+- **Find a placement for the structural predicates that isn't a threshold** — the
+  separation signal is real (0.9091-1.0000 on the confusable pairs,
+  `scripts/eval_predicate_falsification.py`), but *both* threshold-side placements
+  are now measured and declined: the below-τ rescue tier (every rescue wrong) and
+  the in-band conflation veto (zero reachable wins, one correct assignment
+  destroyed). Both stay validated and feature-off; see `docs/decisions.md`. The
+  cause is structural — a threshold mechanism redistributes sessions among the
+  anchors that exist, and the failing sessions have no correct anchor to reach. The
+  one untried placement is **mint-time**: use predicates to split a
+  behaviourally-mixed cluster *before* it becomes an anchor, which creates a
+  destination instead of redirecting to a missing one. Unmeasured.
 - **Prompt paths are CWD-relative, not install-root-anchored** — `cfg.prompts.*`
   (`playbook_name`, `command_deep_dive`, `cluster_pair_explanation`,
   `playbook_disambiguate`) are bare relative strings, loaded via plain

@@ -443,6 +443,16 @@ The full pre-commit CI surface (lint + smoke + eval gates) is in
    `elasticsearch.backpressure.heap_high_watermark` so it pauses earlier; or
    reduce the heaviest aggregation's footprint via `session.specificity_store_cap`.
    Set `elasticsearch.backpressure.enabled: false` to opt out entirely.
+9. **`name playbooks` logs `version_conflicts` / a 409 on
+   `prism.cluster.cowrie.session`** → two naming runs are writing the same
+   centroid docs. In-run stale reads are absorbed automatically (refresh +
+   retry); a *surviving* conflict is a genuine concurrent writer, so check for an
+   overlapping run (`ps -ef | grep -E 'enrich.cli|assign_sessions'`, and whether
+   the backward timer refired while the previous cycle's LLM naming was still
+   going). Symptom of the lost write: a centroid doc with no `playbook_name`
+   whose member sessions carry a `playbook_id`. Re-running `name playbooks`
+   re-stamps it (mixed-state groups are reprocessed, and the name is reused by
+   id — no LLM call).
 
 ## Restamping a non-semantic config-hash change
 

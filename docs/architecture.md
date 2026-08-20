@@ -151,7 +151,11 @@ adversary tradecraft (see below). Code:
   fall outside its radius; an opt-in drift remedy (`anchor_satellite_minting_enabled`)
   mints an *additional* anchor doc for the same id — a distinct `_id`, same
   `playbook_id` — rather than updating the pinned centroid, keeping the
-  anti-chaining guarantee intact. See [reference.md](reference.md#tunable-knobs).
+  anti-chaining guarantee intact. A second, off-by-default remedy
+  (`mint_predicate_split`) handles the opposite failure — one anchor covering two
+  behaviors — by splitting a group on the structural predicates at mint time and
+  re-pinning the parent onto the members it keeps. See
+  [reference.md](reference.md#tunable-knobs).
 - **Campaign** — coordinated multi-session activity, mined two independent ways:
   - **behavior** (`cmp-bhv-…`) — frequent-itemset mining (FP-growth) over each
     IP's set of playbooks: "these IPs all run this exact combination."

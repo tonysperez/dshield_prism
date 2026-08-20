@@ -10,7 +10,13 @@ the chat interface except this prompt.**
 ## How to use
 
 1. Cd into the repo root (the agent expects relative paths
-   `eval/sessions/*.md` and `eval/labels.yaml`).
+   `eval/sessions-v1/*.md` and `eval/labels.yaml`).
+
+   > **`eval/sessions/` is a stale leftover.** `render_eval_set.py`
+   > writes to `eval/sessions-v1/` (its `--out-dir` default). The old
+   > directory still exists and holds only the pre-growth sessions, so
+   > an agent pointed at it silently labels a subset and never sees
+   > anything added since. Delete it or ignore it; never read it.
 2. **Pick the target labels file.** Default is `eval/labels.yaml` (the
    primary set). Running a second, concurrent label set for
    agreement scoring (a second annotator, or the same annotator
@@ -38,7 +44,7 @@ the chat interface except this prompt.**
 4. Wait for the agent to finish (it should run the validator as its
    last step and report `EXIT=0`).
 5. Spot-check ~10% of the agent's labels by reading the matching
-   `eval/sessions/<session_id>.md` alongside the YAML block. The
+   `eval/sessions-v1/<session_id>.md` alongside the YAML block. The
    rubric is the ground truth, not the LLM — if it goes off-vocabulary
    or labels too aggressively, re-prompt with a corrective example.
 6. Once both files exist and are validated, score agreement:
@@ -83,18 +89,33 @@ assignment.
    the prompt below is a summary. If the rubric and this prompt
    disagree on anything, the rubric wins.
 
-2. **Enumerate the eval set.** Run `ls eval/sessions/ | wc -l` to
-   confirm the session count. Then list them: `ls eval/sessions/`.
+2. **Find what is actually unlabeled.** The set is grown
+   incrementally, so most blocks are usually already labeled by a
+   human. Do not enumerate the whole directory. Run:
 
-3. **Slurp every session into one tool output.** Run
-   `for f in eval/sessions/*.md; do cat "$f"; echo; done` so you
-   see every rendered session in a single Bash result. The H1 of each
-   section (`# <session_id>`) is the delimiter.
+       console/.venv/bin/python - <<'EOF'
+       import yaml
+       d = yaml.safe_load(open("eval/labels.yaml"))
+       todo = [k for k, v in d.items()
+               if isinstance(v, dict) and not v.get("annotated")]
+       print(len(todo)); print("\n".join(todo))
+       EOF
 
-4. **Read the current labels file.** `Read eval/labels.yaml`. Every
-   block should have `annotated: false` on a fresh build. If any block
-   has `annotated: true`, an analyst has already labeled it — DO NOT
-   overwrite that block. Leave it verbatim and label the rest.
+   That list is your entire job. Every other block is finished work.
+
+3. **Slurp ONLY those sessions into one tool output.** Write the ids
+   from step 2 to a file, then:
+
+       while read s; do cat "eval/sessions-v1/$s.md"; echo; done < ids.txt
+
+   The H1 of each section (`# <session_id>`) is the delimiter. Reading
+   the already-labeled sessions wastes context and tempts you to
+   re-label them.
+
+4. **Read the current labels file.** `Read eval/labels.yaml`. Blocks
+   with `annotated: true` are human-confirmed — DO NOT overwrite,
+   reorder, or reformat them. Leave them byte-identical and label only
+   the `annotated: false` ones.
 
 5. **Load the vocabulary.** The label vocabulary is **closed** — read
    the "Canonical labels" table in `eval/RUBRIC.md` and use only those
@@ -109,10 +130,16 @@ assignment.
 6. **Write the labels file.** Use a single Write call to overwrite
    `eval/labels.yaml` with the full labeled file. Preserve:
    - The leading comment block (copy it verbatim from your earlier Read).
-   - Every block keyed by a session that exists in `eval/sessions/`.
+   - Every block keyed by a session that exists in `eval/sessions-v1/`.
    - The exact field order: `annotated`, `is_real`, `playbook_label`,
      `expected_findings`, `notes`, `annotator`, `labeled_at`,
-     `rubric_version`, `boost_weight`.
+     `rubric_version`, `boost_weight` — then `selection_channel`
+     LAST, on and only on the blocks that already carry it.
+   - **`selection_channel` verbatim.** It records how a session was
+     drawn into the eval set (`structural` / `anchor` / `random`), and
+     the operational gate scopes its session-weighted metrics by it.
+     Never add it to a block that lacks one, never change one, never
+     drop one. Dropping it silently un-scopes a metric.
    - The exact YAML style PyYAML produces (no extra quoting, no
      anchors, blank lines between blocks).
    Do NOT include blocks for session_ids that aren't in the current
@@ -159,12 +186,37 @@ descriptive metrics. Do not let them lead the label.
     labeled_at: "<today's date, YYYY-MM-DD>"
     rubric_version: "v2"
     boost_weight: 1.0
+    selection_channel: <copy verbatim if present; omit entirely if absent>
 
 Field order is fixed. `annotator`, `labeled_at`, and `rubric_version`
 are REQUIRED on every block you set to `annotated: true` — the
 validator fails closed on a missing or null value. `labeled_at` must
 be a real calendar date in exactly `YYYY-MM-DD` form; run `date +%F`
 if you need it. `boost_weight` stays `1.0` unless told otherwise.
+
+# Selection blindness — do not look up why a session was drawn
+
+Sessions enter this set two ways: an unbiased variety-first draw, and
+targeted passes that go looking for candidates for a specific thin
+label. `scripts/select_eval_candidates.py` records its draw in a file
+under `eval/` mapping session ids to a channel.
+
+**Do not read that file, and do not try to infer the target label from
+`selection_channel`.** A `structural` candidate was found by a proxy
+for one particular behavior; knowing which one turns the labeling pass
+into confirmation of the proxy rather than an independent judgement,
+and the eval then measures the selection rule instead of the pipeline.
+
+Two consequences for how you work:
+
+- **Never group your reading by channel.** Read the unlabeled ids in
+  whatever order step 2 produced them.
+- **Expect many targeted candidates NOT to be the behavior they were
+  drawn for, and label them honestly.** The proxies are recall-first;
+  a session drawn by an account-creation proxy is frequently an SSH-key
+  persistence session that happens to run `passwd` in passing. Label
+  what the session does. A candidate that "misses" is still a labeled
+  session and is not a failure.
 
 # Cross-session consistency — THE MOST IMPORTANT RULE
 
@@ -383,6 +435,14 @@ Keep notes terse (1-3 sentences).
      burns turns and risks losing cross-session consistency. Decide
      the whole mapping first, then Write the file once.
 
+     But a whole-file Write is now the RISKIER half of that trade:
+     the file usually holds far more finished human labels than blocks
+     you are adding, plus `selection_channel` provenance you must not
+     disturb. Decide the mapping first, then write once — and verify
+     afterwards that every previously-`annotated: true` block and every
+     `selection_channel` value survived unchanged. If you cannot
+     guarantee that, edit only the `annotated: false` blocks instead.
+
   8. Touching any block that is already `annotated: true`. Those
      are human-confirmed labels. Leave them alone.
 
@@ -516,11 +576,17 @@ Keep notes terse (1-3 sentences).
 # Final reminders
 
 - You receive NOTHING through the chat interface except this prompt.
-  All session content is on disk under `eval/sessions/`.
+  All session content is on disk under `eval/sessions-v1/`.
+- Label ONLY the blocks that were `annotated: false` when you started.
 - Re-read the rubric (`eval/RUBRIC.md`) before you finalize the file.
-- Write the labels file ONCE, after you've decided the full
-  session-to-label mapping. Do not Edit block-by-block.
-- Never touch a block whose `annotated` is already `true`.
+- Decide the full session-to-label mapping BEFORE you write anything.
+  Prefer one Write over per-session Edits — but only if you can
+  guarantee every previously-`annotated: true` block and every
+  `selection_channel` survives byte-identical. If you can't, edit the
+  `annotated: false` blocks in place instead. Losing a human label or a
+  channel is worse than burning turns (see anti-pattern 7).
+- Never touch a block whose `annotated` is already `true`, and never
+  add, alter, or drop a `selection_channel`.
 - Run the validator as your last step. Do not stop until it reports
   `EXIT=0`.
 
@@ -558,6 +624,18 @@ provenance for you, so the sweep is for judgement errors it can't see:
 - **`is_real: true` on protocol leakage.** Read the Login attempts
   table and the command stream: an HTTP-shaped username, a bare
   `PING`, or a bare `USER <name>` is the tell.
+- **A targeted pass that hit its target suspiciously often.** If a
+  growth pass drew ~25 candidates for a thin label and the agent
+  labeled nearly all of them as that label, suspect the agent worked
+  out what it was being shown. Compare the hit rate on the
+  `structural` rows against the `random` rows — the control exists for
+  exactly this, and a large gap is a labeling artifact, not a corpus
+  fact.
+- **Lost provenance.** Confirm the previously-labeled blocks are
+  unchanged and every `selection_channel` survived:
+
+      git diff --stat eval/labels.yaml
+      grep -c 'selection_channel' eval/labels.yaml
 
 Run the agreement scorer against the primary set as a cheap check on
 all of the above at once — since the vocabulary is closed, the

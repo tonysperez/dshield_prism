@@ -76,8 +76,8 @@ behaviors, decision paths, and cascade slices, and protects the complete run
 identity when a baseline is explicitly supplied. Its current label-derived
 prototypes are substantially broader than production anchors, so its low
 coverage/large false-novel result is a geometry diagnostic, not an adoption
-gate. Representative public anchors are now committed (all 27), so that
-prerequisite is met.
+gate. Representative public anchors are committed (29 public-derived of 33 live), so
+that prerequisite is met.
 
 The `--anchors` replay fits its TF-IDF/SVD lexical space over just the
 committed anchor snapshot plus the ~70 attributed eval sessions — thin enough
@@ -134,24 +134,96 @@ not reintroduce a "semantics over text" claim without a corpus that shows it —
 is recorded in [decisions.md](decisions.md). The experiment's own scripts and
 result files were not retained; the conclusion is the deliverable.
 
+**Every metric here belongs to one of two geometries; a bare number is a wrong
+number.** *Label-prototype* geometry builds one reference vector per analyst
+behavior — it grades the **algorithm**. *Real-anchor* geometry assigns against the
+actual production anchor library — it grades the **deployed system**. macro-F1 is
+**0.7898 on prototypes** and **0.6385 deployed / 0.6702 band-disabled** on the live
+real-anchor library; coverage is **0.9978 on the assignment path** and **0.9095 on the
+naming path**. Always name which, and always quote the CI half-width belonging to that
+geometry — **±0.1579** on the prototype gate, **±0.080** on the real-anchor measurement. The prototype
+interval is wide enough that most single-change claims are unprovable, and several
+conclusions in this project's history were retracted for ignoring it.
+
+**Read per-label accuracy below n=5 with care.** Only singletons leave the macro-F1
+mean (`eval_assignment.MIN_MACRO_SUPPORT` = 2) — everything else counts, by decision.
+But at n=3–4 the score is an artifact of support: k-fold puts each member in its own
+fold while its two near-identical siblings build the prototype it is then trivially
+nearest to, so `iot_cli_probe`, `scp_upload` and `dropped_binary_exec` all read exactly
+**1.0000**. That is a label the fold structure cannot test, not evidence the behavior is
+handled. Pruning them was measured and declined: it *widens* the interval (half-width
+0.1594 at n≥2, 0.1661 at n≥5) because a mean over fewer labels is noisier — ±0.15 is
+structural to averaging labels equally, not a rare-label artifact. `macro_f1_support` in
+the report names exactly which labels formed the mean.
+
 **Assignment recovers analyst labels moderately well; novelty over-calls.**
 Nearest-prototype assignment recovers the analyst playbook on a held-out split
-at 0.8000 accuracy / 0.7777 macro-F1 (`baseline-assignment.json`). Whole-label
-holdout at the shipped τ reads held-out behaviors as novel at 0.8841 recall, but
-at only 0.5865 precision (`baseline-operational.json`) — the novel pool is the
-noisiest surface in the system, and novel precision is the metric to improve
-next. Gated by `eval_operational.py`.
+at 0.8565 accuracy / 0.7898 macro-F1 (`baseline-assignment.json`, label-prototype).
+Whole-label holdout at the shipped τ reads held-out behaviors as novel at 0.8841
+recall, but at only 0.5865 precision (`baseline-operational.json`). Re-measured on
+the real-anchor geometry the system actually runs, novel precision was **0.21–0.30**
+— the gated figure is the optimistic one. That measurement predates the anchor-library
+fixes and is due a re-run. The failure is not missed discoveries
+(real-novel recall stays ~0.74) but familiar-tail sessions flagged novel. The novel
+pool is the noisiest surface in the system. Gated by `eval_operational.py`.
 
-**Assignment coverage is ~half even against the complete anchor library.** The
-committed snapshot now holds all 27 production anchors (the corpus is classified
-entirely public, so every anchor clears the public-only capture floor). Against it,
-0.5676 of labeled sessions clear τ and receive a playbook
-(`baseline-assignment-prod.json`); the remaining 43% fall to the novel pool for
-minting. Purity of what *does* assign stays high (0.9405 anchor label purity,
-0.9282 homogeneity) — the gap is coverage, not correctness, and it is **not**
-explained by anchor coverage, which is now total. τ and the TF-IDF band confirm are
-the remaining suspects. Read the corpus-level "N sessions → M playbooks" reduction
-with that in mind.
+**Real-anchor macro-F1 is 0.6702, up from 0.4944, and the gap was anchor coverage —
+not the model, not the labels.** The old figure decomposed to roughly **−0.27
+coverage, −0.09 geometry, 0 labelling**: four of ten analyst behaviors had **no
+anchor that represented them**, so they scored zero regardless of matcher quality.
+Most of the coverage share is now paid, and it was paid by two deployment fixes
+rather than any change to the matcher — production had been clustering its novel
+pool at `min_cluster_size` 5 while the config said 3, and one cosine threshold was
+serving three unrelated comparisons, letting a cluster inherit an anchor identity
+none of its own sessions could be assigned to. Behaviors with no anchor: **4 → 2**
+(`iot_cli_probe`, conflated with no novel-side presence; and one label with n=1).
+
+No threshold *redistribution* could have done this — a threshold only moves
+sessions among anchors that exist. Two mechanisms that tried — a below-τ
+structural-predicate rescue tier and an in-band conflation veto — were built,
+measured, and declined for exactly that reason; both are validated and shipped
+feature-off ([decisions.md](decisions.md)). What worked was a threshold that
+*refuses a wrong identity inheritance*, which lets a new anchor be created.
+The ordered plan for the remaining geometry share is in
+[roadmap.md](roadmap.md#quality--raising-real-anchor-macro-f1).
+
+**The eval set is two strata, and three metrics scope to one of them.** The original
+draw is variety-first by playbook under a per-playbook cap; a targeted pass
+(`scripts/select_eval_candidates.py`) adds candidates for labels that draw crowds out,
+each tagged `selection_channel` (`structural` / `anchor` / `random`). `macro_f1` and
+per-label accuracy weight labels equally and run on everything. `novel_precision`,
+`novel_recall` and `minted_purity` are session-weighted, so they read the label mix
+directly — they scope to the variety-first rows, or a deliberate over-sample of a rare
+label reads as a system change. `eval_operational.py` reports which rows each family saw
+under `scope`. Selection never uses embedding similarity: drawing eval candidates as
+nearest neighbours of known examples builds the test set out of the system under test.
+
+**Assignment coverage: 0.9978 corpus-wide, 0.6824 on the committed snapshot.** The
+committed public snapshot holds **37** anchors — every playbook with at least
+`session.novel_pool_cluster_min_cluster_size` public sessions — against 42 carrying
+sessions and 46 centroid-carrying live. Against the snapshot, **0.6824** of labeled
+sessions clear τ (`baseline-assignment-prod.json`); the rest fall to the novel pool for
+minting. What *does* assign stays clean — **0.9505** anchor label purity, **0.9407**
+homogeneity. The gate hard-fails when the snapshot's anchor count and the baseline
+disagree, so a stale snapshot cannot silently degrade the geometry the number is read
+against — but note that check compares snapshot to *baseline*, not snapshot to *live*,
+so both can go stale together and stay green. Recapture after every minting change.
+
+**The capture floor is a minting-parity choice, not a sampling one.** `--min-public`
+defaults to the deployed novel-pool minting floor rather than a fixed number. Pinned at
+5 it dropped `scp_upload` and `inband_payload_drop` — whose only anchors hold 4 public
+sessions each — from the fixture entirely, scoring back to 0.0000 the two labels the
+minting fixes had just moved off zero. On a fully-public corpus `n_public_sessions` is
+the anchor's whole membership, so there is no sampling argument for a floor above what
+production may mint.
+
+**One threshold move, +0.28 coverage — found by plotting, not sweeping.** The
+TF-IDF band confirm was rejecting sessions it should have kept. The deployed
+`assignment_tfidf_tau` of 0.80 sat *inside* a dense population, with an empty valley
+at 0.2–0.7; moving it into the valley took corpus-wide assignment from **0.7078 →
+0.9911**, a prediction made before the run and accurate to 4%. Every sweep-first
+attempt in this project underdelivered; measuring the distribution first is now a
+standing rule.
 
 **Lowering τ buys coverage and no correctness — the structural-predicate rescue
 tier stays off.** The rescue band `[rescue_tau, τ)` assigns a below-τ session when

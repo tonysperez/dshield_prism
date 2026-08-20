@@ -27,8 +27,9 @@ measurements found, see [`docs/evaluation.md`](../docs/evaluation.md).
 | File | Status | Tracked? | What it is |
 |---|---|---|---|
 | `sessions.unlabeled.jsonl.gz` | generated | yes | Output of `scripts/build_eval_set.py`. Public-only (classification-gated), defanged, variety-first sample. Committed because it's safe to publish post-defang; not analyst-readable. Gzipped, and carries no per-command `embedding` — those were 79% of the bytes and no consumer reads them back (the sweeps that pool per-command vectors go to live ES), which put the plain file over GitHub's 100 MB blob ceiling. Readers accept either spelling via `scripts/eval_jsonl.py`. |
-| `sessions/<session_id>.md` | generated | no | Per-session human-readable rendering from `scripts/render_eval_set.py`. |
+| `sessions-v1/<session_id>.md` | generated | no | Per-session human-readable rendering from `scripts/render_eval_set.py` (its `--out-dir` default). A stale `sessions/` directory may also exist from before the rename — it holds only pre-growth sessions, so reading it silently skips everything added since. |
 | `labels.yaml` | hand-edited | yes | The labels — one block per `session_id`. Deliverable. |
+| `candidates-e3.txt` | generated | yes | `session_id<TAB>selection_channel` draw from `select_eval_candidates.py`. Committed as the provenance of a targeted growth pass — reproducible from its seed. |
 | `labeling-prompt.md` | hand-written | yes | Self-contained LLM prompt to automate labeling. |
 | `RUBRIC.md` | hand-written | yes | Labeling rubric. |
 | `labels-relabel-*.yaml`, `labels-secondary.yaml` | generated skeleton, hand-filled | no | Second-pass label files, same schema as `labels.yaml` — intra-annotator (delayed self-relabel, via `scripts/build_relabel_subset.py`) or inter-annotator (concurrent second annotator) agreement input. Gitignored: a committed second pass is readable by the next annotator, which destroys the blindness the measurement depends on. |
@@ -42,13 +43,26 @@ measurements found, see [`docs/evaluation.md`](../docs/evaluation.md).
 # 1. Variety-first sample from the live ES (deterministic per corpus + seed)
 console/.venv/bin/python scripts/build_eval_set.py --n 300
 
+# 1b. OR grow an existing set for labels the variety-first draw crowds out.
+#     `--per-playbook-cap` means a rare behaviour sharing an anchor with a common
+#     one is never drawn, however many of it the corpus holds. Selection runs three
+#     channels (structural proxy / same-anchor / unconditioned random control) and
+#     records which on each block as `selection_channel`, so a proxy correlated with
+#     a mechanism under test can be conditioned on afterwards rather than silently
+#     inflating it. Never selects by embedding similarity.
+console/.venv/bin/python scripts/select_eval_candidates.py --out eval/candidates-e3.txt
+console/.venv/bin/python scripts/build_eval_set.py \
+  --session-ids eval/candidates-e3.txt --append
+
 # 2. Render into per-session markdown + a labels.yaml skeleton
 console/.venv/bin/python scripts/render_eval_set.py
 ```
 
-Then walk `eval/sessions/*.md` one file at a time (any order — they
-are independent), read the rendered markdown, and fill the matching
-block in `eval/labels.yaml`. Re-running `render_eval_set.py` is
+Then walk `eval/sessions-v1/*.md` one file at a time, read the
+rendered markdown, and fill the matching block in `eval/labels.yaml`.
+Order is free for a fresh build; after a targeted growth pass, work a
+shuffled list instead, so the channel a session was drawn through
+can't cue its label. Re-running `render_eval_set.py` is
 idempotent — existing label blocks are preserved verbatim; new
 sessions get empty skeletons appended.
 

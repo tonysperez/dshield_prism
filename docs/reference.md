@@ -321,6 +321,29 @@ parentheses.
   sweeping your own corpus (`scripts/sweep_session_svd.py`).
 - `session.playbook_merge_threshold` (0.94; 1.0 disables) — drives both the
   centroid-level playbook merge and the session-layer noise rescue.
+- `session.playbook_anchor_match_threshold` (**0.96**; unset = share
+  `playbook_merge_threshold`) — cosine floor for a playbook group's centroid to
+  reuse an existing anchor's `playbook_id` instead of minting a fresh one. Split
+  out of the merge threshold because the two compare different things: this one is
+  centroid-to-anchor, `assignment_tau` is session-to-anchor. Must be
+  `>= playbook_merge_threshold`. Resolved by
+  `effective_anchor_match_threshold(cfg.session)`; the naming run records the
+  effective value as `anchor_match_threshold` in its stats.
+- `session.mint_predicate_split` (**false**) — mint-time predicate split. On a playbook
+  group that *reused* an existing anchor id, partition its sampled member sessions into
+  {fires no structural predicate} / {fires any}; if both sides reach
+  `novel_pool_cluster_min_cluster_size`, force-mint the minority as its own anchor and
+  **re-pin the parent onto its retained members**. Both halves are needed: the minority
+  centroid sits at ~0.9990 cosine of its parent, so the ordinary anchor match hands back
+  the parent id, and without the re-pin the parent still out-competes the new anchor for
+  the very sessions it was meant to release. Writes anchors only — sessions are re-sorted
+  by the next `assign_sessions` pass. The re-pin is a deliberate, narrow exception to
+  write-once pinning: the id is unchanged and the centroid moves *away from members it
+  lost*, never toward a neighbouring anchor, and the prior vector is kept in
+  `repinned_from_centroid` so the write is reversible. `repin_count` on the anchor doc
+  makes repeated re-pinning visible; an anchor with no `repin_*` fields has never been
+  re-pinned. Naming-run counters: `split_minted`, `split_not_applicable`,
+  `split_no_centroid`, `split_already_minted`, `split_parent_not_repinned`.
 - `session.assignment_authoritative` (true) — Option-A cutover gate: when true,
   `assign_sessions` is the session **labeler** (nearest-anchor assignment), and
   `cluster sessions --novel-pool` only mints new playbooks from the novel tail.
@@ -509,6 +532,18 @@ subsample (`playbook_naming_session_cap`). Pass-2 collision resolution first
 LLM-renames the genuinely-distinct survivors. Playbook id is cosine-anchored to
 the write-once anchor index (see [Stable ids](#stable-ids-and-formats)). Stability
 sentinel: `scripts/measure_playbook_id_churn.py`.
+
+**Stamping writes are conflict-tolerant.** `playbook_id` / `playbook_name` land
+on the centroid docs and their member sessions via `update_by_query`, which
+writes each hit conditioned on the `seq_no` its search returned. Both indices run
+`refresh_interval: 30s` and the same docs are stamped up to three times per run
+(pass-1 name → pass-2 merge → pass-2 rename), so a stale read is normal. Every
+stamp goes through `_update_by_query_resilient` (`conflicts=proceed`, then
+refresh + one re-run while conflicts remain; the centroid write also refreshes
+after itself so pass 2 reads fresh). A conflict that survives the retry means a
+second naming run is writing concurrently: it is logged and counted as
+`centroid_update_conflicts` / `session_update_conflicts` in the run stats
+(distinct from the `*_update_errors` exception counters).
 
 **Anchor drift / satellite anchors (item 59).** A pinned anchor centroid never
 updates, so an already-named group's own newer members can drift below
@@ -790,7 +825,25 @@ What each gate measures, the eval-scale-vs-production-scale distinction, and the
 snapshot refresh cadence are in [evaluation.md](evaluation.md).
 `eval_assignment_prod.py` also checks the current snapshot anchor count against
 the baseline `n_anchors`, so a recaptured snapshot must be rebaselined before
-the gate can pass.
+the gate can pass. That check compares snapshot to **baseline**, not snapshot to
+**live** — both go stale together and the gate stays green, so recapture after any
+change that mints anchors.
+
+**Eval-set strata.** `eval/labels.yaml` mixes the original variety-first draw
+(`selection_channel` absent) with targeted rows from `scripts/select_eval_candidates.py`
+(`structural` / `anchor` / `random`). `eval_operational.variety_first_mask` scopes the
+session-weighted metrics — `novel_precision`, `novel_recall`, `false_familiar`,
+`minted_purity`, `minted_distinct` — to the original rows; `macro_f1` and per-label
+accuracy use the full set. `report["scope"]` carries the census. `build_eval_set.py
+--session-ids <file> --append` is the only supported way to grow the set: a plain rebuild
+overwrites the JSONL that `labels.yaml` joins to and orphans every existing label. Note
+`boost_weight` in the label schema is validated but consumed by no evaluator.
+
+**Capture floor.** `capture_anchor_snapshot.py --min-public` defaults to
+`session.novel_pool_cluster_min_cluster_size` (the deployed novel-pool minting floor),
+resolved by `resolve_min_public`; an explicit flag still wins. The snapshot must be able
+to represent every anchor production is allowed to mint, and on a fully-public corpus
+`n_public_sessions` is the anchor's whole membership rather than a sample of it.
 
 **Faithful-replay fixture depth.** `eval_assignment_faithful.py --anchors
 eval/anchor-snapshot-v1.jsonl.gz` replays against the committed public anchor

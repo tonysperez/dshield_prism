@@ -39,9 +39,9 @@ decision-path and evidence-contract diagnostics, while explicit baselines fail
 closed. Blocking activation waits for a representative public production-anchor
 snapshot with capture provenance.
 
-That prerequisite is now **met**: the corpus is classified entirely `public` and holds 27
-production anchors, all of which clear the capture floor, so the committed
-`eval/anchor-snapshot-v1.jsonl.gz` carries the complete library (27, up from a stale 15).
+That prerequisite is now **met**: the corpus is classified entirely `public`, so the
+committed `eval/anchor-snapshot-v1.jsonl.gz` carries every anchor that clears the capture
+floor — currently **43** of the 44 playbooks carrying sessions.
 The evaluator gained `--anchors` to ingest it, and the snapshot schema gained the per-anchor
 command-cluster bags its TF-IDF confirm needs. Measured outcome: familiar coverage on the
 attributed subset rose 0.0612 → 0.786, confirming that broad label prototypes caused the
@@ -50,6 +50,46 @@ that half of the attribution is refuted and is now tracked separately. Note the 
 recomputed from public sessions only, because the pinned production ones are
 mixed-classification and cannot be committed — so "complete coverage" holds on a fully-public
 corpus and would not on a mixed one.
+
+**The public anchor-capture floor tracks the minting floor.**
+`capture_anchor_snapshot.py --min-public` defaults to
+`session.novel_pool_cluster_min_cluster_size`, not a fixed 5. A capture floor above what
+production may mint silently omits exactly the rare-behaviour anchors the labelled eval
+is short of: at 5 the fixture dropped `scp_upload` and `inband_payload_drop`, whose only
+anchors hold 4 public sessions each, scoring both labels back to 0.0000 after the minting
+fixes had moved them off zero. The trustworthiness argument for a higher floor assumed the
+public rows were a *sample* of a mixed-classification anchor; on a fully-public corpus they
+are its whole membership, so the argument does not apply. Recaptured at the deployed floor:
+43 anchors, snapshot assigned rate 0.5743 → 0.7568, homogeneity 0.9286 → 0.9524, anchor
+label purity 0.9412 → 0.9554 — all fixture fidelity, no production change.
+
+**One anchor covering two behaviors is fixed at mint, not at any threshold — and it
+requires re-pinning the parent.** `iot_cli_probe` was the last analyst behavior with no
+anchor of its own: 3-for-3 conflated onto an anchor whose modal label is `botnet_loader`,
+with no novel-side presence, so no amount of minting could reach it. The structural
+predicates separate the pair exactly (zero shared 7-bit signatures) but no single
+predicate does — the widest single-predicate gap is 0.00 vs 0.60 — so a
+"if predicate X, split" rule is refuted up front. Partitioning by the exact signature is
+worse than a binary {fires nothing} / {fires anything} cut on every axis: 12 groups
+shattered instead of 3, 20 sessions stranded below the minting floor, no gain.
+
+The binary split alone is still a no-op. Both halves sit at cosine ~0.9935 of the original
+centroid, so each re-inherits the parent id at any workable `playbook_anchor_match_threshold`;
+force-minting the minority anyway moves only 13 of 24 sessions and none of the labelled
+ones, because the parent's centroid still averages the sessions that left and stays nearer
+to them than their own new anchor. The embedding simply does not encode what the predicates
+encode. What works is re-pinning the parent onto its retained members: 23 of 24 move, the
+`iot_cli_probe` sessions on that anchor land on the new one (per-label accuracy 0.000 → 0.667
+after the following cycle moved one of the three elsewhere),
+all three `botnet_loader` rows stay put, and corpus-wide 24 of 9,351 sessions change anchor
+with zero movement between any other pair and an unchanged novel rate.
+
+The re-pin is a deliberate, narrow exception to write-once anchor pinning, gated to the
+split path and off by default (`session.mint_predicate_split`). Write-once exists to stop
+walking-centroid collapse (A~B≥thr, B~C≥thr, A~C<thr merging unrelated playbooks); a split
+re-pin is not a walk — the id is unchanged and the centroid moves *away from members it
+lost*. The prior vector is preserved in `repinned_from_centroid` and `repin_count` makes
+repeat re-pinning visible, so the write is reversible and auditable from ES alone.
 
 **The eval label vocabulary is closed (rubric v2), and agreement is reported
 both raw and vocabulary-aligned.** The v1 rubric offered a *suggested* skeleton
@@ -262,6 +302,28 @@ than harden the handful of sites that happen to fail, a transparent
 step. Chosen over transport/node subclassing (brittle across elasticsearch-py
 versions) and over per-site try/except (doesn't scale to new sites or smaller
 nodes).
+
+**A lost `update_by_query` write is repaired, never silently dropped.** UBQ
+writes each hit conditioned on the `seq_no` its search returned, and search only
+sees refreshed segments — so on indices carrying `refresh_interval: 30s`, any doc
+rewritten inside that window 409s. Playbook stamping hits the same centroid docs
+up to three times per run (pass-1 name → pass-2 merge → pass-2 rename), so this
+is structural, not a race in the data. ES's default `conflicts=abort` turned it
+into an exception that dropped the *whole* request, leaving a centroid unnamed
+while its member sessions carried the id (which then breaks name-reuse by id the
+next run). `conflicts=proceed` alone is worse — it downgrades the abort to a
+silent skip. The stamp therefore proceeds, then refreshes and re-runs while
+conflicts remain (safe: the painless scripts are pure assignment, so idempotent),
+and reports whatever survives as a concurrency signal rather than an error. The
+alternative — serialising all writers — doesn't remove the in-run repeat stamps
+that cause most of these. Mechanical trap worth knowing: elasticsearch-py counts
+`conflicts` among **`update_by_query`'s body fields**, so `body=` plus
+`conflicts=` raises *"Received multiple values for 'conflicts'"* and loses every
+write; `delete_by_query` is exempt (there it's a plain query param), which is why
+the tombstone call sites can pass a body. Conflict-tolerant UBQ therefore passes
+`query=` / `script=` as keyword args, asserted offline by
+`scripts/smoke/smoke_test_playbook_stamp_conflict.py` against the real client
+signature.
 
 **IP noise rescue is augmented-space euclidean, not pure-embedding cosine.** The
 IP layer flagged ~70% of command-bearing IPs as HDBSCAN noise (every run,
@@ -495,6 +557,24 @@ corpus and recorded as a null result.
   the label-prototype sweep — it does not read the snapshot and is not the production
   geometry. Reopen only behind a rarity-weighted or multi-predicate overlap rule
   (`docs/roadmap.md`).
+- **Shipping the in-band structural-predicate conflation veto** — the mirror of the
+  rescue tier (tighten inside `[tau, confident_tau)` instead of loosening below
+  `tau`), declined on its own measurement before any production code was written.
+  Against the 29-anchor public snapshot over 148 labelled sessions, only **5 of 85**
+  assignments are conflated at all (purity 0.9412) — and **3 of those 5 sit above
+  `confident_tau`** (cosine 0.9835-0.9850), outside the band a veto acts in. Of the
+  two in-band conflations, one carries no predicate conflict and the other only the
+  saturated `host_info_gather`; the one in-band row a rare-predicate veto does fire
+  on is **correct** and would be destroyed. Extending the veto to every tier improves
+  **no label's accuracy**: purity 0.9412 → 0.9753, macro-F1 0.4268 → 0.4401 (a
+  precision artifact ~15× below the ±0.1954 CI), assigned 85 → 81, with all four
+  vetoed rows falling to NOVEL because **no anchor carries a modal `botnet_loader`
+  label**. Same root cause as the rescue decline: a threshold mechanism cannot help
+  sessions whose correct destination is absent from the library. The predicates'
+  separation result (0.9091-1.0000) is untouched — what is refuted is spending it at
+  a threshold. Reopen only after the missing anchors exist, and note a veto would then
+  have to act above `confident_tau`, where ~88% of production traffic is decided with
+  no secondary check today.
 
 ### `assignment_tfidf_tau` is 0.50 — a valley placement, not a tuned value
 
@@ -527,3 +607,34 @@ labelled sessions produce only 17 band checks, ~500× under-sampling the band.
 
 Note `scripts/eval_assignment_faithful.py` hardcodes `TFIDF_TAU` and does not read
 config — both must be changed together or the replay silently reports old behaviour.
+
+
+## Anchor identity is matched at 0.96, separately from the 0.94 cluster merge
+
+`session.playbook_merge_threshold` was one number doing three jobs: the
+complete-linkage cut merging HDBSCAN clusters into playbook groups, the noise-rescue
+threshold inside `run_layer_clustering`, and the match of a playbook group's
+*centroid* against the pinned anchor library — which decides whether the group
+inherits an existing `playbook_id` or mints a new one. It also sat at exactly
+`assignment_tau`, which compares individual *sessions* to anchors.
+
+Centroid-to-anchor and session-to-anchor are different geometries, so a group can
+clear the match, inherit an identity, and never be minted, while every one of its
+members falls below `assignment_tau` against that same anchor and stays novel. Such a
+group is minted by nothing and assigned by nothing; it re-enters the novel pool every
+cycle. Measured live: two of thirteen groups sat **0.9457** and **0.9485** against the
+shared 0.94 — inheritance on a hair's margin — holding 17 sessions permanently novel,
+including every clusterable `botnet_loader` session in the labelled set.
+
+`playbook_anchor_match_threshold` splits that one job out; unset, it keeps the shared
+value, so the change is inert until configured. It is set to **0.96**, which is a
+placement in a gap rather than a tuned optimum: the live run's group-centroid cosines
+to their nearest anchor are 0.9457, 0.9485, then **nothing until 0.9629**, then a mass
+at 1.0000. Any value in ~0.95–0.96 gives the same partition, and only the two
+hair's-margin inheritances change. Both then mint pure anchors — `assignment_tau`
+excludes exactly their off-label members.
+
+The merge threshold itself stays at **0.94**. It was set there on a fragmentation
+sweep (0.96 → 0.94 took 17 playbooks to 15 at 4,049 sessions); raising the shared knob
+to fix identity would silently revert that and starve noise rescue at the same time.
+
