@@ -122,7 +122,7 @@ Four more surfaces round out the workflow:
 
 ## Live deployment & quality
 
-Prism runs continuously on one live DShield sensor and has ingested 10+ years of history from a second: roughly 57 million raw events across 9.6 million sessions. Most of those sessions are credential brute-force that never reach a shell; the command-bearing subset is where Prism collapses raw activity into analyst-sized behavior sets.
+Prism runs continuously on one live DShield sensor and has ingested 10+ years of history from others: roughly 57 million raw events across 9.6 million sessions. Most of those sessions are credential brute-force that never reach a shell; the command-bearing subset is where Prism collapses raw activity into analyst-sized behavior sets.
 
 | Layer | Volume | Behaviors surfaced | Outliers |
 |---|---:|---:|---:|
