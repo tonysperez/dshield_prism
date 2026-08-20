@@ -11,6 +11,7 @@ need.
 | [evaluation.md](evaluation.md) | **How well it works** — the labeled eval set, the quality gates, and what the measurements found | anyone |
 | [decisions.md](decisions.md) | **Why it's built this way** — the load-bearing design choices and the dead-ends that were measured and rejected | anyone |
 | [roadmap.md](roadmap.md) | **What's next** — open work, forward-only | anyone |
+| [release-readiness.md](release-readiness.md) | **What must be fixed before release** — security, privacy, install, and blockers from the pre-release review | maintainers |
 
 Two more docs live next to the code they describe:
 

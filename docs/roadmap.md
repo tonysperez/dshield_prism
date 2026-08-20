@@ -6,6 +6,11 @@ Open work, forward-only. Shipped behavior is described in
 
 Remove an item from this file when it ships; add new open items as they surface.
 
+## Release readiness
+
+The pre-release review is tracked in
+[release-readiness.md](release-readiness.md).
+
 ## Quality — raising real-anchor macro-F1
 
 Real-anchor macro-F1 is **0.6385** as deployed and **0.6702** with the TF-IDF band disabled
@@ -118,6 +123,21 @@ Not on the list, each declined with evidence in [decisions.md](decisions.md): lo
   `findings.js` interpolate raw server response text, and `app.js` truncates
   *after* escaping so a slice can land mid-entity. Neither is known-exploitable
   today — this is about removing the class, not patching instances.
+
+- **Console/graph-layer multi-sensor session disambiguation** — the session
+  rollup write path and the rollup-build read path (`sessions.py`'s
+  `_fetch_session_events`, `_iter_closed_sessions`, `run_rollup`) are now
+  sensor-qualified end to end, so a raw `cowrie.session_id` collision across
+  two sensors can no longer merge into one corrupted rollup doc
+  (release-readiness P1-2). Everything downstream of the rollup still
+  resolves sessions by the raw id alone and is only correct for a
+  single-sensor deployment: `console/src/console/queries.py`
+  (`lookup_session`, `commands_for_session`, the bulk session-id filters),
+  `graph.py`'s `_session_anchor`, and `src/enrich/findings/hunts.py`,
+  `sources/cowrie/explain.py`, `sources/cowrie/campaigns.py`,
+  `analyst/scan.py`. Needs `observer.name` threaded through each as a second
+  key (or the namespaced rollup `_id` resolved directly) before a second
+  sensor goes live in production.
 
 ## Console UX
 
