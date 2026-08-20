@@ -33,7 +33,7 @@ I built Prism during my internship with the SANS Internet Storm Center (ISC), wh
 - **See behavior, not artifacts.** Commands, sessions, and source IPs become behavioral fingerprints. Prism matches new attacks against named behaviors, so you can ask "what else behaves like this?" even when individual IPs, commands, and payload URLs change.
 - **Track behavior as it drifts.** Recurring command sequences become playbooks; coordinated IPs become campaigns; behavior and infrastructure overlap becomes a higher-confidence Operation. Stable identities make the change itself visible.
 - **Weigh artifacts against CTI.** Extracted IPs, URLs, and files are checked against free threat-intel feeds, while known-good signals quiet benign scanners that would otherwise drown out useful activity.
-- **Measured, not assumed.** Assignment, novelty, cluster purity, and label reliability are checked against a labeled eval set in CI. The details live in [docs/evaluation.md](docs/evaluation.md).
+- **Measured, not assumed.** Assignment, novelty, cluster purity, and label reliability are checked against a labeled eval set in CI. The headline case: I tested whether the session embedding separated behavior better than a plain TF-IDF baseline. It didn't — TF-IDF edged it on the controlled test. So I pulled the "semantics over text" claim, rebuilt session labeling as nearest-prototype assignment with a TF-IDF confirm, and recorded the standing consequence in [docs/decisions.md](docs/decisions.md) so it can't quietly come back. The rest lives in [docs/evaluation.md](docs/evaluation.md).
 - **Private by default.** Local AI is the default. Cloud escalation and external CTI are opt-in, capped, and routed through a default-deny releasability check. See [Data governance & egress control](#data-governance--egress-control).
 
 ## Pipeline
@@ -130,18 +130,18 @@ Prism runs continuously on one live DShield sensor and has ingested 10+ years of
 | Sessions | 247,282 with commands | 150 playbooks | 253 (0.1%) |
 | Source IPs | 82,271 command-bearing | 3,081 clusters | 4,770 (5.8%) |
 
-Reduction only matters if the buckets are useful, so Prism keeps the measurements close to the code. The headline picture:
+Reduction only matters if the buckets are useful, so Prism keeps the measurements close to the code. Every number below names its geometry: *label-prototype* grades the algorithm, *real-anchor* grades the deployed system. They disagree, and the gap is the interesting part.
 
 | Question | Current read | Caveat |
 |---|---:|---|
-| Can the method recover analyst behavior labels? | 0.8565 accuracy / 0.7898 macro-F1 | Label-prototype geometry; grades the algorithm. |
-| Does the deployed anchor library assign correctly? | 0.6385 macro-F1 / 0.6702 band-disabled | Real-anchor geometry; grades the running system. |
-| Do sessions get a playbook? | 99.8% corpus-wide | The committed public snapshot assigns 68.2%. |
-| Are assigned anchors clean? | 0.9505 purity / 0.9407 homogeneity | Measures assigned sessions, not novel-tail quality. |
-| Does novelty work? | High recall, weak precision | Novelty over-calls familiar-tail sessions and remains the weakest surface. |
-| Is the answer key reliable? | κ 0.8656 / PABAK 0.7875 | Second pass is an LLM annotator under the same rubric, not a second human. |
+| Can the method recover analyst behavior labels? | 0.8565 accuracy / 0.7898 macro-F1 | Label-prototype geometry — grades the algorithm. CI half-width ±0.1579, wide enough that most single-change claims are unprovable; per-label reads below n=5 are a fold artifact, not evidence. |
+| Does the deployed anchor library assign correctly? | 0.6385 macro-F1 / 0.6702 band-disabled | Real-anchor geometry — grades the running system, ±0.080. The gap to the row above is anchor coverage, not matcher quality. |
+| Do sessions get a playbook? | 99.8% corpus-wide | The committed 37-anchor public snapshot assigns 78.9%; the rest fall to the novel pool for minting. |
+| Are assigned anchors clean? | 0.9282 purity / 0.8685 homogeneity | Measures what assigned against that snapshot, not novel-tail quality. |
+| Does novelty work? | 0.8841 recall / 0.5865 precision | Whole-label holdout at the shipped τ, label-prototype. Re-measured real-anchor, novel precision drops to 0.21–0.30: the failure isn't missed discoveries but familiar-tail sessions landing in the novel pool. Noisiest surface in the system; fix is scoped in the roadmap. |
+| Is the answer key reliable? | κ 0.8656 / PABAK 0.7875 | n=160 overlap; the second pass is an LLM annotator under the same rubric, not a second human. |
 
-The eval set is intentionally modest: 271 labeled session blocks across 10 behaviors, built to catch regressions on this project rather than serve as a public benchmark. Some behaviors are rare, confidence intervals are wide, and small metric moves can be real but unprovable at this scale. Those limits are documented rather than hidden.
+The eval set is intentionally modest: 271 annotated session blocks, 247 of them attributed to one of 10 behaviors, built to catch regressions on this project rather than serve as a public benchmark. Some behaviors are rare, confidence intervals are wide, and small metric moves can be real but unprovable at this scale. Those limits are documented rather than hidden.
 
 The deeper methodology, baseline files, geometry distinction, and measured dead ends are in [docs/evaluation.md](docs/evaluation.md) and [docs/decisions.md](docs/decisions.md).
 

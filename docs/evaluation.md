@@ -20,6 +20,13 @@ not a stratified-random draw. `dshield.classification: public`-gated and
 defanged at sample time (`scripts/build_eval_set.py`), so it's safe to
 publish.
 
+**The canonical count: 271 annotated session blocks, 247 of them attributed to
+one of 10 behaviors** (the remaining 24 are annotated as unattributed). Every
+other n in this doc is a named subset of that set — the n=160 double-annotated
+overlap for reliability, the 71 blocks the production snapshot matches, the ~70
+attributed sessions the `--anchors` replay fits over — and says so where it
+appears.
+
 - `eval/labels.yaml` — the labels, one block per `session_id` (tracked; the
   deliverable).
 - `eval/sessions.unlabeled.jsonl.gz` — the sampled, public-only, defanged
@@ -101,9 +108,10 @@ silence a regression. That's the whole point of the gates.
 ### Eval-scale vs production-scale
 
 Two clustering gates run because the difference matters. The **eval-isolated**
-gate clusters only the ~148 labeled sessions — fast, gate-on-every-push. The
-**production-scale** gate clusters the same labeled subset *inside* the full
-~4000-session production HDBSCAN, which finds tighter density requirements and
+gate clusters only the 247 attributed labeled sessions — fast,
+gate-on-every-push. The **production-scale** gate clusters that same labeled
+subset *inside* the full ~4000-session production HDBSCAN (which currently
+matches 71 of the 247 — the rest predate or fall outside the snapshot), which finds tighter density requirements and
 fragments the same labels across more clusters. The resulting ARI gap between the
 two scales is a **measurement property, not a regression**: production HDBSCAN
 operates on more sessions. The eval-isolated gate is for fast iteration; the
@@ -198,12 +206,12 @@ label reads as a system change. `eval_operational.py` reports which rows each fa
 under `scope`. Selection never uses embedding similarity: drawing eval candidates as
 nearest neighbours of known examples builds the test set out of the system under test.
 
-**Assignment coverage: 0.9978 corpus-wide, 0.6824 on the committed snapshot.** The
+**Assignment coverage: 0.9978 corpus-wide, 0.7895 on the committed snapshot.** The
 committed public snapshot holds **37** anchors — every playbook with at least
 `session.novel_pool_cluster_min_cluster_size` public sessions — against 42 carrying
-sessions and 46 centroid-carrying live. Against the snapshot, **0.6824** of labeled
+sessions and 46 centroid-carrying live. Against the snapshot, **0.7895** of labeled
 sessions clear τ (`baseline-assignment-prod.json`); the rest fall to the novel pool for
-minting. What *does* assign stays clean — **0.9505** anchor label purity, **0.9407**
+minting. What *does* assign stays clean — **0.9282** anchor label purity, **0.8685**
 homogeneity. The gate hard-fails when the snapshot's anchor count and the baseline
 disagree, so a stale snapshot cannot silently degrade the geometry the number is read
 against — but note that check compares snapshot to *baseline*, not snapshot to *live*,
@@ -259,7 +267,7 @@ corpus while keeping behaviorally-distinct populations apart. See
 
 **Late-fusion clustering looked like a win, then failed at scale.** Fusing an
 embedding-HDBSCAN with a TF-IDF/SVD lexical-HDBSCAN scored +0.085 ARI over plain
-HDBSCAN on the 108-session eval set — and then regressed at production scale. On
+HDBSCAN on the eval set as it stood then (108 sessions) — and then regressed at production scale. On
 4030 sessions the lexical view fragments ~6× harder than the embedding (72 vs 24
 clusters), which broke the fusion math: the live deploy lost **−0.173 ARI** vs
 plain HDBSCAN, and the best-tuned config only matched it (+0.008, noise). It was
