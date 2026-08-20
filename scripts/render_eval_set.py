@@ -3,7 +3,7 @@
 Companion to `scripts/build_eval_set.py` (brutal-review phase 1.2). The
 JSONL file the build script emits is dense and not analyst-readable;
 this script turns it into one markdown file per session under
-``eval/sessions/<session_id>.md`` plus an index and a fresh-or-
+``eval/sessions-v1/<session_id>.md`` (``--out-dir``) plus an index and a fresh-or-
 preserved ``eval/labels.yaml`` skeleton the analyst fills in.
 
 Idempotent: re-rendering preserves any labels already present in
@@ -366,6 +366,16 @@ def _skeleton_for_record(rec: dict) -> dict:
     pid = rec.get("divergent_pair_id")
     if isinstance(pid, str) and pid:
         skel["divergent_pair_id"] = pid
+    # E3: how this session was chosen (`structural` / `anchor` / `random`), carried
+    # from `select_eval_candidates.py` through `build_eval_set.py --session-ids`.
+    # Per-record like `divergent_pair_id`, so the committed blocks — whose records
+    # carry no channel — are untouched on re-render. Without it the merge would strip
+    # the field, and a targeted draw's selection bias would be unrecoverable: a label
+    # sampled through a structural proxy fires that proxy by construction, and only
+    # the channel lets a later analysis tell that apart from a real result.
+    channel = rec.get("selection_channel")
+    if isinstance(channel, str) and channel:
+        skel["selection_channel"] = channel
     return skel
 
 

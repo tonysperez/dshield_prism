@@ -383,6 +383,73 @@ def _iter_random_rollups(
             return
 
 
+def read_session_id_channels(path: Path) -> dict[str, str]:
+    """Parse a targeted-candidate file: one `session_id` per line, optionally
+    `session_id<TAB>channel`. Blank lines and `#` comments are skipped.
+
+    `channel` records HOW a candidate was selected (E3) — `predicate`, `event`,
+    `anchor`, `random`. It is written onto the record and carried into the label
+    skeleton so the selection bias is auditable after the fact. Selecting rare-label
+    candidates by a structural predicate guarantees every new example fires that
+    predicate, which would inflate any predicate-based mechanism's measured value; the
+    channel is what lets a later analysis condition on that instead of being fooled by
+    it. Unlabelled lines default to `unspecified` rather than being rejected — a plain
+    id list stays usable.
+    """
+    out: dict[str, str] = {}
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        sid, _, channel = line.partition("\t")
+        sid = sid.strip()
+        if sid:
+            out[sid] = channel.strip() or "unspecified"
+    return out
+
+
+def _fetch_rollups_by_ids(es, index: str, sids: Iterable[str],
+                          page: int = 1000) -> list[dict]:
+    """Rollup `_source` dicts for an explicit `cowrie.session_id` list.
+
+    Reads by the `cowrie.session_id` FIELD, never by `_id` — the rollup `_id` is
+    sensor-namespaced (`<sensor>:<session_id>`), so an mget on raw ids finds nothing.
+    Missing ids are silently absent; the caller reports the shortfall. The
+    classification gate still runs downstream in `_is_releasable_rollup`, so a targeted
+    build cannot smuggle a non-public session past the same check the random path uses.
+    """
+    sl = [s for s in sids if s]
+    out: list[dict] = []
+    for start in range(0, len(sl), page):
+        resp = es.search(
+            index=index, size=page,
+            query={"bool": {"filter": [
+                {"terms": {"cowrie.session_id": sl[start:start + page]}},
+            ]}},
+        )
+        out.extend(h["_source"] for h in resp["hits"]["hits"])
+    return out
+
+
+def existing_session_ids(path: Path) -> set[str]:
+    """`session_id`s already in an unlabeled JSONL, or empty when it is absent.
+
+    `--append` exists because the committed set is the join target for
+    `eval/labels.yaml`: overwriting it orphans every existing label. Dedupe is by this
+    set, so re-running a targeted build is idempotent.
+    """
+    if not path.exists():
+        return set()
+    seen: set[str] = set()
+    with open_jsonl(path, "rt") as fh:
+        for line in fh:
+            if line.strip():
+                sid = json.loads(line).get("session_id")
+                if sid:
+                    seen.add(str(sid))
+    return seen
+
+
 def _fetch_raw_events(es, raw_index: str, session_id: str) -> list[dict]:
     """All raw cowrie.session.* events for a given session_id, asc by time."""
     body = {
@@ -565,7 +632,8 @@ def _sample_stratified(
 def _build_record(es, *, raw_index: str, cmd_index: str,
                   hash_intel_index: str, url_intel_index: str,
                   rollup: dict,
-                  playbook_sizes: dict[str, int]) -> dict | None:
+                  playbook_sizes: dict[str, int],
+                  selection_channel: str | None = None) -> dict | None:
     cowrie = rollup.get("cowrie") or {}
     session_id = cowrie.get("session_id")
     if not session_id:
@@ -601,6 +669,8 @@ def _build_record(es, *, raw_index: str, cmd_index: str,
         "hash_intel":          hash_intel,
         "url_intel":           url_intel,
     }
+    if selection_channel is not None:
+        rec["selection_channel"] = selection_channel
     # Strip sensor / Filebeat / Elastic-agent metadata, then neuter
     # attacker-side artifacts (IP/hash/URL/password). The eval set ships
     # publicly; these are the last two gates before write.
@@ -624,7 +694,24 @@ def main() -> int:
                     help="Output JSONL path.")
     ap.add_argument("--scan-cap", type=int, default=20000,
                     help="Hard ceiling on rollup docs scanned to fill the sample.")
+    ap.add_argument("--session-ids", type=Path, default=None,
+                    help=(
+                        "Targeted build (E3): a file of `session_id` lines, optionally "
+                        "`session_id<TAB>channel`. Bypasses variety-first sampling and "
+                        "exports exactly these sessions, still through the same "
+                        "classification gate and defanging. Use with --append."
+                    ))
+    ap.add_argument("--append", action="store_true",
+                    help=(
+                        "Merge into an existing --output instead of overwriting it, "
+                        "skipping session_ids already present. REQUIRED when growing the "
+                        "committed set: eval/labels.yaml joins to it by session_id, so an "
+                        "overwrite orphans every existing label."
+                    ))
     args = ap.parse_args()
+    if args.append and args.session_ids is None and args.output.exists():
+        ap.error("--append without --session-ids would re-draw a random sample into an "
+                 "existing set; pass --session-ids, or drop --append to rebuild.")
 
     cfg = load_config()
     sec = load_secrets()
@@ -650,6 +737,29 @@ def main() -> int:
     playbook_sizes = _load_playbook_sizes(es, rollup_index)
     print(f"playbooks seen    : {len(playbook_sizes)}", file=sys.stderr)
 
+    already = existing_session_ids(args.output) if args.append else set()
+    channels: dict[str, str] = {}
+    if args.session_ids is not None:
+        channels = read_session_id_channels(args.session_ids)
+        wanted = [sid for sid in channels if sid not in already]
+        print(f"targeted ids      : {len(channels)} requested, {len(wanted)} new "
+              f"({len(channels) - len(wanted)} already in {args.output})", file=sys.stderr)
+        fetched = _fetch_rollups_by_ids(es, rollup_index, wanted)
+        sampled = [r for r in fetched if _is_releasable_rollup(r, cfg)]
+        found = {str((r.get("cowrie") or {}).get("session_id")) for r in fetched}
+        missing = [sid for sid in wanted if sid not in found]
+        print(f"targeted fetched  : {len(fetched)} rollups, {len(sampled)} releasable, "
+              f"{len(fetched) - len(sampled)} gated out, {len(missing)} not found",
+              file=sys.stderr)
+        if missing:
+            print(f"  first missing   : {missing[:5]}", file=sys.stderr)
+        if not sampled:
+            print("[ERROR] targeted build matched no releasable sessions.", file=sys.stderr)
+            return 1
+        sample_stats = {}
+    else:
+        sampled = None
+
     def _stream() -> Iterator[dict]:
         for seen, rollup in enumerate(_iter_random_rollups(es, rollup_index, args.seed), 1):
             yield rollup
@@ -660,9 +770,10 @@ def main() -> int:
     # unattributed session as its own bucket) and cap per playbook so
     # one behaviour can't dominate. Login-only rollups are dropped at
     # the gate — they have no command-stream signal.
-    sampled, sample_stats = _sample_stratified(
-        _stream(), playbook_sizes, args.n, args.per_playbook_cap, cfg,
-    )
+    if sampled is None:
+        sampled, sample_stats = _sample_stratified(
+            _stream(), playbook_sizes, args.n, args.per_playbook_cap, cfg,
+        )
     if not sampled:
         scanned = sample_stats.get("scanned", 0)
         skipped_non_releasable = sample_stats.get("skipped_non_releasable", 0)
@@ -678,21 +789,25 @@ def main() -> int:
             print("[ERROR] no rollup docs scanned — is the index empty?",
                   file=sys.stderr)
         return 1
-    print(
-        f"sampled           : {len(sampled)} rollups "
-        f"(scanned {sample_stats['scanned']}, "
-        f"skipped {sample_stats['skipped_no_commands']} login-only, "
-        f"skipped {sample_stats['skipped_non_releasable']} non-releasable, "
-        f"{sample_stats['named_playbooks']} named playbooks + "
-        f"{sample_stats['unattributed']} unattributed sessions)",
-        file=sys.stderr,
-    )
+    if sample_stats:
+        print(
+            f"sampled           : {len(sampled)} rollups "
+            f"(scanned {sample_stats['scanned']}, "
+            f"skipped {sample_stats['skipped_no_commands']} login-only, "
+            f"skipped {sample_stats['skipped_non_releasable']} non-releasable, "
+            f"{sample_stats['named_playbooks']} named playbooks + "
+            f"{sample_stats['unattributed']} unattributed sessions)",
+            file=sys.stderr,
+        )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     stratum_counts: dict[str, int] = defaultdict(int)
     written = 0
-    with open_jsonl(args.output, "wt") as f:
+    with open_jsonl(args.output, "at" if args.append else "wt") as f:
         for rollup in sampled:
+            sid = str(((rollup.get("cowrie") or {}).get("session_id")) or "")
+            if sid and sid in already:
+                continue
             rec = _build_record(
                 es,
                 raw_index=raw_index,
@@ -701,6 +816,7 @@ def main() -> int:
                 url_intel_index=url_intel_index,
                 rollup=rollup,
                 playbook_sizes=playbook_sizes,
+                selection_channel=channels.get(sid),
             )
             if rec is None:
                 continue
