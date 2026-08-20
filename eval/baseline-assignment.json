@@ -1,8 +1,8 @@
 {
   "metrics": {
-    "accuracy": 0.8,
-    "macro_f1": 0.7777,
-    "mean_auc_novel": 0.7484
+    "accuracy": 0.8565,
+    "macro_f1": 0.7898,
+    "mean_auc_novel": 0.7331
   },
   "tolerance": 0.05,
   "captured_from": "eval_assignment.py --write-baseline"

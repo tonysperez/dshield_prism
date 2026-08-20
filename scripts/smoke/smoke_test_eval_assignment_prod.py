@@ -22,8 +22,11 @@ from capture_anchor_snapshot import (
     cohort_is_informative,
     explicitly_public_filters,
     require_public_command_taxonomy,
+    resolve_min_public,
 )
 from eval_assignment_prod import baseline_anchor_count_error, score_against_anchors
+
+from enrich.config import SessionConfig
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -163,6 +166,10 @@ def check_invalid_taxonomy_cli(name: str, taxonomy: dict[str, str]) -> None:
                     cowrie=SimpleNamespace(sessions_rollup="sessions", commands="commands"),
                 ),
             ),
+            # Real SessionConfig: `--min-public` resolves off it, so a bare namespace
+            # here would only prove the stub is wrong.
+            session=SessionConfig(cluster_min_cluster_size=5,
+                                  novel_pool_cluster_min_cluster_size=3),
         )
         sampling_called = [False]
 
@@ -227,6 +234,21 @@ empty_cs = anchor_row("spb-C", [[1, 0]], [[]], h2c, min_public=1)
 check("anchor_row empty command_set → cluster_empty token, no crash",
       empty_cs is not None and empty_cs["command_cluster_bags"] == ["cluster_empty"],
       str(empty_cs))
+
+# --- resolve_min_public: the capture floor tracks the deployed minting floor (E9) ---
+# A capture pinned above what production may MINT silently drops every rare-behaviour
+# anchor — the exact set the labelled eval is short of. Explicit flag still wins.
+mint3 = SimpleNamespace(session=SessionConfig(cluster_min_cluster_size=5,
+                                              novel_pool_cluster_min_cluster_size=3))
+check("min_public defaults to the novel-pool minting floor",
+      resolve_min_public(None, mint3) == 3, str(resolve_min_public(None, mint3)))
+check("an explicit --min-public still wins", resolve_min_public(9, mint3) == 9)
+check("--min-public 0 is honoured, not treated as unset", resolve_min_public(0, mint3) == 0)
+
+mint_off = SimpleNamespace(session=SessionConfig(cluster_min_cluster_size=5,
+                                                 novel_pool_cluster_min_cluster_size=None))
+check("novel-pool override disabled → falls back to the normal cluster floor",
+      resolve_min_public(None, mint_off) == 5, str(resolve_min_public(None, mint_off)))
 
 print()
 print(f"=== {len(PASSED)} passed, {len(FAILED)} failed ===")

@@ -1,5 +1,5 @@
 {
-  "captured_at": "2026-07-28T14:15:59.683642+00:00",
+  "captured_at": "2026-08-20T08:09:27.653772+00:00",
   "captured_from": "scripts/eval_production_scale.py --write-baseline",
   "snapshot_at_capture": "eval/production-snapshot-v1.jsonl.gz",
   "snapshot_metadata": {
@@ -33,28 +33,28 @@
     "clustering_mode": "hdbscan"
   },
   "rollups_at_capture": 4064,
-  "eval_sessions_at_capture": 38,
+  "eval_sessions_at_capture": 71,
   "embedding_pipeline_at_capture": "embed_context=['intent', 'description'] cooccurrence.embed_cooccurrence=False merge_threshold=0.94 merged=True",
   "tolerance_semantic": "Each gated metric fails when current < baseline - tolerance. Per-label table fails when a label's cluster count exceeds baseline by more than 1. small_cluster_* are informational only.",
   "metrics": {
     "ari": {
-      "baseline": 0.0515,
+      "baseline": 0.4087,
       "tolerance": 0.05
     },
     "nmi": {
-      "baseline": 0.4615,
+      "baseline": 0.5462,
       "tolerance": 0.05
     },
     "homogeneity": {
-      "baseline": 0.4684,
+      "baseline": 0.642,
       "tolerance": 0.05
     },
     "completeness": {
-      "baseline": 0.4548,
+      "baseline": 0.4753,
       "tolerance": 0.05
     },
     "v_measure": {
-      "baseline": 0.4615,
+      "baseline": 0.5462,
       "tolerance": 0.05
     }
   },
@@ -68,16 +68,16 @@
       "n_hdbscan_clusters_assigned": 1
     },
     "host_recon": {
-      "n_sessions": 23,
-      "n_hdbscan_clusters_assigned": 4
+      "n_sessions": 26,
+      "n_hdbscan_clusters_assigned": 5
     },
     "iot_cli_probe": {
       "n_sessions": 1,
       "n_hdbscan_clusters_assigned": 1
     },
     "payload_fetch_exec": {
-      "n_sessions": 2,
-      "n_hdbscan_clusters_assigned": 1
+      "n_sessions": 3,
+      "n_hdbscan_clusters_assigned": 2
     },
     "scp_upload": {
       "n_sessions": 1,
@@ -88,8 +88,8 @@
       "n_hdbscan_clusters_assigned": 1
     },
     "ssh_key_chattr_persistence": {
-      "n_sessions": 5,
-      "n_hdbscan_clusters_assigned": 2
+      "n_sessions": 34,
+      "n_hdbscan_clusters_assigned": 4
     }
   },
   "small_cluster_informational": {

@@ -36,6 +36,12 @@ public session command-cluster bags (`--background-out`, default
 TF-IDF/SVD fit (`eval_assignment_faithful.py --background`) closer to production's much
 larger natural fit corpus — cohort rows are never scored (item 38).
 
+`--min-public` defaults to the deployed novel-pool minting floor
+(`session.novel_pool_cluster_min_cluster_size`, currently 3) rather than a fixed number:
+the snapshot must be able to represent every anchor production is allowed to mint. On a
+fully-public corpus `n_public_sessions` IS the anchor's whole membership, so the floor is
+a minting-parity choice, not a sampling one.
+
     console/.venv/bin/python scripts/capture_anchor_snapshot.py \
         --out eval/anchor-snapshot-v1.jsonl.gz \
         --background-out eval/background-cohort-v1.jsonl.gz
@@ -63,6 +69,7 @@ from enrich.sources.cowrie.lexical import (
     pull_hash_to_predicates,
 )
 from enrich.sources.cowrie.predicates import predicate_signature
+from enrich.sources.cowrie.sessions import effective_novel_pool_min_cluster_size
 
 _S = "dshield.cowrie.enrichment.session"
 _PB = f"{_S}.playbook_id"
@@ -136,6 +143,22 @@ def explicitly_public_filters(cfg) -> list[dict]:
     return [releasable] if releasable == explicit else [releasable, explicit]
 
 
+def resolve_min_public(explicit: int | None, cfg) -> int:
+    """The `--min-public` floor: an explicit flag wins, otherwise the deployed novel-pool
+    minting floor.
+
+    Pure so the coupling is testable offline. The floor must track what production is
+    allowed to MINT, not a separate opinion about how many sessions make a trustworthy
+    centroid — item 72 lowered novel-pool minting to 3, and a capture pinned at 5 drops
+    every rare-behaviour anchor minted since, which is exactly the set the eval is short
+    of. On a fully-public corpus `n_public_sessions` is the anchor's whole membership, so
+    there is no sampling argument left for a higher floor.
+    """
+    if explicit is not None:
+        return explicit
+    return effective_novel_pool_min_cluster_size(cfg.session, novel_pool_only=True)
+
+
 def _public_playbook_ids(es, idx, filt, size) -> list[tuple[str, int]]:
     r = es.search(index=idx, size=0, query={"bool": {"filter": filt}},
                   aggs={"pb": {"terms": {"field": _PB, "size": size}}})
@@ -206,7 +229,10 @@ def main() -> int:
     ap.add_argument("--config", default=None)
     ap.add_argument("--out", default="eval/anchor-snapshot-v1.jsonl.gz")
     ap.add_argument("--per-anchor", type=int, default=500, help="public sessions averaged per playbook")
-    ap.add_argument("--min-public", type=int, default=5, help="skip playbooks with fewer public sessions")
+    ap.add_argument("--min-public", type=int, default=None,
+                    help="skip playbooks with fewer public sessions; default is the "
+                         "deployed novel-pool minting floor "
+                         "(session.novel_pool_cluster_min_cluster_size)")
     ap.add_argument("--background-out", default="eval/background-cohort-v1.jsonl.gz",
                      help="where to write the broad public session-bag cohort (item 38)")
     ap.add_argument("--background-n", type=int, default=2000,
@@ -217,6 +243,7 @@ def main() -> int:
         ap.error("--background-n must be positive")
 
     cfg = load_config(args.config)
+    args.min_public = resolve_min_public(args.min_public, cfg)
     es = make_client(cfg.elasticsearch, load_secrets(args.config))
     idx = cfg.elasticsearch.indexes.cowrie.sessions_rollup
     cmd_idx = cfg.elasticsearch.indexes.cowrie.commands

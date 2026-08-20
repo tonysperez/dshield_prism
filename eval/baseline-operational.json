@@ -1,8 +1,8 @@
 {
   "metrics": {
     "macro_f1": {
-      "baseline": 0.7777,
-      "tolerance": 0.1954,
+      "baseline": 0.7898,
+      "tolerance": 0.1579,
       "direction": "floor",
       "basis": "ci"
     },
