@@ -1180,15 +1180,17 @@ def _iter_closed_sessions(
     index: str,
     since: str | None,
     page_size: int = 1000,
-) -> Iterator[tuple[str, str]]:
-    """Yield (session_id, closed_at) for cowrie.session.closed events after `since`."""
+) -> Iterator[tuple[str | None, str, str]]:
+    """Yield (sensor, session_id, closed_at) for cowrie.session.closed events
+    after `since`. `sensor` is the raw observer.name (may be None) — callers
+    normalize via `_DEFAULT_SENSOR` when bucketing, matching `_session_uid`."""
     must: list[dict] = [{"term": {"event.action": "cowrie.session.closed"}}]
     if since:
         must.append({"range": {"@timestamp": {"gt": since}}})
 
     body: dict = {
         "size": page_size,
-        "_source": ["cowrie.session_id", "@timestamp"],
+        "_source": ["cowrie.session_id", "@timestamp", "observer.name"],
         "query": {"bool": {"must": must}},
         "sort": [{"@timestamp": "asc"}, {"_doc": "asc"}],
     }
@@ -1205,8 +1207,9 @@ def _iter_closed_sessions(
             src = h["_source"]
             session_id = (src.get("cowrie") or {}).get("session_id")
             ts = src.get("@timestamp")
+            sensor = (src.get("observer") or {}).get("name")
             if session_id and ts:
-                yield session_id, ts
+                yield sensor, session_id, ts
         search_after = hits[-1]["sort"]
 
 
@@ -1217,7 +1220,7 @@ def _scan_closed_slice(
     page_size: int,
     slice_id: int,
     slice_max: int,
-) -> list[tuple[str, str]]:
+) -> list[tuple[str | None, str, str]]:
     """Scan one slice of the closed-session enumeration against a shared PIT.
     Sorts by the cheap `_shard_doc` tiebreaker — order is irrelevant here, the
     caller only needs the full set plus the max `@timestamp`."""
@@ -1226,14 +1229,14 @@ def _scan_closed_slice(
         must.append({"range": {"@timestamp": {"gt": since}}})
     body: dict = {
         "size": page_size,
-        "_source": ["cowrie.session_id", "@timestamp"],
+        "_source": ["cowrie.session_id", "@timestamp", "observer.name"],
         "query": {"bool": {"must": must}},
         "pit": {"id": pit_id, "keep_alive": "5m"},
         "sort": [{"_shard_doc": "asc"}],
     }
     if slice_max > 1:
         body["slice"] = {"id": slice_id, "max": slice_max}
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str | None, str, str]] = []
     search_after = None
     while True:
         if search_after:
@@ -1246,8 +1249,9 @@ def _scan_closed_slice(
             src = h["_source"]
             sid = (src.get("cowrie") or {}).get("session_id")
             ts = src.get("@timestamp")
+            sensor = (src.get("observer") or {}).get("name")
             if sid and ts:
-                out.append((sid, ts))
+                out.append((sensor, sid, ts))
         search_after = hits[-1]["sort"]
 
 
@@ -1257,7 +1261,7 @@ def _collect_closed_sessions(
     since: str | None,
     page_size: int,
     workers: int,
-) -> list[tuple[str, str]]:
+) -> list[tuple[str | None, str, str]]:
     """Enumerate closed sessions, parallelised across PIT slices when possible.
 
     Otherwise this up-front scan over the raw events index is a single serial
@@ -1277,7 +1281,7 @@ def _collect_closed_sessions(
     pit_id = es.open_point_in_time(index=index, keep_alive="5m")["id"]
     log.info("rollup sessions: enumerating closed sessions across %d PIT slices", slice_max)
     try:
-        results: list[tuple[str, str]] = []
+        results: list[tuple[str | None, str, str]] = []
         with ThreadPoolExecutor(max_workers=slice_max) as ex:
             futs = [
                 ex.submit(_scan_closed_slice, es, pit_id, since, page_size, i, slice_max)
@@ -1294,11 +1298,26 @@ def _collect_closed_sessions(
 def _fetch_session_events(
     es: Elasticsearch,
     index: str,
-    session_ids: list[str],
+    session_keys: list[tuple[str | None, str]],
     page_size: int = 1000,
-) -> dict[str, list[dict]]:
-    """Fetch all events for the given session_ids. Returns {session_id: [event_sources]}."""
-    result: dict[str, list[dict]] = {sid: [] for sid in session_ids}
+) -> dict[tuple[str, str], list[dict]]:
+    """Fetch all events for the given (sensor, session_id) pairs. Returns
+    {(sensor, session_id): [event_sources]}, sensor normalized to
+    `_DEFAULT_SENSOR` when unset — the same normalization `_session_uid` uses.
+
+    Cowrie session ids are only unique per-sensor, so the ES query (which can
+    only filter on the raw `cowrie.session_id` field) may return events from a
+    *different* sensor that happens to share a raw id with a requested
+    session. Each hit is bucketed by its own `observer.name`, not by the query
+    filter, and dropped if that (sensor, session_id) pair wasn't requested —
+    so a same-raw-id collision across sensors can never merge into one session
+    doc. The other sensor's events are collected by whichever batch actually
+    requested that pair.
+    """
+    result: dict[tuple[str, str], list[dict]] = {
+        (sensor or _DEFAULT_SENSOR, sid): [] for sensor, sid in session_keys
+    }
+    raw_sids = sorted({sid for _, sid in session_keys})
 
     body: dict = {
         "size": page_size,
@@ -1319,7 +1338,7 @@ def _fetch_session_events(
             "file.hash.sha256", "url.original",
             "cowrie.destfile", "cowrie.filename",
         ],
-        "query": {"terms": {"cowrie.session_id": session_ids}},
+        "query": {"terms": {"cowrie.session_id": raw_sids}},
         "sort": [{"@timestamp": "asc"}, {"_doc": "asc"}],
     }
 
@@ -1334,8 +1353,10 @@ def _fetch_session_events(
         for h in hits:
             src = h["_source"]
             sid = (src.get("cowrie") or {}).get("session_id")
-            if sid and sid in result:
-                result[sid].append(src)
+            sensor = (src.get("observer") or {}).get("name") or _DEFAULT_SENSOR
+            key = (sensor, sid)
+            if sid and key in result:
+                result[key].append(src)
         search_after = hits[-1]["sort"]
 
     return result
@@ -2091,7 +2112,7 @@ def run_rollup(
     since = db.get_watermark(_SESSION_WATERMARK_KEY)
     log.info("Session watermark: %s", since or "(none, full backfill)")
 
-    closed: list[tuple[str, str]] = _collect_closed_sessions(
+    closed: list[tuple[str | None, str, str]] = _collect_closed_sessions(
         es, events_idx, since, cfg.session.page_size,
         max(1, int(getattr(cfg.session, "rollup_workers", 1))),
     )
@@ -2101,7 +2122,7 @@ def run_rollup(
         db.close()
         return {"closed_sessions_found": 0, "dry_run": dry_run}
 
-    max_ts = max(ts for _, ts in closed)
+    max_ts = max(ts for _, _, ts in closed)
 
     if dry_run:
         db.close()
@@ -2123,12 +2144,15 @@ def run_rollup(
         intel_lookup = IntelLookup(es, cfg)
         log.info("session rollup: source-IP-intel persistence enabled")
 
-    session_ids_all = [sid for sid, _ in closed]
+    # (sensor, session_id) pairs — the unit of work from here on, not the raw
+    # session_id alone, so a raw-id collision across sensors can never be
+    # merged into one batch's fetch/build (see `_fetch_session_events`).
+    session_keys_all = [(sensor, sid) for sensor, sid, _ in closed]
     page = cfg.session.page_size
     workers = max(1, int(getattr(cfg.session, "rollup_workers", 1)))
     batches = [
-        session_ids_all[i: i + page]
-        for i in range(0, len(session_ids_all), page)
+        session_keys_all[i: i + page]
+        for i in range(0, len(session_keys_all), page)
     ]
     n_batches = len(batches)
     # IntelLookup keeps a shared cache; serialise it across worker threads. The
@@ -2136,17 +2160,18 @@ def run_rollup(
     # there. Everything else per batch is local or a thread-safe ES client call.
     _intel_lock = threading.Lock()
 
-    def _process_batch(batch_ids: list[str]) -> dict:
+    def _process_batch(batch_keys: list[tuple[str | None, str]]) -> dict:
         """Build + write one batch's session rollups; return local stats so the
         parallel path merges without shared mutation."""
         bstats: dict = defaultdict(int)
-        events_by_session = _fetch_session_events(
-            es, events_idx, batch_ids, cfg.session.page_size
+        events_by_key = _fetch_session_events(
+            es, events_idx, batch_keys, cfg.session.page_size
         )
 
         all_hashes: set[str] = set()
-        for sid in batch_ids:
-            for ev in events_by_session.get(sid, []):
+        for sensor, sid in batch_keys:
+            key = (sensor or _DEFAULT_SENSOR, sid)
+            for ev in events_by_key.get(key, []):
                 if (ev.get("event") or {}).get("action") == "cowrie.command.input":
                     cmd = (ev.get("process") or {}).get("command_line")
                     if cmd:
@@ -2158,9 +2183,10 @@ def run_rollup(
         bstats["command_hashes_fetched"] += len(enrichment_by_hash)
 
         # Phase 1: build the session docs without intel.
-        built: list[tuple[str, dict]] = []
-        for sid in batch_ids:
-            events = events_by_session.get(sid, [])
+        built: list[tuple[str, str, dict]] = []
+        for sensor, sid in batch_keys:
+            key = (sensor or _DEFAULT_SENSOR, sid)
+            events = events_by_key.get(key, [])
             if not events:
                 bstats["sessions_no_events"] += 1
                 continue
@@ -2170,7 +2196,7 @@ def run_rollup(
             )
             if session_block.get("embedding"):
                 bstats["sessions_with_embedding"] += 1
-            built.append((sid, doc))
+            built.append((key[0], sid, doc))
             bstats["sessions_built"] += 1
 
         # Phase 2: bulk intel lookup over the batch's source IPs, then mutate
@@ -2178,13 +2204,13 @@ def run_rollup(
         if intel_lookup is not None and built:
             batch_ips = sorted({
                 (doc.get("source") or {}).get("ip")
-                for _, doc in built
+                for _, _, doc in built
                 if (doc.get("source") or {}).get("ip")
             })
             if batch_ips:
                 with _intel_lock:
                     intel_lookup.get_many("ip", batch_ips)
-                    for _, doc in built:
+                    for _, _, doc in built:
                         ip = (doc.get("source") or {}).get("ip")
                         if not ip:
                             continue
@@ -2193,12 +2219,14 @@ def run_rollup(
                             _attach_source_ip_intel(doc, summary)
                             bstats["sessions_with_intel"] += 1
 
-        # Namespaced `_id` (P6.2 / D3): `<sensor>:<session_id>`. Sensor from the
-        # doc's observer.name (set by _build_session_doc), default when unset.
-        # The raw id stays in the cowrie.session_id field for all reads.
+        # Namespaced `_id` (P6.2 / D3): `<sensor>:<session_id>`. Sensor is the
+        # one this batch fetched events for (already normalized to
+        # `_DEFAULT_SENSOR` when unset) — not re-derived from the built doc, so
+        # it stays correct even if `_build_session_doc` ever changes what it
+        # stamps. The raw id stays in the cowrie.session_id field for all reads.
         uid_by_doc: list[tuple[str, dict]] = [
-            (_session_uid((doc.get("observer") or {}).get("name"), sid), doc)
-            for sid, doc in built
+            (_session_uid(sensor, sid), doc)
+            for sensor, sid, doc in built
         ]
 
         # Preserve the cross-writer cluster / playbook fields the backward
