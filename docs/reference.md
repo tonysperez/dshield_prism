@@ -730,9 +730,15 @@ escalated to the cloud LLM and never queried against CTI feeds.** Central logic:
 
 ## Console
 
-Read-only FastAPI + vanilla-JS app; never writes to ES. Every write it makes is
-to a local YAML file: the grounding denylist below, and hunt files — created,
-edited, deleted and toggled from the Hunts page (see [Hunts](#hunts)). Nav:
+Read-mostly FastAPI + vanilla-JS app; no auth or CSRF on any route. Two write
+surfaces: local YAML files (the grounding denylist below, and hunt files —
+created, edited, deleted and toggled from the Hunts page, see
+[Hunts](#hunts)), and direct ES writes from finding status/note updates
+(`POST /api/finding/{id}/status`, `/note`, `/api/findings/status`) and
+artifact-rule authoring (`POST /api/artifact-rule`, which can also trigger an
+immediate `update_by_query` against matched command docs). The ES account the
+console runs as needs write privileges on the findings and artifact-rules
+indices for those routes to work. Nav:
 **Inbox · Explore · Graph · Hunts · Tune** — Tune is a sub-tab shell hosting
 two tabs (the old `/artifact-rules` and `/curation` URLs 302 here): **Rules**
 (analyst artifact rules) and **Grounding** (command-grounding coverage,

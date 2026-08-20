@@ -1,6 +1,6 @@
 # dshield_prism_console
 
-Browser-based, read-only investigation console for the enriched DShield/Cowrie
+Browser-based, read-mostly investigation console for the enriched DShield/Cowrie
 indices produced by the `enrich` pipeline in the parent repository.
 
 Search any IOC — IP, session id, command sha256, raw command text, campaign
@@ -12,13 +12,19 @@ IOC.
 
 ## Install
 
-Self-contained — no dependency on the parent `enrich` package.
+Runs from the parent repo checkout — imports `enrich.*` for hunts, findings,
+artifact rules, command grounding, and write-up narration (`console/pyproject.toml`
+declares no dependency on it, but `writeup.py` and `findings.py` import it at
+module level, so it must be importable: run from an editable parent-repo
+install, or with the parent `src/` on `PYTHONPATH`). Only `_config.py` and
+`_es.py` are genuinely self-contained (deliberately duplicated — see
+[Duplicated code](#duplicated-code) below).
 
 ```bash
-cd console
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+python -m venv console/.venv
+source console/.venv/bin/activate
+pip install -e .            # parent `enrich` package first — console imports it
+pip install -e console
 ```
 
 By default the console reads the parent repo's `config/default.yaml` (+
@@ -61,15 +67,22 @@ The single search box accepts any of:
 
 ## Architecture
 
-* **Backend**: FastAPI + the `elasticsearch` Python client. Self-contained
-  YAML + .env loader (reads the parent repo's `config/default.yaml` by
-  default, but has no Python dependency on `enrich`). Strips 768-dim
-  embeddings server-side; they never reach the browser.
+* **Backend**: FastAPI + the `elasticsearch` Python client. Config/secrets
+  loading (`_config.py`) and the ES client factory (`_es.py`) are
+  self-contained duplicates (see [Duplicated code](#duplicated-code)), but the
+  app otherwise imports `enrich.*` for hunts, findings, artifact rules, and
+  write-up narration. Strips 768-dim embeddings server-side; they never reach
+  the browser.
 * **Frontend**: vanilla JS with a custom `<canvas>` graph renderer — no
   framework, no build step, no CDN. Loads from `web/` (`css/`, `js/`).
-* **State**: read-only against ES — the console never writes to it. Local YAML
-  files are the sole exception: the grounding denylist, and hunt files, which
-  the Hunts page creates, edits, deletes and toggles.
+* **State**: read-mostly. Local YAML files (the grounding denylist, and hunt
+  files the Hunts page creates/edits/deletes/toggles) are one write surface.
+  ES is also written directly by finding-status/note updates
+  (`POST /api/finding/{id}/status`, `/note`, `/api/findings/status`) and
+  artifact-rule authoring (`POST /api/artifact-rule`, which can also trigger
+  an immediate `update_by_query` against matched command docs). There is no
+  auth or CSRF protection on any of these routes — see
+  [Security notes](#security-notes).
 
 Pages:
 
@@ -110,7 +123,7 @@ POST /api/hunts/run                       # writes findings for enabled hunts on
 GET  /api/tune/grounding-coverage
 POST /api/compare/explain                 # inline cluster / playbook / campaign compare
 POST /api/ask                             # natural-language Q&A (parent LLM config)
-POST /api/writeup                         # copy-ready report (defanged; txt / md / csv / json)
+POST /api/writeup                         # copy-ready report (defanged; txt / md / csv / json); local LLM only, cloud escalation disabled (see Security notes)
 ```
 
 Where `type` ∈ `ip session command command_hash playbook campaign
@@ -167,9 +180,21 @@ can drift safely.
 ## Security notes
 
 * Default bind is `127.0.0.1` — single-user workstation use.
-* No auth on the local HTTP server. If exposing on a LAN, add a reverse proxy
-  with auth (or extend the FastAPI app with token middleware).
-* Read-only: the only ES operations are search / get / count / info.
+* No auth or CSRF protection on the local HTTP server, including the mutation
+  routes (hunts, finding status/notes, artifact rules, grounding denylist). If
+  exposing on a LAN, add a reverse proxy with auth (or extend the FastAPI app
+  with token middleware) — see "Exposing the console on the LAN" in
+  `docs/operations.md`.
+* Read-mostly, not read-only: most ES operations are search / get / count /
+  info, but finding status/notes and artifact rules write to ES directly (see
+  [Architecture](#architecture) above). The account/API key the console runs
+  as needs write privileges on the findings and artifact-rules indices for
+  those features to work.
+* Write-up cloud escalation (`POST /api/writeup` with `escalate: true`) is
+  currently disabled: `anchor`/`scope` are client-supplied JSON, not resolved
+  server-side against ES by stable ID, so the console can't yet prove the
+  underlying documents are explicit-public before that content would reach
+  the cloud LLM. The local write-up path is unaffected.
 
 ## Known limitations
 
