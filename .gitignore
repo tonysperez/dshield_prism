@@ -29,15 +29,21 @@ eval/sessions/
 # (same class as eval/sessions/, just an older generation's output dir).
 eval/sessions-v1/
 eval/confidential/
+eval/discovery-stall-history.jsonl
 
 # Second-pass label files (agreement inputs). Never committed: `labels.yaml` is
 # the deliverable, and a committed second pass is readable by the next
 # annotator, which destroys the blindness the measurement depends on.
 eval/labels-relabel*.yaml
 eval/labels-secondary.yaml
+# Held-out human slice for scoring an LLM labelling pass. Same reason as the
+# files above: committing it lets the next annotator read it, which destroys the
+# blindness the agreement number depends on.
+eval/labels-heldout*.yaml
 
-# Claude
+# Agentic development
 .claude
+.codex
 
 # Spec-driven development
 _bmad
