@@ -59,6 +59,11 @@ class EvalRecord:
     embed_version: str | None
     embed_config_hash: str | None
     capture_timestamp: str | None
+    # How this session entered the eval set. None == the original variety-first draw;
+    # `structural` / `anchor` / `random` mark a targeted growth pass
+    # (`scripts/select_eval_candidates.py`). Prevalence-dependent metrics must be
+    # scoped by this — see `eval_operational.variety_first_mask`.
+    selection_channel: str | None = None
 
 
 @dataclass
@@ -95,6 +100,30 @@ def _command_cluster_bag(rec: dict, command_set: list[str]) -> str | None:
         return None
     return " ".join(cluster_of.get(str(command_id)[:16], "cluster_outlier")
                     for command_id in command_set)
+
+
+# Minimum members a label needs before its per-label F1 enters the MACRO-F1 MEAN.
+# Shared by `eval_assignment` and `eval_operational` so the two never report the same
+# statistic over different label sets.
+#
+# **2, deliberately** — see "Macro-F1 excludes labels a held-out split cannot learn" in
+# `docs/decisions.md`. It forgives only what no prototype could have fixed: a singleton
+# has zero training examples whenever its one member is the test case, so it scores a
+# structural 0.0. Everything above that line stays in the mean.
+#
+# Raising it to 5 was proposed, built and reverted. The case for it: at n=3 with k=5,
+# each member lands in its own fold while its two near-identical siblings build the
+# prototype, so `iot_cli_probe` / `scp_upload` / `dropped_binary_exec` all scored exactly
+# 1.0000 and lifted the headline 0.7696 -> 0.7898. The case against, which is the
+# standing decision: those labels are stabilisers, not noise, and pruning them does not
+# buy what pruning is usually for — measured, the CI half-width goes 0.1594 (n>=2) ->
+# 0.1571 (4) -> 0.1661 (5), i.e. it WIDENS, and dropping everything under n=6 takes it to
+# 0.2310. The +/-0.15 is structural to averaging labels equally; the variance lives in the
+# confusable middle, not in the rare tail.
+#
+# If this is revisited, argue the point estimate's honesty, not variance — variance is
+# settled and the answer is no.
+MIN_MACRO_SUPPORT = 2
 
 
 def load_records_detailed(labels_path: Path, jsonl_path: Path) -> EvidenceLoad:
@@ -233,6 +262,10 @@ def load_records_detailed(labels_path: Path, jsonl_path: Path) -> EvidenceLoad:
             rubric_version=rubric_version,
             embed_version=embed_version,
             embed_config_hash=embed_config_hash,
+            selection_channel=(
+                str(label_block["selection_channel"])
+                if label_block.get("selection_channel") else None
+            ),
             capture_timestamp=capture_timestamp,
         ))
 
@@ -276,17 +309,26 @@ def load_records_detailed(labels_path: Path, jsonl_path: Path) -> EvidenceLoad:
     return EvidenceLoad(records=records, diagnostics=diagnostics, metadata=metadata)
 
 
-def load_labeled(labels_path: Path, jsonl_path: Path) -> tuple[list[str], np.ndarray]:
+def load_labeled(
+    labels_path: Path, jsonl_path: Path, *, with_channels: bool = False,
+) -> tuple[list[str], np.ndarray] | tuple[list[str], np.ndarray, list[str | None]]:
     """(labels, embeddings) for every annotated, non-null labelled session that has an
-    embedding. Index-aligned."""
+    embedding. Index-aligned.
+
+    `with_channels=True` also returns each row's `selection_channel`, index-aligned —
+    what a prevalence-dependent metric needs to scope itself to the variety-first
+    stratum. Off by default so the existing callers keep their 2-tuple."""
     records = load_records_detailed(labels_path, jsonl_path).records
     labels = [record.analyst_label for record in records]
+    channels = [record.selection_channel for record in records]
     if not records:
-        return labels, np.zeros((0, 0), dtype=np.float32)
+        empty = np.zeros((0, 0), dtype=np.float32)
+        return (labels, empty, channels) if with_channels else (labels, empty)
     dimensions = {record.embedding.shape for record in records}
     if len(dimensions) != 1:
         raise ValueError(f"incompatible embedding dimensions: {sorted(dimensions)}")
-    return labels, np.stack([record.embedding for record in records])
+    embs = np.stack([record.embedding for record in records])
+    return (labels, embs, channels) if with_channels else (labels, embs)
 
 
 def _l2(m: np.ndarray) -> np.ndarray:
@@ -386,7 +428,7 @@ def classification_metrics(test_embs, test_labels, proto_ids, proto_mat,
     that judgement instead of contradicting it. Default `None` scores everything,
     preserving the old behavior for any caller that wants it.
 
-    Note this drops the excluded label's own structural 0.0 but NOT the cost of
+    Note this drops the excluded label's own score but NOT the cost of
     its sessions: they are still in the test set and still get misassigned to
     some other label, which costs that label precision. The exclusion forgives
     only what no prototype could have fixed."""
@@ -473,11 +515,11 @@ _DEFAULT_K, _DEFAULT_REPEATS = 5, 3
 
 def evaluate(labels: list[str], embs: np.ndarray, *,
              k: int = _DEFAULT_K, repeats: int = _DEFAULT_REPEATS, seed: int = 0) -> dict:
-    # Labels with a single corpus-wide member cannot be learned by any held-out
-    # split (train has zero examples whenever that member is the test case), so
-    # their structural 0.0 is excluded from the macro mean — matching the
-    # per-label floor's existing n<2 exemption. per_label still reports them.
-    scoreable = {lb for lb, n in Counter(labels).items() if n >= 2}
+    # Low-support labels are excluded from the macro mean (see MIN_MACRO_SUPPORT):
+    # a singleton scores 0.0 structurally, and n=3-4 scores 1.0000 by memorisation.
+    # Both are artifacts of support, not of prototype quality. per_label still
+    # reports every label.
+    scoreable = {lb for lb, n in Counter(labels).items() if n >= MIN_MACRO_SUPPORT}
     folds = repeated_stratified_kfold(labels, k=k, repeats=repeats, seed=seed)
     fold_acc, fold_f1 = [], []
     per_label_recall: dict[str, list[float]] = defaultdict(list)

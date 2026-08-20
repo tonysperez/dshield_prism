@@ -23,6 +23,14 @@ anchors in Slice E. See docs/decisions.md.
 
 Gate direction per metric: floors fail when current < baseline - tolerance;
 the `diagnostic` basis never fails a build.
+
+**Two strata.** `eval/labels.yaml` mixes the original variety-first draw with rows added
+by a targeted pass (`scripts/select_eval_candidates.py`), marked by `selection_channel`.
+Label-weighted metrics (macro-F1, per-label accuracy) run on everything; session-weighted
+ones (novel precision/recall, false-familiar, minted purity/distinct) scope to the
+variety-first rows, or they would report the deliberate over-sampling of a rare label as
+a system change. `report["scope"]` records which rows each family saw. See
+`variety_first_mask`.
 """
 from __future__ import annotations
 
@@ -37,6 +45,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from eval_assignment import (
+    MIN_MACRO_SUPPORT,
     build_prototypes,
     classification_metrics,
     fold_ci_half_width,
@@ -46,6 +55,33 @@ from eval_assignment import (
 
 from enrich.clustering import cluster_deps_available, l2_normalize
 from enrich.sources.cowrie.assignment import NOVEL, assign_batch
+
+
+def variety_first_mask(channels: list[str | None]) -> list[int]:
+    """Row indices belonging to the ORIGINAL variety-first draw — the rows whose
+    `selection_channel` is absent.
+
+    Pure. `eval/labels.yaml` grew by a targeted pass (`select_eval_candidates.py`) that
+    draws rare-label candidates deliberately, so the set is now two strata. Which
+    metrics that breaks depends on how each is weighted:
+
+      * `macro_f1` and per-label accuracy weight LABELS, not sessions. Adding examples
+        of a thin label changes which sessions represent it, not the label's weight, so
+        both run on the full set.
+      * `novel_precision`, `novel_recall` and `minted_purity` are SESSION-weighted, so
+        they read the label mix directly. Over a set where `scp_upload` was deliberately
+        made ten times more prevalent than the corpus, they measure the draw. Worse,
+        they would move the first time an analyst finishes labelling and be read as a
+        system change — the exact fixture-shift misreading this project has hit before.
+
+    So the session-weighted metrics scope here and stay comparable to every baseline
+    committed before the growth pass. An all-targeted set (no original rows) returns
+    every index rather than an empty scope: a caller with nothing else to fall back on
+    should get an honest wide number, not a division by zero.
+    """
+    original = [i for i, c in enumerate(channels) if not c]
+    return original or list(range(len(channels)))
+
 
 # Degeneracy floor: if measured novel-recall is at/below this at write-baseline
 # time, novelty is marked diagnostic rather than gated (geometry pinned it).
@@ -216,16 +252,16 @@ def bootstrap_half_width(values: list[float], stat, *, n: int, seed: int = 0) ->
 # ---------------------------------------------------------------------------
 def evaluate(labels: list[str], embs: np.ndarray, *, tau: float, confident_tau: float,
              holdout_k: int, bootstrap: int, per_label_floor: float,
-             k_folds: int = 5, repeats: int = 3, seed: int = 0) -> dict:
+             k_folds: int = 5, repeats: int = 3, seed: int = 0,
+             channels: list[str | None] | None = None) -> dict:
     # Repeated stratified k-fold (CAP-8 / A2), replacing the single alternating
     # 50/50 split: every label with >=1 member reaches a test fold, and the CI
     # is the across-fold spread (captures split variance, not just
     # test-resampling noise). Point estimate = mean over folds.
-    # Labels with a single corpus-wide member cannot be learned by any held-out
-    # split (train has zero examples whenever that member is the test case), so
-    # their structural 0.0 is excluded from the macro mean — matching the
-    # per-label floor's existing n<2 exemption. per_label still reports them.
-    scoreable = {lb for lb, n in Counter(labels).items() if n >= 2}
+    # Low-support labels leave the macro mean but stay fully reported — see
+    # `eval_assignment.MIN_MACRO_SUPPORT` for what measurement drove the threshold.
+    label_counts = Counter(labels)
+    scoreable = {lb for lb, n in label_counts.items() if n >= MIN_MACRO_SUPPORT}
     folds = repeated_stratified_kfold(labels, k=k_folds, repeats=repeats, seed=seed)
     fold_f1: list[float] = []
     per_label_recall: dict[str, list[float]] = defaultdict(list)
@@ -243,9 +279,16 @@ def evaluate(labels: list[str], embs: np.ndarray, *, tau: float, confident_tau: 
     per_label_acc = {lb: round(float(np.mean(v)), 4) for lb, v in per_label_recall.items()}
     f1_hw = fold_ci_half_width(fold_f1)
 
-    nov_records = novelty_records(labels, embs, tau=tau, confident_tau=confident_tau)
+    # Session-weighted metrics run on the variety-first stratum only; the
+    # label-weighted ones above already ran on everything. See `variety_first_mask`.
+    chans = channels if channels is not None else [None] * len(labels)
+    scope = variety_first_mask(chans)
+    scoped_labels = [labels[i] for i in scope]
+    scoped_embs = embs[scope] if len(embs) else embs
+    nov_records = novelty_records(scoped_labels, scoped_embs,
+                                  tau=tau, confident_tau=confident_tau)
     nov = _pr_from_records(nov_records)
-    mint = minted_block(labels, embs, holdout_k=holdout_k)
+    mint = minted_block(scoped_labels, scoped_embs, holdout_k=holdout_k)
 
     # Novelty/minted CIs are unrelated to CAP-8 (not split-derived) — unchanged
     # deterministic bootstrap over their own record lists.
@@ -257,6 +300,22 @@ def evaluate(labels: list[str], embs: np.ndarray, *, tau: float, confident_tau: 
         "n_labeled": len(labels), "n_labels": len(set(labels)),
         "n_test": n_test_total, "n_folds": k_folds, "n_repeats": repeats,
         "n_folds_run": len(folds),
+        # Which rows each metric family saw, so a number is never read against the
+        # wrong denominator.
+        "macro_f1_support": {
+            "min_support": MIN_MACRO_SUPPORT,
+            "in_mean": sorted(scoreable),
+            "excluded": {lb: label_counts[lb] for lb in sorted(set(label_counts) - scoreable)},
+        },
+        "scope": {
+            "label_weighted_n": len(labels),
+            "session_weighted_n": len(scope),
+            "selection_channels": dict(Counter(c or "variety-first" for c in chans)),
+            "session_weighted_metrics": [
+                "novel_precision", "novel_recall", "false_familiar", "minted_purity",
+                "minted_distinct",
+            ],
+        },
         "tau": tau, "confident_tau": confident_tau, "holdout_k": holdout_k,
         "metrics": {
             "macro_f1": macro_f1,
@@ -363,7 +422,7 @@ def gate(report: dict, baseline: dict) -> tuple[list[str], bool]:
         n = counts.get(lb)
         if n is not None and n < 2:
             lines.append(f"  {('per_label:' + lb):18}{'floor':>11}{floor:>10.3f}{acc:>10.4f}"
-                         f"{'':>8}  (info, n=1 excluded)")
+                         f"{'':>8}  (info, n=1 — no k-fold prototype)")
             continue
         passed = acc >= floor
         ok = ok and passed
@@ -394,14 +453,17 @@ def main() -> int:
     ap.add_argument("--no-json", action="store_true")
     args = ap.parse_args()
 
-    labels, embs = load_labeled(Path(args.labels), Path(args.unlabeled))
+    labels, embs, channels = load_labeled(
+        Path(args.labels), Path(args.unlabeled), with_channels=True,
+    )
     if not labels:
         print("No labelled sessions with embeddings found.", file=sys.stderr)
         return 1
     report = evaluate(labels, embs, tau=args.tau, confident_tau=args.confident_tau,
                       holdout_k=args.holdout_k, bootstrap=args.bootstrap,
                       per_label_floor=args.per_label_floor,
-                      k_folds=args.k_folds, repeats=args.repeats, seed=args.seed)
+                      k_folds=args.k_folds, repeats=args.repeats, seed=args.seed,
+                      channels=channels)
 
     if args.write_baseline:
         baseline = build_baseline(report, epsilon=args.epsilon)
