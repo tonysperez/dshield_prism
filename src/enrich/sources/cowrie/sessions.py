@@ -298,6 +298,41 @@ def effective_novel_pool_min_cluster_size(
             "or equal to session.cluster_min_cluster_size",
         )
     return rare if novel_pool_only else normal
+
+
+def effective_anchor_match_threshold(scfg: SessionConfig) -> float:
+    """Resolve the cosine floor for reusing an existing anchor's `playbook_id`.
+
+    `playbook_merge_threshold` does three unrelated jobs at one value: the
+    complete-linkage cut that merges HDBSCAN clusters into playbook groups, the
+    noise-rescue threshold inside `run_layer_clustering`, and this one — matching
+    a group *centroid* against the pinned anchor library. Only the last is
+    session-identity: a group whose centroid clears it inherits an existing id and
+    is never minted, while `assignment_tau` then judges each *session* against that
+    same anchor. The two comparisons are different geometries, so a group can
+    inherit an identity none of its members can be assigned to (Finding 70/71) —
+    the whole group then re-enters the novel pool every cycle, minted by nothing.
+
+    `playbook_anchor_match_threshold` splits that job out. None (the default)
+    keeps the historical shared value, so this is a no-op until configured.
+    """
+    override = getattr(scfg, "playbook_anchor_match_threshold", None)
+    merge = float(scfg.playbook_merge_threshold)
+    if override is None:
+        return merge
+    override = float(override)
+    if not 0.0 <= override <= 1.0:
+        raise ValueError(
+            "session.playbook_anchor_match_threshold must be within [0, 1]",
+        )
+    if override < merge:
+        # Below the merge cut, two clusters merged into one group could each
+        # match a different anchor — identity would depend on iteration order.
+        raise ValueError(
+            "session.playbook_anchor_match_threshold must be >= "
+            "session.playbook_merge_threshold",
+        )
+    return override
 _SESSION_COMMAND_SET_FIELD = "dshield.cowrie.enrichment.session.command_set.keyword"
 
 
@@ -499,6 +534,173 @@ def _mint_satellite_anchor_id(playbook_id: str, seed_id: str) -> str:
     return f"{playbook_id}-sat-{digest[:8]}"
 
 
+def split_sids_by_predicate_activity(
+    sid_to_vector: dict[str, dict[str, bool]],
+    floor: int,
+) -> tuple[list[str], list[str]] | None:
+    """E4 (Finding 76) — partition a playbook group's member sessions into
+    {fires no structural predicate} / {fires any}, returning
+    `(majority_sids, minority_sids)` or None when the group must not be split.
+
+    Pure, so the rule is smoke-testable without ES. Binary on purpose: Finding 75C
+    measured the alternative (partition by the exact 7-bit signature) across every
+    anchor and it was worse on every axis — 12 groups shattered instead of 3, 20
+    sessions stranded below the minting floor, and no gain. The binary cut split 3
+    groups, stranded nobody, and moved `iot_cli_probe` off zero.
+
+    Refuses to split unless BOTH sides reach `floor` — a side below the floor is
+    something production would never have minted on its own, so carving it out
+    creates an anchor the clusterer could not have produced.
+    """
+    if floor < 1 or not sid_to_vector:
+        return None
+    quiet = sorted(sid for sid, v in sid_to_vector.items() if not any(v.values()))
+    loud = sorted(sid for sid, v in sid_to_vector.items() if any(v.values()))
+    if len(quiet) < floor or len(loud) < floor:
+        return None
+    return (quiet, loud) if len(quiet) >= len(loud) else (loud, quiet)
+
+
+def _repin_anchor_doc(existing: dict, unit: np.ndarray, run_id: str) -> dict:
+    """The re-pinned anchor doc: identity, seed and `first_seen` preserved, centroid
+    tightened onto the members the parent retained after an E4 split.
+
+    Write-once pinning exists to stop walking-centroid collapse (A~B>=thr, B~C>=thr,
+    A~C<thr merging unrelated playbooks). A split re-pin is not a walk — the id is
+    unchanged and the centroid moves *away from members it lost*, never toward a
+    neighbouring anchor. The previous centroid is kept in `repinned_from_centroid` so
+    the write is reversible and auditable from ES alone; `repin_count` makes repeated
+    re-pinning of one anchor visible rather than silent.
+    """
+    doc = dict(existing)
+    prior = existing.get("anchor_centroid")
+    doc["anchor_centroid"] = [float(x) for x in unit]
+    if prior:
+        doc["repinned_from_centroid"] = list(prior)
+    from datetime import datetime
+    doc["repinned_at"] = datetime.now(UTC).isoformat()
+    doc["repinned_run_id"] = run_id
+    doc["repin_reason"] = "mint_predicate_split"
+    doc["repin_count"] = int(existing.get("repin_count") or 0) + 1
+    return doc
+
+
+def _repin_playbook_anchor(
+    es: Elasticsearch, anchor_idx: str, playbook_id: str,
+    unit: np.ndarray, run_id: str,
+) -> bool:
+    """Re-pin an existing primary anchor's centroid (E4). Returns False and writes
+    nothing when the anchor doc is missing or carries no centroid — a re-pin must
+    never create an anchor, only tighten one that already exists."""
+    try:
+        existing = es.get(index=anchor_idx, id=playbook_id)["_source"]
+    except Exception:  # a missing anchor doc is a legitimate no-op, not an error
+        return False
+    if not existing.get("anchor_centroid"):
+        return False
+    es.index(index=anchor_idx, id=playbook_id,
+             document=_repin_anchor_doc(existing, unit, run_id))
+    return True
+
+
+def _maybe_split_mint(
+    es: Elasticsearch, cfg, sessions_idx: str, commands_idx: str, anchor_idx: str,
+    playbook_id: str, cov_sids: list[str], run_id: str,
+    anchors: list, known_anchor_ids: set[str], stats: Counter,
+) -> None:
+    """E4 (Finding 76) — carve a behaviourally-distinct minority out of a group that
+    just REUSED an existing anchor id, and re-pin that anchor onto what it kept.
+
+    Only runs on the reuse branch. A group that minted its own fresh id has no
+    incumbent geometry out-competing it, and re-pinning an anchor created moments ago
+    in the same pass would be a write-once violation with nothing to show for it.
+
+    Three steps, all of which must hold or nothing is written (Finding 76F):
+
+    1. The group's member sessions split {fires no predicate} / {fires any}, both sides
+       at or above the novel-pool minting floor.
+    2. The minority is **force-minted** — `_mint_playbook_id` directly, bypassing
+       `_assign_playbook_id`. Measured: the minority centroid sits at cosine 0.9990 of
+       its parent, so the ordinary match would hand back the parent's id and the split
+       would be a silent no-op (Finding 76A).
+    3. The parent is **re-pinned** from its retained members. Without this the parent's
+       centroid still averages the departing sessions, stays nearer to them than their
+       own new anchor, and only 13 of 24 move — none of them the ones that matter
+       (Finding 76B/D).
+
+    A fourth condition sits between 1 and 2: **both parts must be geometrically
+    coherent** (`split_part_is_coherent`). A behaviourally clean part whose own members
+    cannot reach its centroid at `assignment_tau` would be minted as a destination
+    nothing assigns to — the Findings 70/71 trap, re-created by the mechanism meant to
+    avoid it.
+
+    Sessions are not restamped here: E4 writes anchors only. The next `assign_sessions`
+    pass re-sorts membership by nearest anchor, which is exactly the geometry Finding
+    76D/E measured (24 of 9,351 sessions move, all parent -> new, novel unchanged).
+    """
+    if not getattr(cfg.session, "mint_predicate_split", False):
+        return
+    floor = effective_novel_pool_min_cluster_size(cfg.session, novel_pool_only=True)
+    vectors = _fetch_session_predicate_vectors(es, sessions_idx, commands_idx, cov_sids)
+    split = split_sids_by_predicate_activity(vectors, floor)
+    if split is None:
+        stats["split_not_applicable"] += 1
+        return
+    majority_sids, minority_sids = split
+
+    minority_embs = _session_embeddings(es, sessions_idx, minority_sids)
+    majority_embs = _session_embeddings(es, sessions_idx, majority_sids)
+    if minority_embs is None or majority_embs is None:
+        stats["split_no_centroid"] += 1
+        return
+    minority_unit = _unit_vector(minority_embs.mean(axis=0))
+    majority_unit = _unit_vector(majority_embs.mean(axis=0))
+
+    tau = float(cfg.session.assignment_tau)
+    if not (split_part_is_coherent(minority_embs, minority_unit, tau)
+            and split_part_is_coherent(majority_embs, majority_unit, tau)):
+        # Behaviourally clean, geometrically scattered — see `split_part_is_coherent`.
+        stats["split_incoherent"] += 1
+        return
+
+    minority_seed = _compute_seed_id(set(minority_sids))
+    minority_id = _mint_playbook_id(minority_seed)
+    if minority_id in known_anchor_ids:
+        # Same membership already minted this id in an earlier run — idempotent,
+        # nothing new to pin, and re-pinning the parent again would be churn.
+        stats["split_already_minted"] += 1
+        return
+
+    if not _repin_playbook_anchor(es, anchor_idx, playbook_id, majority_unit, run_id):
+        # The parent has no pinned anchor to tighten. Minting the minority alone is
+        # the measured no-op (Finding 76B), so decline the whole split.
+        stats["split_parent_not_repinned"] += 1
+        return
+
+    minority_signature = _sample_predicate_vectors(
+        es, sessions_idx, commands_idx, minority_id,
+        len(minority_sids), session_ids=minority_sids,
+    )
+    _persist_playbook_anchor(
+        es, anchor_idx, minority_id, minority_unit, minority_seed, run_id,
+        predicate_signature=minority_signature,
+    )
+    known_anchor_ids.add(minority_id)
+    anchors.append((minority_unit, minority_id))
+    # The parent's cached vector is now stale — later groups in THIS run match against
+    # `anchors`, so leaving the pre-split centroid there would keep handing out the
+    # identity the re-pin just narrowed.
+    for i, (_vec, aid) in enumerate(anchors):
+        if aid == playbook_id:
+            anchors[i] = (majority_unit, aid)
+    stats["split_minted"] += 1
+    log.info(
+        "E4 split: playbook %s re-pinned onto %d retained sessions; minority %d "
+        "sessions minted as %s", playbook_id, len(majority_sids),
+        len(minority_sids), minority_id,
+    )
+
+
 def _persist_playbook_anchor(
     es: Elasticsearch, anchor_idx: str, playbook_id: str,
     unit: np.ndarray, seed_id: str, run_id: str,
@@ -544,6 +746,7 @@ def _persist_playbook_anchor(
 
 _SESSION_PLAYBOOK_ID_FIELD = "dshield.cowrie.enrichment.session.playbook_id"
 _SESSION_COMMAND_SET_PLAIN_FIELD = "dshield.cowrie.enrichment.session.command_set"
+_SESSION_EMBEDDING_FIELD = "dshield.cowrie.enrichment.session.embedding"
 _COMMAND_PREDICATES_FIELD = "dshield.cowrie.enrichment.predicates"
 _SESSION_ASSIGNMENT_STATUS_FIELD = "dshield.cowrie.enrichment.session.cluster.assignment_status"
 
@@ -626,6 +829,102 @@ def _sample_predicate_vectors(
     }
     vectors = build_session_predicate_vectors(command_sets, hash_to_predicates)
     return _compute_predicate_signature(vectors)
+
+
+def _fetch_session_predicate_vectors(
+    es: Elasticsearch, sessions_idx: str, commands_idx: str, sids: list[str],
+) -> dict[str, dict[str, bool]]:
+    """`{cowrie.session_id: composed 7-predicate booleans}` for an explicit id list.
+
+    The per-session counterpart to `_sample_predicate_vectors`, which folds the same
+    evidence down to one anchor-level frequency vector. E4's split needs to know *which*
+    sessions fire, not how often the group does, so it cannot reuse that. Same fetch
+    shape: `command_set` off the rollup (queried by the `cowrie.session_id` FIELD — the
+    rollup `_id` is sensor-namespaced), then an mget of only the referenced command
+    hashes. A session with no resolvable command evidence folds to all-False, which puts
+    it on the quiet side — fail-closed and consistent with
+    `lexical.build_session_predicate_vectors`.
+    """
+    if not sids:
+        return {}
+    resp = es.search(
+        index=sessions_idx,
+        size=min(len(sids), 10000),
+        _source=[_SESSION_COMMAND_SET_PLAIN_FIELD, "cowrie.session_id"],
+        query={"terms": {"cowrie.session_id": list(sids)}},
+    )
+    hit_sids, command_sets = [], []
+    for h in resp["hits"]["hits"]:
+        sid = deep_get(h["_source"], "cowrie.session_id")
+        if not sid:
+            continue
+        hit_sids.append(str(sid))
+        command_sets.append(
+            list(deep_get(h["_source"], _SESSION_COMMAND_SET_PLAIN_FIELD) or []),
+        )
+    hashes = sorted({h for cs in command_sets for h in cs})
+    hash_source = fetch_source_subset(es, commands_idx, hashes, [_COMMAND_PREDICATES_FIELD])
+    hash_to_predicates = {
+        h: (deep_get(src, _COMMAND_PREDICATES_FIELD) or {}) for h, src in hash_source.items()
+    }
+    vectors = build_session_predicate_vectors(command_sets, hash_to_predicates)
+    return dict(zip(hit_sids, vectors, strict=True))
+
+
+# A split part is "coherent" when at least this fraction of its own members sit within
+# `assignment_tau` of the centroid it would be pinned at. Majority rule, mirroring
+# `predicates.ANCHOR_MODAL_THRESHOLD`: an anchor a minority of its own members cannot
+# reach is not an anchor, it is a hole they fall through.
+_SPLIT_COHERENCE_FRACTION = 0.5
+
+
+def _session_embeddings(
+    es: Elasticsearch, sessions_idx: str, sids: list[str],
+) -> np.ndarray | None:
+    """L2-normalised embedding matrix for an explicit session id list, or None when
+    none of them carry one. E4 splits a group by a per-SESSION property, so the two
+    halves need session-level geometry; `_playbook_group_centroid` averages member
+    CLUSTER centroids and cannot express a cut that runs through a cluster."""
+    import numpy as np
+    if not sids:
+        return None
+    resp = es.search(
+        index=sessions_idx,
+        size=min(len(sids), 10000),
+        _source=[_SESSION_EMBEDDING_FIELD],
+        query={"terms": {"cowrie.session_id": list(sids)}},
+    )
+    vecs = [
+        deep_get(h["_source"], _SESSION_EMBEDDING_FIELD)
+        for h in resp["hits"]["hits"]
+    ]
+    vecs = [v for v in vecs if v]
+    if not vecs:
+        return None
+    mat = np.asarray(vecs, dtype=np.float32)
+    norms = np.linalg.norm(mat, axis=1, keepdims=True)
+    return mat / np.where(norms == 0.0, 1.0, norms)
+
+
+def split_part_is_coherent(
+    embeddings: np.ndarray, unit: np.ndarray, tau: float,
+    *, min_fraction: float = _SPLIT_COHERENCE_FRACTION,
+) -> bool:
+    """True when a majority of a split part's members are within `assignment_tau` of
+    the centroid it would be pinned at. Pure — smoke-testable without ES.
+
+    The predicates cut on *behaviour*; the embedding is what *assignment* reads, and
+    the two are not the same space (Finding 76C). A part can be behaviourally clean and
+    geometrically scattered: measured on one live anchor, the minority side was a clean
+    modal `botnet_loader` group whose members sat at median cosine 0.8949 of their own
+    centroid — **0 of 10** reachable. Minting that anchor writes a destination nothing
+    can be assigned to, which is the Findings 70/71 trap re-created by the very
+    mechanism meant to avoid it. On the anchor E4 was designed against both sides were
+    24/24 and 40/40, so this guard separates the two cases with room to spare.
+    """
+    if embeddings.size == 0:
+        return False
+    return float((embeddings @ unit >= tau).mean()) >= min_fraction
 
 
 def _anchor_signature_present(existing: dict | None) -> bool:
@@ -2877,6 +3176,59 @@ def _should_reuse_playbook_name(prior_name: str | None, *, force: bool) -> bool:
     return bool(prior_name) and not force
 
 
+def _update_by_query_resilient(
+    es: Elasticsearch,
+    index: str,
+    query: dict,
+    script: dict,
+    *,
+    refresh: bool = False,
+    retries: int = 1,
+) -> dict:
+    """`update_by_query` that survives a stale-read version conflict.
+
+    UBQ searches first, then writes each hit conditioned on the `seq_no` that
+    search returned. Search sees only *refreshed* segments, and both indices
+    this module stamps run `refresh_interval: 30s`, so a doc rewritten inside
+    that window comes back carrying a stale seq_no and the conditional write
+    409s. ES's default `conflicts=abort` escalates that into an exception that
+    drops the **whole** request — including the hits it had not written yet, so
+    one conflicting centroid can leave a multi-cluster playbook half-stamped.
+
+    `conflicts=proceed` on its own only downgrades the abort to a *silent* skip
+    (the write is still lost, now without a log line), so a residual conflict is
+    retried after an explicit refresh, which makes the seq_nos current. Safe to
+    re-run because every caller's script is pure field assignment — idempotent.
+
+    `refresh=True` refreshes after the write, so a later pass over the same docs
+    in the same run reads them fresh instead of conflicting; worth it on the
+    small centroid index, not on the session rollup.
+
+    Returns the final UBQ response. `version_conflicts` still set on it means a
+    genuinely concurrent writer (a second `name playbooks` process) beat us and
+    the caller lost a write — worth a warning, not an exception.
+
+    `query` / `script` go as keyword args, never as a raw `body=`: elasticsearch-py
+    counts `conflicts` among `update_by_query`'s *body* fields, so passing both a
+    body and `conflicts=` raises "Received multiple values for 'conflicts'".
+    (`delete_by_query` doesn't — `conflicts` is a plain query param there, which
+    is why the tombstone call sites can still pass a body.)
+    """
+    def _run() -> dict:
+        return dict(es.update_by_query(
+            index=index, query=query, script=script,
+            conflicts="proceed", refresh=refresh,
+        ))
+
+    resp = _run()
+    for _ in range(max(0, retries)):
+        if not int(resp.get("version_conflicts") or 0):
+            break
+        es.indices.refresh(index=index)
+        resp = _run()
+    return resp
+
+
 def _apply_playbook_name(
     es: Elasticsearch,
     session_clusters_idx: str,
@@ -2891,46 +3243,69 @@ def _apply_playbook_name(
 ) -> None:
     """Write playbook_id + playbook_name onto the centroid docs and onto
     every member session via update_by_query. Shared by pass-1 initial
-    naming and pass-2 disambiguation rename."""
+    naming and pass-2 disambiguation rename.
+
+    Both writes go through `_update_by_query_resilient`: the same docs are
+    stamped up to three times per run (pass-1 name → pass-2 merge → pass-2
+    rename) inside the indices' 30s refresh window, which otherwise 409s and
+    leaves the centroid doc unnamed while its member sessions carry the id.
+    """
     script = (
         "ctx._source.playbook_id = params.playbook_id;"
         "ctx._source.playbook_name = params.name;"
     )
     params = {"playbook_id": playbook_id, "name": name}
     try:
-        es.update_by_query(
-            index=session_clusters_idx,
-            body={
-                "query": {"bool": {"must": [
-                    {"term": {"run_id": run_id}},
-                    {"term": {"doc_type": "cluster"}},
-                    {"terms": {"cluster_id": member_cids}},
-                ]}},
-                "script": {"source": script, "params": params},
-            },
+        resp = _update_by_query_resilient(
+            es,
+            session_clusters_idx,
+            {"bool": {"must": [
+                {"term": {"run_id": run_id}},
+                {"term": {"doc_type": "cluster"}},
+                {"terms": {"cluster_id": member_cids}},
+            ]}},
+            {"source": script, "params": params},
+            # Small index, re-read later in the same run by the pass-2 merge /
+            # rename writes — refresh so those don't read a stale seq_no.
+            refresh=True,
         )
+        if int(resp.get("version_conflicts") or 0):
+            log.warning(
+                "Centroid update for %s %s lost %s doc(s) to a concurrent writer "
+                "(version conflicts after retry) — is a second naming run active?",
+                log_prefix, playbook_id, resp.get("version_conflicts"),
+            )
+            stats["centroid_update_conflicts"] += 1
     except Exception as exc:
         log.warning("Failed to update centroids for %s %s: %s", log_prefix, playbook_id, exc)
         stats["centroid_update_errors"] += 1
     from datetime import datetime
     now_iso = datetime.now(UTC).isoformat()
     try:
-        es.update_by_query(
-            index=sessions_idx,
-            body={
-                "query": {"terms": {
-                    "dshield.cowrie.enrichment.session.cluster.id": member_cids,
-                }},
-                "script": {
-                    "source": _SESSION_PLAYBOOK_NAME_SCRIPT,
-                    "params": {
-                        "playbook_id": playbook_id,
-                        "playbook_name": name,
-                        "now": now_iso,
-                    },
+        resp = _update_by_query_resilient(
+            es,
+            sessions_idx,
+            {"terms": {
+                "dshield.cowrie.enrichment.session.cluster.id": member_cids,
+            }},
+            {
+                "source": _SESSION_PLAYBOOK_NAME_SCRIPT,
+                "params": {
+                    "playbook_id": playbook_id,
+                    "playbook_name": name,
+                    "now": now_iso,
                 },
             },
+            # No post-write refresh: the session rollup is large and the naming
+            # pass refreshes it once at the end.
         )
+        if int(resp.get("version_conflicts") or 0):
+            log.warning(
+                "Session update for %s %s lost %s doc(s) to a concurrent writer "
+                "(version conflicts after retry) — is a second naming run active?",
+                log_prefix, playbook_id, resp.get("version_conflicts"),
+            )
+            stats["session_update_conflicts"] += 1
     except Exception as exc:
         log.warning("Failed to update session docs for %s %s: %s", log_prefix, playbook_id, exc)
         stats["session_update_errors"] += 1
@@ -3741,7 +4116,7 @@ def run_name_playbooks(
             if group_unit is not None:
                 playbook_id = _assign_playbook_id(
                     group_unit, anchors,
-                    cfg.session.playbook_merge_threshold, seed_id,
+                    effective_anchor_match_threshold(cfg.session), seed_id,
                 )
                 if playbook_id not in known_anchor_ids:
                     known_anchor_ids.add(playbook_id)
@@ -3763,6 +4138,10 @@ def run_name_playbooks(
                     stats["id_minted"] += 1
                 else:
                     stats["id_reused"] += 1
+                    _maybe_split_mint(
+                        es, cfg, sessions_idx, commands_idx, anchor_idx,
+                        playbook_id, cov_sids, run_id, anchors, known_anchor_ids, stats,
+                    )
             else:
                 # No usable member centroid (rare — every member would have
                 # to lack a `centroid` field). Fall back to a pure-seed mint
@@ -3932,6 +4311,9 @@ def run_name_playbooks(
         total_groups=n_groups,
         merged_groups=n_merged_groups,
         merge_threshold=cfg.session.playbook_merge_threshold,
+        # Finding 69: a run that does not record its own effective config cannot
+        # be verified from ES, and a stale deploy reads exactly like a healthy one.
+        anchor_match_threshold=effective_anchor_match_threshold(cfg.session),
         dry_run=dry_run,
         force=force,
     )
